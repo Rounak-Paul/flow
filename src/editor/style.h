@@ -285,3 +285,82 @@
     ".fl-launcher { width: 100%; height: 100%; padding: 28px; gap: 12px; overflow-y: auto; background: " FL_COLOR_BG_BASE "; }" \
     ".fl-launcher-title { font-size: 28px; color: " FL_COLOR_TEXT_BRIGHT "; }" \
     ".fl-recent { width: 100%; height: 36px; padding: 8px; flex-shrink: 0; justify-content: flex-start; color: " FL_COLOR_TEXT_MEDIUM "; background: " FL_COLOR_BG_ELEVATED "; }"
+
+/* Scene authoring panels and viewport handles. */
+#define FL_STYLE_WIDGETS_W 210.0f
+#define FL_STYLE_INSPECTOR_W 280.0f
+#define FL_STYLE_WIDGET_DRAG_THRESHOLD 4.0f
+#define FL_STYLE_ROTATE_OFFSET 28.0
+#define FL_STYLE_HANDLE_HIT 9.0
+#define FL_STYLE_HANDLE_SIZE 7.0
+#define FL_STYLE_OUTLINE_WIDTH 2.0
+#define FL_STYLE_GIZMO_RGBA {91,156,255,255}
+#define FL_CLASS_ENTITY_ROW "fl-entity-row"
+#define FL_CLASS_STAGE "fl-stage"
+#define FL_CLASS_LIBRARY "fl-library"
+#define FL_CLASS_WIDGET_WRAP "fl-widget-wrap"
+#define FL_CLASS_WIDGET_CARD "fl-widget-card"
+#define FL_CLASS_INSPECTOR "fl-inspector"
+#define FL_CLASS_PROPERTY_ROW "fl-property-row"
+#define FL_CLASS_PROPERTY_LABEL "fl-property-label"
+#define FL_CLASS_PROPERTY_INPUT "fl-property-input"
+#define FL_STYLE_CSS_AUTHORING \
+    ".fl-entity-row { width: 100%; height: 28px; flex-shrink: 0; }" \
+    ".fl-stage { width: 100%; flex-grow: 1; min-height: 0px; overflow: hidden; }" \
+    ".fl-library, .fl-inspector { width: 100%; height: 100%; padding: 10px; gap: 10px; overflow-y: auto; background: " FL_COLOR_BG_BASE "; }" \
+    ".fl-widget-wrap { width: 100%; height: 66px; flex-shrink: 0; }" \
+    ".fl-widget-card { width: 100%; height: 100%; padding: 10px; gap: 6px; align-items: flex-start; background: " FL_COLOR_BG_SURFACE "; border: 1px solid " FL_COLOR_SEPARATOR "; border-radius: " FL_RADIUS_MD "; }" \
+    ".fl-widget-card:hover { border-color: " FL_COLOR_ACCENT "; background: " FL_COLOR_SELECTION "; }" \
+    ".fl-property-row { width: 100%; height: 30px; flex-shrink: 0; gap: 8px; align-items: center; }" \
+    ".fl-property-label { width: 76px; flex-shrink: 0; font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MUTED "; }" \
+    ".fl-property-input { flex-grow: 1; min-width: 0px; height: 28px; padding: 4px 6px; background: " FL_COLOR_BG_SURFACE "; color: " FL_COLOR_TEXT_BRIGHT "; border-radius: " FL_RADIUS_SM "; }"
+
+/* Assets panel, image placeholders and the Inspector font picker. */
+#define FL_STYLE_ASSETS_W 240.0f
+#define FL_STYLE_IMAGE_PLACEHOLDER_RGBA {38,44,54,255}
+#define FL_STYLE_IMAGE_PLACEHOLDER_STROKE_RGBA {88,98,114,255}
+#define FL_STYLE_IMAGE_PLACEHOLDER_STROKE 2.0
+#define FL_STYLE_FONT_LIST_LIMIT 300
+#define FL_CLASS_ASSETS "fl-assets"
+#define FL_CLASS_ASSET_WRAP "fl-asset-wrap"
+#define FL_CLASS_ASSET_ROW "fl-asset-row"
+#define FL_CLASS_ASSET_ROW_SELECTED "fl-asset-row selected"
+#define FL_CLASS_DROP_HINT "fl-drop-hint"
+#define FL_CLASS_FONT_LIST "fl-font-list"
+#define FL_CLASS_FONT_ROW "fl-font-row"
+#define FL_CLASS_FONT_ROW_SELECTED "fl-font-row selected"
+#define FL_CLASS_WARNING "fl-warning"
+#define FL_CLASS_PROPERTY_SELECT "fl-property-select"
+#define FL_STYLE_CSS_ASSETS \
+    ".fl-assets { width: 100%; height: 100%; padding: 10px; gap: 8px; overflow-y: auto; background: " FL_COLOR_BG_BASE "; }" \
+    ".fl-asset-wrap { width: 100%; height: 46px; flex-shrink: 0; }" \
+    ".fl-asset-row { width: 100%; height: 100%; padding: 6px 8px; gap: 2px; align-items: flex-start; background: transparent; border-radius: " FL_RADIUS_SM "; }" \
+    ".fl-asset-row:hover, .fl-font-row:hover { background: " FL_COLOR_HOVER "; }" \
+    ".fl-asset-row.selected, .fl-font-row.selected { background: " FL_COLOR_SELECTION "; }" \
+    ".fl-drop-hint { width: 100%; padding: 12px; flex-shrink: 0; border: 1px solid " FL_COLOR_SEPARATOR "; border-radius: " FL_RADIUS_MD "; color: " FL_COLOR_TEXT_DIM "; font-size: " FL_FONT_SM "; text-wrap: wrap; }" \
+    ".fl-font-list { width: 100%; height: 180px; flex-shrink: 0; overflow-y: auto; gap: 0px; background: " FL_COLOR_BG_SURFACE "; border-radius: " FL_RADIUS_SM "; }" \
+    ".fl-font-row { width: 100%; height: 24px; flex-shrink: 0; padding: 4px 8px; gap: 8px; justify-content: space-between; background: transparent; }" \
+    ".fl-warning { color: " FL_COLOR_WARNING "; font-size: " FL_FONT_SM "; text-wrap: wrap; }" \
+    ".fl-property-select { flex-grow: 1; min-width: 0px; height: 28px; }"
+
+/* In-app file browser window. */
+#define FL_STYLE_FILE_BROWSER_W 720
+#define FL_STYLE_FILE_BROWSER_H 520
+#define FL_STYLE_FILE_BROWSER_LIMIT 1000
+#define FL_CLASS_ICON_ACTION "fl-icon-action"
+#define FL_CLASS_FILE_BROWSER "fl-file-browser"
+#define FL_CLASS_FILE_LIST "fl-file-list"
+#define FL_CLASS_FILE_ROW "fl-file-row"
+#define FL_CLASS_FILE_ROW_SELECTED "fl-file-row selected"
+#define FL_CLASS_FILE_FOOTER "fl-file-footer"
+#define FL_CLASS_FILE_SUMMARY "fl-file-summary"
+#define FL_STYLE_CSS_FILE_BROWSER \
+    ".fl-file-browser { width: 100%; height: 100%; padding: 8px; gap: 6px; background: " FL_COLOR_BG_BASE "; }" \
+    ".fl-icon-action { width: 28px; height: 28px; flex-shrink: 0; background: " FL_COLOR_BG_OVERLAY "; border-radius: " FL_RADIUS_SM "; color: " FL_COLOR_TEXT_BRIGHT "; }" \
+    ".fl-icon-action:hover { background: " FL_COLOR_SELECTION "; }" \
+    ".fl-file-list { width: 100%; flex-grow: 1; min-height: 0px; overflow-y: auto; gap: 0px; background: " FL_COLOR_BG_SURFACE "; border-radius: " FL_RADIUS_SM "; }" \
+    ".fl-file-row { width: 100%; height: 26px; flex-shrink: 0; padding: 4px 10px; gap: 8px; justify-content: space-between; background: transparent; }" \
+    ".fl-file-row:hover { background: " FL_COLOR_HOVER "; }" \
+    ".fl-file-row.selected { background: " FL_COLOR_SELECTION "; }" \
+    ".fl-file-footer { width: 100%; height: 40px; flex-shrink: 0; gap: 8px; align-items: center; }" \
+    ".fl-file-summary { flex-grow: 1; min-width: 0px; color: " FL_COLOR_TEXT_MUTED "; font-size: " FL_FONT_SM "; }"

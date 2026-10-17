@@ -69,27 +69,29 @@ char *fl_binary_get_string(Fl_Binary *s)
     return text;
 }
 
-bool fl_binary_save(Fl_Binary *s, const char *path, const char magic[8])
+bool fl_binary_save(Fl_Binary *s, const char *path, const char magic[8], uint64_t version)
 {
-    if (s->failed) return false;
+    if (s->failed || !version) return false;
     Fl_Binary file = {0};
-    fl_binary_write(&file, magic, 8); fl_binary_u64(&file, 1);
+    fl_binary_write(&file, magic, 8); fl_binary_u64(&file, version);
     fl_binary_u64(&file, s->size); fl_binary_u64(&file, checksum(s->data, s->size));
     fl_binary_write(&file, s->data, s->size);
     bool ok = !file.failed && fl_fs_write_atomic(path, file.data, file.size);
     free(file.data); return ok;
 }
 
-bool fl_binary_load(Fl_Binary *s, const char *path, const char magic[8])
+bool fl_binary_load(Fl_Binary *s, const char *path, const char magic[8], uint64_t max_version, uint64_t *out_version)
 {
     *s = (Fl_Binary){0};
+    if (out_version) *out_version = 0;
     s->data = (unsigned char *)fl_fs_read_file(path, SIZE_MAX - 1, &s->size);
     if (!s->data) return false;
     char found[8] = {0}; fl_binary_read(s, found, 8);
     uint64_t version = fl_binary_get_u64(s), size = fl_binary_get_u64(s), hash = fl_binary_get_u64(s);
-    if (s->failed || memcmp(found, magic, 8) || version != 1 || size != s->size - s->cursor ||
+    if (s->failed || memcmp(found, magic, 8) || !version || version > max_version || size != s->size - s->cursor ||
         hash != checksum(s->data + s->cursor, (size_t)size)) {
         free(s->data); *s = (Fl_Binary){0}; return false;
     }
+    if (out_version) *out_version = version;
     return true;
 }

@@ -1,4 +1,5 @@
 #include "fl_launcher.h"
+#include "fl_file_browser.h"
 #include "style.h"
 #include "doc/fl_binary.h"
 #include "platform/fl_fs.h"
@@ -14,6 +15,7 @@ struct Fl_Launcher {
     Ca_TextInput *name, *path;
     Fl_EventBus *bus;
     Fl_Project *selected;
+    Fl_FileBrowser *browser;
     Recent *recent;
     size_t count;
     char recent_path[FL_PATH_MAX];
@@ -27,7 +29,7 @@ static void save_recent(Fl_Launcher *l)
     if (!l->recent_path[0]) return;
     Fl_Binary b = {0}; fl_binary_u64(&b, l->count);
     for (size_t i = 0; i < l->count; ++i) fl_binary_string(&b, l->recent[i].path);
-    fl_binary_save(&b, l->recent_path, "FLRECENT"); free(b.data);
+    fl_binary_save(&b, l->recent_path, "FLRECENT", 1); free(b.data);
 }
 
 /* Remember a selected path without duplicates, preserving prior entries on allocation failure. */
@@ -71,10 +73,32 @@ static void recent_clicked(Ca_Button *button, void *data)
     (void)button; Recent *r = data; open_directory(r->launcher, r->path, NULL);
 }
 
+/* Put the chosen folder into the directory field; rebuilds keep it as the field's text. */
+static void folder_chosen(const char *const *paths, size_t count, void *data)
+{
+    (void)count; Fl_Launcher *l = data;
+    snprintf(l->default_path, sizeof(l->default_path), "%s", paths[0]);
+    if (l->path) ca_set_text(l->path, l->default_path);
+}
+
+/* Browse for a project folder starting from the directory currently typed. */
+static void browse_clicked(Ca_Button *button, void *data)
+{
+    (void)button; Fl_Launcher *l = data;
+    if (!l->browser && l->window) l->browser = fl_file_browser_create(ca_window_instance(l->window));
+    char typed[FL_PATH_MAX];
+    snprintf(typed, sizeof(typed), "%s", l->path ? ca_input_text(l->path) : l->default_path);
+    if (!fl_file_browser_show(l->browser, &(Fl_FileBrowserDesc){.mode = FL_FILE_BROWSER_SELECT_FOLDER,
+            .title = "Choose project folder", .initial_path = typed, .on_confirm = folder_chosen, .user_data = l}))
+        ca_popup_show(ca_window_instance(l->window), &(Ca_PopupDesc){.title = "Browser unavailable",
+            .message = "The file browser could not be opened."});
+}
+
 /* Mark launcher closure; the editor owns the transition and process lifetime. */
 static void closed(Ca_Window *window, void *data)
 {
-    (void)window; Fl_Launcher *l = data; l->window = NULL; l->root = NULL;
+    (void)window; Fl_Launcher *l = data; l->window = NULL; l->root = NULL; l->path = NULL;
+    fl_file_browser_close(l->browser);
 }
 
 /* Render the project manager form and existing recent project entries. */
@@ -88,7 +112,10 @@ static void build(Ca_Div *root, void *data)
     ca_text(&(Ca_TextDesc){.text = "Project name (for a new project)", .style = FL_CLASS_LABEL});
     l->name = ca_input(&(Ca_InputDesc){.text = "Untitled", .id = "project-name", .style = FL_CLASS_INPUT});
     ca_text(&(Ca_TextDesc){.text = "Project directory", .style = FL_CLASS_LABEL});
-    l->path = ca_input(&(Ca_InputDesc){.text = l->default_path, .id = "project-path", .style = FL_CLASS_INPUT});
+    ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_PROPERTY_ROW});
+    l->path = ca_input(&(Ca_InputDesc){.text = l->default_path, .id = "project-path", .style = FL_CLASS_PROPERTY_INPUT});
+    ca_btn_begin(&(Ca_BtnDesc){.text = "Browse...", .on_click = browse_clicked, .click_data = l, .style = FL_CLASS_ACTION}); ca_btn_end();
+    ca_div_end();
     ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_TOOLBAR});
     ca_btn_begin(&(Ca_BtnDesc){.text = "Create project", .on_click = create_clicked, .click_data = l, .style = FL_CLASS_ACTION}); ca_btn_end();
     ca_btn_begin(&(Ca_BtnDesc){.text = "Open project", .on_click = open_clicked, .click_data = l, .style = FL_CLASS_ACTION}); ca_btn_end();
@@ -111,7 +138,7 @@ Fl_Launcher *fl_launcher_create(Ca_Instance *instance, Fl_EventBus *bus)
     if (fl_paths_user_dir(FL_PATH_CONFIG, config, sizeof(config)))
         fl_fs_join(l->recent_path, sizeof(l->recent_path), config, "recent.flbin");
     Fl_Binary b;
-    if (l->recent_path[0] && fl_binary_load(&b, l->recent_path, "FLRECENT")) {
+    if (l->recent_path[0] && fl_binary_load(&b, l->recent_path, "FLRECENT", 1, NULL)) {
         uint64_t count = fl_binary_get_u64(&b);
         if (count <= (b.size - b.cursor) / 8 && count <= SIZE_MAX / sizeof(Recent)) {
             l->recent = count ? calloc((size_t)count, sizeof(Recent)) : NULL;
@@ -148,6 +175,7 @@ bool fl_launcher_is_open(const Fl_Launcher *l) { return l && l->window; }
 void fl_launcher_destroy(Fl_Launcher *l)
 {
     if (!l) return;
+    fl_file_browser_destroy(l->browser);
     if (l->window) ca_window_destroy(l->window);
     fl_project_destroy(l->selected);
     for (size_t i = 0; i < l->count; ++i) free(l->recent[i].path);

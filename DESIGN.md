@@ -793,3 +793,10 @@ Each milestone ends with a demo built from a real vkcompute chapter segment.
 | **Scope** | The read/write boundary derived from the user's selection |
 | **Context packet** | Compact, selection-centred document summary sent to an agent |
 | **Verify loop** | An agent rendering and linting its own draft before proposing it |
+
+
+## Static authoring implementation status (2026-10-17)
+
+The native editor now includes dockable Widgets and Inspector panels alongside Scene and Console. The shared registry supplies Group, Rectangle, Ellipse, Line, Arrow, and Text defaults and property capabilities. A shared selection controller connects hierarchy selection, Inspector drafts and viewport move/resize/rotate gestures, including Shift multi-selection and parent-aware transforms. Creation, Inspector Apply and multi-entity transform gestures commit through validated atomic document operations; binary scene storage retains their versioned components.
+
+The Vulkan preview renders all six primitives (groups organize their children), inherited transforms/visibility, text coverage masks, and selection handles. Text uses the bundled regular font through Causality's public source-data API. Full shaping/font selection, animation, undo history and final video export remain their respective later milestones. Implementation ownership and verification are recorded in `.context/widget-authoring.md`.

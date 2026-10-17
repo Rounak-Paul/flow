@@ -51,13 +51,22 @@ bool fl_fs_write_atomic(const char *path, const void *data, size_t size)
     FILE *file = fl_fs_fopen(temp, "wb");
     bool ok = file != NULL;
     if (ok && size) ok = fwrite(data, 1, size, file) == size;
-    if (ok) ok = fflush(file) == 0 && flush_to_disk(file);
+    if (ok) ok = fl_fs_flush(file);
     if (file && fclose(file) != 0) ok = false;
-    if (ok) ok = fl_fs_rename(temp, path);
-    if (ok) ok = sync_parent(path);
+    if (ok) ok = fl_fs_commit(temp, path);
     if (!ok) fl_fs_remove(temp);
     free(temp);
     return ok;
+}
+
+bool fl_fs_flush(FILE *file)
+{
+    return file && fflush(file) == 0 && flush_to_disk(file);
+}
+
+bool fl_fs_commit(const char *from, const char *path)
+{
+    return fl_fs_rename(from, path) && sync_parent(path);
 }
 
 char *fl_fs_read_file(const char *path, size_t max_size, size_t *out_size)
@@ -177,6 +186,27 @@ bool fl_fs_exists(const char *path)
     return ok;
 }
 
+bool fl_fs_list_dir(const char *path, Fl_FsEntryFn fn, void *user_data)
+{
+    if (!path || !fn) return false;
+    char pattern[4096];
+    if (!fl_fs_join(pattern, sizeof(pattern), path, "*")) return false;
+    wchar_t *wide = widen(pattern);
+    if (!wide) return false;
+    WIN32_FIND_DATAW entry;
+    HANDLE find = FindFirstFileW(wide, &entry);
+    free(wide);
+    if (find == INVALID_HANDLE_VALUE) return GetLastError() == ERROR_FILE_NOT_FOUND;
+    char name[1024];
+    do {
+        if (!wcscmp(entry.cFileName, L".") || !wcscmp(entry.cFileName, L"..")) continue;
+        if (WideCharToMultiByte(CP_UTF8, 0, entry.cFileName, -1, name, (int)sizeof(name), NULL, NULL) <= 0) continue;
+        if (!fn(name, (entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0, user_data)) break;
+    } while (FindNextFileW(find, &entry));
+    FindClose(find);
+    return true;
+}
+
 int64_t fl_fs_file_size(const char *path)
 {
     wchar_t *wide = widen(path);
@@ -190,6 +220,7 @@ int64_t fl_fs_file_size(const char *path)
 
 #else
 
+#include <dirent.h>
 #include <errno.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -247,6 +278,27 @@ bool fl_fs_exists(const char *path)
 {
     struct stat st;
     return path && stat(path, &st) == 0;
+}
+
+bool fl_fs_list_dir(const char *path, Fl_FsEntryFn fn, void *user_data)
+{
+    if (!path || !fn) return false;
+    DIR *dir = opendir(path);
+    if (!dir) return false;
+    char child[4096];
+    for (struct dirent *entry; (entry = readdir(dir)) != NULL; ) {
+        const char *name = entry->d_name;
+        if (!strcmp(name, ".") || !strcmp(name, "..")) continue;
+        bool directory = false;
+#if defined(DT_DIR)
+        if (entry->d_type == DT_DIR) directory = true;
+        else if (entry->d_type == DT_UNKNOWN || entry->d_type == DT_LNK)
+#endif
+            directory = fl_fs_join(child, sizeof(child), path, name) && directory_exists(child);
+        if (!fn(name, directory, user_data)) break;
+    }
+    closedir(dir);
+    return true;
 }
 
 int64_t fl_fs_file_size(const char *path)

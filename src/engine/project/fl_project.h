@@ -8,7 +8,22 @@ typedef uint64_t Fl_Id;
 typedef struct Fl_Project Fl_Project;
 
 /* Component schema ids are persistent; unknown schemas are preserved verbatim. */
-enum { FL_COMPONENT_TRANSFORM = 1, FL_COMPONENT_RECTANGLE = 2, FL_COMPONENT_TEXT = 3 };
+enum { FL_COMPONENT_TRANSFORM = 1, FL_COMPONENT_RECTANGLE = 2, FL_COMPONENT_TEXT = 3,
+       FL_COMPONENT_APPEARANCE = 4, FL_COMPONENT_GEOMETRY = 5, FL_COMPONENT_TYPOGRAPHY = 6,
+       FL_COMPONENT_IMAGE = 7 };
+/* Persistent media classes of imported assets. */
+typedef enum Fl_AssetKind { FL_ASSET_IMAGE = 1, FL_ASSET_VIDEO, FL_ASSET_AUDIO, FL_ASSET_FONT } Fl_AssetKind;
+#define FL_ASSET_EXTENSION_MAX 15
+/* Content-addressed media stored once as assets/<sha256>.<extension>. */
+typedef struct Fl_Asset {
+    Fl_Id id;
+    const char *name;           /* display name; never empty */
+    Fl_AssetKind kind;
+    unsigned char hash[32];     /* SHA-256 of the stored bytes; unique per project */
+    const char *extension;      /* canonical lowercase [a-z0-9]{1,15} */
+    uint64_t size;              /* stored bytes */
+    uint64_t width, height;     /* pixel dimensions for images; zero when not applicable */
+} Fl_Asset;
 /* Transform values are local to the parent, in scene pixels and radians. */
 typedef struct Fl_Transform { double x, y, width, height, rotation, scale_x, scale_y; } Fl_Transform;
 typedef struct Fl_Component { uint64_t type, version; size_t size; const unsigned char *data; } Fl_Component;
@@ -36,8 +51,11 @@ typedef enum Fl_OpKind {
     FL_OP_SCENE_ADD, FL_OP_SCENE_REMOVE, FL_OP_SCENE_RENAME, FL_OP_SCENE_MOVE,
     FL_OP_ENTITY_ADD, FL_OP_ENTITY_REMOVE, FL_OP_ENTITY_RENAME, FL_OP_ENTITY_PARENT,
     FL_OP_ENTITY_MOVE, FL_OP_ENTITY_VISIBLE, FL_OP_COMPONENT_SET, FL_OP_COMPONENT_REMOVE,
-    FL_OP_SCENE_SETTINGS
+    FL_OP_SCENE_SETTINGS, FL_OP_ENTITY_CONFIGURE, FL_OP_TRANSFORMS,
+    FL_OP_ASSET_ADD, FL_OP_ASSET_REMOVE, FL_OP_ASSET_RENAME
 } Fl_OpKind;
+/* One local transform replacement in an atomic selection gesture. */
+typedef struct Fl_TransformEdit { Fl_Id entity; Fl_Transform transform; } Fl_TransformEdit;
 /* Operations reference stable ids; position is a scene/entity array insertion index. */
 typedef struct Fl_Op {
     Fl_OpKind kind;
@@ -47,9 +65,15 @@ typedef struct Fl_Op {
     bool visible;
     Fl_Component component;
     uint64_t width, height, duration;
+    const Fl_Component *components; /* add/configure: merge these schemas, preserving others */
+    size_t component_count;
+    const Fl_TransformEdit *transforms; /* FL_OP_TRANSFORMS only */
+    size_t transform_count;
+    Fl_Id asset;                        /* asset remove/rename target */
+    const Fl_Asset *asset_record;       /* FL_OP_ASSET_ADD: copied record; its id is ignored */
 } Fl_Op;
 #define FL_EVENT_PROJECT_CHANGED "project.changed"
-typedef struct Fl_ProjectChange { Fl_Project *project; Fl_OpKind kind; Fl_Id scene, entity; } Fl_ProjectChange;
+typedef struct Fl_ProjectChange { Fl_Project *project; Fl_OpKind kind; Fl_Id scene, entity, asset; } Fl_ProjectChange;
 
 /* Create a new project directory exclusively; existing project files are never replaced. */
 Fl_Project *fl_project_create(const char *directory, const char *name, Fl_EventBus *bus);
@@ -75,6 +99,21 @@ const Fl_Scene *fl_project_scene(const Fl_Project *project, Fl_Id id);
 const Fl_Entity *fl_scene_entity(const Fl_Scene *scene, Fl_Id id);
 /* Borrow component of schema type from entity, or NULL. Valid until mutation. */
 const Fl_Component *fl_entity_component(const Fl_Entity *entity, uint64_t type);
+/* Return the number of assets in import order; zero for NULL. */
+size_t fl_project_asset_count(const Fl_Project *project);
+/* Borrow asset at index, by stable id, or by content hash; NULL when absent. Valid until mutation. */
+const Fl_Asset *fl_project_asset_at(const Fl_Project *project, size_t index);
+const Fl_Asset *fl_project_asset(const Fl_Project *project, Fl_Id id);
+const Fl_Asset *fl_project_asset_by_hash(const Fl_Project *project, const unsigned char hash[32]);
+/* Count components across all scenes that reference asset; referenced assets cannot be removed. */
+size_t fl_project_asset_uses(const Fl_Project *project, Fl_Id asset);
+/* Write the stored file path of asset into out; false when it does not fit. */
+bool fl_project_asset_path(const Fl_Project *project, const Fl_Asset *asset, char *out, size_t capacity);
+/* Build assets/<hex>.<extension> under directory for a hash/extension pair. */
+bool fl_asset_store_path(const char *directory, const unsigned char hash[32], const char *extension,
+                         char *out, size_t capacity);
+/* Validate a canonical stored-file extension. */
+bool fl_asset_extension_valid(const char *extension);
 /* Return whether project has changes beyond its committed manifest. */
 bool fl_project_dirty(const Fl_Project *project);
 /* Encode/decode the v1 transform component; no native struct bytes reach disk. */

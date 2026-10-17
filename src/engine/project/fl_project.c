@@ -1,5 +1,7 @@
 #include "fl_project.h"
+#include "schema/fl_widgets.h"
 #include "doc/fl_binary.h"
+#include "core/fl_sha256.h"
 #include "core/fl_thread.h"
 #include "platform/fl_fs.h"
 #include "platform/fl_paths.h"
@@ -15,9 +17,12 @@
 #include <unistd.h>
 #endif
 
+#define MANIFEST_VERSION 2
+
 struct Fl_EntityIndex { Fl_Id id; size_t position; };
 
 typedef struct Fl_Retired { Fl_Id id; uint64_t revision; } Fl_Retired;
+typedef struct Fl_RetiredAsset { unsigned char hash[32]; char extension[FL_ASSET_EXTENSION_MAX + 1]; } Fl_RetiredAsset;
 
 struct Fl_Project {
     char *directory, *name;
@@ -26,6 +31,10 @@ struct Fl_Project {
     size_t count;
     Fl_Retired *retired;
     size_t retired_count;
+    Fl_Asset *assets;
+    size_t asset_count;
+    Fl_RetiredAsset *retired_assets;
+    size_t retired_asset_count;
     uint64_t next_id, owner;
     Fl_EventBus *bus;
     Fl_EventType changed;
@@ -55,6 +64,12 @@ static void free_scene(Fl_Scene *scene)
 {
     for (size_t i = 0; i < scene->entity_count; ++i) free_entity((Fl_Entity *)&scene->entities[i]);
     free((void *)scene->entities); free((void *)scene->identity_index); free((void *)scene->name);
+}
+
+/* Release one asset record's owned strings. */
+static void free_asset(Fl_Asset *asset)
+{
+    free((void *)asset->name); free((void *)asset->extension);
 }
 
 /* Build a manifest or immutable scene snapshot path without accepting file names from disk. */
@@ -166,6 +181,75 @@ const Fl_Entity *fl_scene_entity(const Fl_Scene *s, Fl_Id id)
     }
     return NULL;
 }
+bool fl_asset_extension_valid(const char *extension)
+{
+    if (!extension) return false;
+    size_t length = 0;
+    for (; extension[length]; ++length)
+        if (length >= FL_ASSET_EXTENSION_MAX || !((extension[length] >= 'a' && extension[length] <= 'z') ||
+            (extension[length] >= '0' && extension[length] <= '9'))) return false;
+    return length > 0;
+}
+
+bool fl_asset_store_path(const char *directory, const unsigned char hash[32], const char *extension,
+                         char *out, size_t capacity)
+{
+    if (out && capacity) out[0] = 0;
+    if (!directory || !hash || !fl_asset_extension_valid(extension)) return false;
+    char hex[65], leaf[96], folder[FL_PATH_MAX];
+    fl_sha256_hex(hash, hex);
+    snprintf(leaf, sizeof(leaf), "%s.%s", hex, extension);
+    return fl_fs_join(folder, sizeof(folder), directory, "assets") && fl_fs_join(out, capacity, folder, leaf);
+}
+
+size_t fl_project_asset_count(const Fl_Project *p) { return p ? p->asset_count : 0; }
+const Fl_Asset *fl_project_asset_at(const Fl_Project *p, size_t i) { return p && i < p->asset_count ? &p->assets[i] : NULL; }
+const Fl_Asset *fl_project_asset(const Fl_Project *p, Fl_Id id)
+{
+    if (!p || !id) return NULL;
+    size_t low = 0, high = p->asset_count;
+    while (low < high) {
+        size_t mid = low + (high - low) / 2;
+        if (p->assets[mid].id == id) return &p->assets[mid];
+        if (p->assets[mid].id < id) low = mid + 1; else high = mid;
+    }
+    return NULL;
+}
+const Fl_Asset *fl_project_asset_by_hash(const Fl_Project *p, const unsigned char hash[32])
+{
+    if (p && hash) for (size_t i = 0; i < p->asset_count; ++i) if (!memcmp(p->assets[i].hash, hash, 32)) return &p->assets[i];
+    return NULL;
+}
+size_t fl_project_asset_uses(const Fl_Project *p, Fl_Id asset)
+{
+    size_t uses = 0;
+    for (size_t i = 0; p && asset && i < p->count; ++i)
+        for (size_t j = 0; j < p->scenes[i].entity_count; ++j) {
+            const Fl_Entity *e = &p->scenes[i].entities[j];
+            for (size_t k = 0; k < e->component_count; ++k) {
+                Fl_Id id;
+                if (fl_component_asset_reference(&e->components[k], &id, NULL) && id == asset) ++uses;
+            }
+        }
+    return uses;
+}
+bool fl_project_asset_path(const Fl_Project *p, const Fl_Asset *a, char *out, size_t capacity)
+{
+    return p && a && fl_asset_store_path(p->directory, a->hash, a->extension, out, capacity);
+}
+
+/* Require every asset reference in components to name an existing asset of the required kind. */
+static bool references_valid(const Fl_Project *p, const Fl_Component *components, size_t count)
+{
+    for (size_t i = 0; components && i < count; ++i) {
+        Fl_Id id; Fl_AssetKind kind;
+        if (!fl_component_asset_reference(&components[i], &id, &kind)) continue;
+        const Fl_Asset *asset = fl_project_asset(p, id);
+        if (!asset || asset->kind != kind) return false;
+    }
+    return true;
+}
+
 const Fl_Component *fl_entity_component(const Fl_Entity *e, uint64_t type)
 {
     if (e) for (size_t i = 0; i < e->component_count; ++i) if (e->components[i].type == type) return &e->components[i];
@@ -195,15 +279,36 @@ bool fl_transform_decode(const Fl_Component *c, Fl_Transform *out)
     *out = (Fl_Transform){v[0], v[1], v[2], v[3], v[4], v[5], v[6]}; return true;
 }
 
-/* Validate built-in schemas while retaining unknown versioned components unchanged. */
-static bool valid_component(const Fl_Component *c)
+/* Clone a component merge before committing a document mutation. */
+static bool merge_components(const Fl_Entity *entity, const Fl_Component *updates, size_t count,
+                             Fl_Component **out, size_t *out_count)
 {
-    if (!c->type || !c->version || (c->size && !c->data)) return false;
-    if (c->type <= FL_COMPONENT_TEXT && c->version != 1) return false;
-    if (c->type == FL_COMPONENT_TRANSFORM) { Fl_Transform t; return fl_transform_decode(c, &t); }
-    if (c->type == FL_COMPONENT_RECTANGLE) return c->size == 4;
-    if (c->type == FL_COMPONENT_TEXT) return c->size && !memchr(c->data, 0, c->size);
-    return true;
+    *out = NULL; *out_count = 0;
+    size_t existing = entity ? entity->component_count : 0;
+    if ((count && !updates) || count > SIZE_MAX - existing ||
+        existing + count > SIZE_MAX / sizeof(Fl_Component)) return false;
+    for (size_t i = 0; i < count; ++i) {
+        if (!fl_widget_component_valid(&updates[i])) return false;
+        for (size_t j = 0; j < i; ++j) if (updates[j].type == updates[i].type) return false;
+    }
+    Fl_Component *copy = calloc(existing + count, sizeof(*copy));
+    if (existing + count && !copy) return false;
+    for (size_t i = 0; i < existing + count; ++i) {
+        const Fl_Component *source = i < existing ? &entity->components[i] : &updates[i - existing];
+        if (i < existing) {
+            bool replaced = false;
+            for (size_t j = 0; j < count; ++j) replaced |= updates[j].type == source->type;
+            if (replaced) continue;
+        }
+        unsigned char *bytes = source->size ? malloc(source->size) : NULL;
+        if (source->size && !bytes) {
+            for (size_t j = 0; j < *out_count; ++j) free((void *)copy[j].data);
+            free(copy); *out_count = 0; return false;
+        }
+        if (source->size) memcpy(bytes, source->data, source->size);
+        copy[(*out_count)++] = *source; copy[*out_count - 1].data = bytes;
+    }
+    *out = copy; return true;
 }
 
 /* Return whether candidate is a descendant of ancestor in the validated hierarchy. */
@@ -271,24 +376,31 @@ bool fl_project_apply(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
     }
     case FL_OP_ENTITY_ADD: {
         if (!s || !op->name || !op->name[0] || (op->parent && !fl_scene_entity(s, op->parent)) ||
+            !references_valid(p, op->components, op->component_count) ||
             p->next_id == UINT64_MAX || s->entity_count >= SIZE_MAX / sizeof(*e) - 1) return false;
         char *name = copy_string(op->name);
-        Fl_Component *c = malloc(sizeof(*c)); unsigned char *bytes = malloc(56);
-        if (!name || !c || !bytes) { free(name); free(c); free(bytes); return false; }
+        unsigned char bytes[56];
         Fl_Transform t = {.width = 320, .height = 180, .scale_x = 1, .scale_y = 1};
-        fl_transform_encode(&t, bytes); *c = (Fl_Component){FL_COMPONENT_TRANSFORM, 1, 56, bytes};
-        if (!reserve_identity(s, s->entity_count + 1)) { free(name); free(c); free(bytes); return false; }
+        fl_transform_encode(&t, bytes);
+        Fl_Component base = {FL_COMPONENT_TRANSFORM, 1, 56, bytes};
+        Fl_Entity initial = {.components = &base, .component_count = 1}, prepared = {.name = name};
+        Fl_Component *c = NULL;
+        if (!name || !merge_components(&initial, op->components, op->component_count, &c, &prepared.component_count)) {
+            free(name); return false;
+        }
+        prepared.components = c;
+        if (!reserve_identity(s, s->entity_count + 1)) { free_entity(&prepared); return false; }
         Fl_Entity *entities = (Fl_Entity *)s->entities;
         if (s->entity_count == s->entity_capacity) {
             size_t capacity = s->entity_capacity ? s->entity_capacity : 8;
-            if (capacity > SIZE_MAX / 2 / sizeof(*entities)) { free(name); free(c); free(bytes); return false; }
+            if (capacity > SIZE_MAX / 2 / sizeof(*entities)) { free_entity(&prepared); return false; }
             capacity *= 2;
             entities = realloc(entities, capacity * sizeof(*entities));
-            if (!entities) { free(name); free(c); free(bytes); return false; }
+            if (!entities) { free_entity(&prepared); return false; }
             s->entity_capacity = capacity;
         }
         created = p->next_id++;
-        entities[s->entity_count++] = (Fl_Entity){created, op->parent, name, true, c, 1};
+        entities[s->entity_count++] = (Fl_Entity){created, op->parent, name, true, c, prepared.component_count};
         s->entities = entities;
         size_t slot = identity_hash(created, s->identity_capacity);
         Fl_EntityIndex *index = (Fl_EntityIndex *)s->identity_index;
@@ -333,7 +445,7 @@ bool fl_project_apply(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
         if (!e) return false;
         e->visible = op->visible; break;
     case FL_OP_COMPONENT_SET: {
-        if (!e || !valid_component(&op->component)) return false;
+        if (!e || !fl_widget_component_valid(&op->component) || !references_valid(p, &op->component, 1)) return false;
         unsigned char *bytes = op->component.size ? malloc(op->component.size) : NULL;
         if (op->component.size && !bytes) return false;
         if (bytes) memcpy(bytes, op->component.data, op->component.size);
@@ -352,6 +464,75 @@ bool fl_project_apply(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
         size_t index = (size_t)(c - e->components); free((void *)c->data);
         memmove(c, c + 1, (e->component_count - index - 1) * sizeof(*c)); --e->component_count; break;
     }
+    case FL_OP_ENTITY_CONFIGURE: {
+        if (!e || !op->name || !op->name[0] || !references_valid(p, op->components, op->component_count)) return false;
+        Fl_Entity prepared = {.name = copy_string(op->name)};
+        Fl_Component *components = NULL;
+        if (!prepared.name || !merge_components(e, op->components, op->component_count, &components, &prepared.component_count)) {
+            free((void *)prepared.name); return false;
+        }
+        prepared.components = components; prepared.id = e->id; prepared.parent = e->parent; prepared.visible = op->visible;
+        free_entity(e); *e = prepared; break;
+    }
+    case FL_OP_TRANSFORMS: {
+        typedef struct Target { Fl_Component *component; unsigned char *bytes; } Target;
+        if (!s || !op->transforms || !op->transform_count || op->transform_count > SIZE_MAX / sizeof(Target)) return false;
+        Target *targets = calloc(op->transform_count, sizeof(*targets));
+        if (!targets) return false;
+        bool valid = true;
+        for (size_t i = 0; valid && i < op->transform_count; ++i) {
+            const Fl_TransformEdit *edit = &op->transforms[i];
+            for (size_t j = 0; j < i; ++j) if (op->transforms[j].entity == edit->entity) valid = false;
+            Fl_Entity *entity = (Fl_Entity *)fl_scene_entity(s, edit->entity);
+            targets[i].component = (Fl_Component *)fl_entity_component(entity, FL_COMPONENT_TRANSFORM);
+            targets[i].bytes = malloc(56);
+            if (!targets[i].component || !targets[i].bytes) { valid = false; break; }
+            fl_transform_encode(&edit->transform, targets[i].bytes);
+            Fl_Component candidate = {FL_COMPONENT_TRANSFORM, 1, 56, targets[i].bytes};
+            valid &= fl_widget_component_valid(&candidate);
+        }
+        for (size_t i = 0; i < op->transform_count; ++i) {
+            if (valid) {
+                free((void *)targets[i].component->data);
+                *targets[i].component = (Fl_Component){FL_COMPONENT_TRANSFORM, 1, 56, targets[i].bytes};
+            } else free(targets[i].bytes);
+        }
+        free(targets); if (!valid) return false;
+        break;
+    }
+    case FL_OP_ASSET_ADD: {
+        const Fl_Asset *r = op->asset_record;
+        if (!r || !r->name || !r->name[0] || r->kind < FL_ASSET_IMAGE || r->kind > FL_ASSET_FONT ||
+            !fl_asset_extension_valid(r->extension) || fl_project_asset_by_hash(p, r->hash) ||
+            p->next_id == UINT64_MAX || p->asset_count >= SIZE_MAX / sizeof(Fl_Asset) - 1) return false;
+        char *name = copy_string(r->name), *extension = copy_string(r->extension);
+        Fl_Asset *assets = name && extension ? realloc(p->assets, (p->asset_count + 1) * sizeof(*assets)) : NULL;
+        if (!assets) { free(name); free(extension); return false; }
+        p->assets = assets;
+        created = p->next_id++;
+        Fl_Asset *a = &assets[p->asset_count++];
+        *a = *r; a->id = created; a->name = name; a->extension = extension;
+        break;
+    }
+    case FL_OP_ASSET_REMOVE: {
+        Fl_Asset *a = (Fl_Asset *)fl_project_asset(p, op->asset);
+        if (!a || fl_project_asset_uses(p, a->id) || p->retired_asset_count >= SIZE_MAX / sizeof(Fl_RetiredAsset) - 1) return false;
+        Fl_RetiredAsset *retired = realloc(p->retired_assets, (p->retired_asset_count + 1) * sizeof(*retired));
+        if (!retired) return false;
+        p->retired_assets = retired;
+        Fl_RetiredAsset *entry = &retired[p->retired_asset_count++];
+        memcpy(entry->hash, a->hash, 32); snprintf(entry->extension, sizeof(entry->extension), "%s", a->extension);
+        size_t index = (size_t)(a - p->assets);
+        free_asset(a);
+        memmove(a, a + 1, (p->asset_count - index - 1) * sizeof(*a)); --p->asset_count;
+        break;
+    }
+    case FL_OP_ASSET_RENAME: {
+        Fl_Asset *a = (Fl_Asset *)fl_project_asset(p, op->asset);
+        if (!a || !op->name || !op->name[0]) return false;
+        char *name = copy_string(op->name); if (!name) return false;
+        free((void *)a->name); a->name = name; break;
+    }
     case FL_OP_SCENE_SETTINGS:
         if (!s || !op->width || !op->height || op->width > 65536 || op->height > 65536 || !op->duration || op->duration > INT64_MAX) return false;
         s->width = op->width; s->height = op->height; s->duration = op->duration; break;
@@ -362,7 +543,8 @@ bool fl_project_apply(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
     if (out_id) *out_id = created;
     if (p->bus) {
         Fl_ProjectChange change = {p, op->kind, op->kind == FL_OP_SCENE_ADD ? created : op->scene,
-                                   op->kind == FL_OP_ENTITY_ADD ? created : op->entity};
+                                   op->kind == FL_OP_ENTITY_ADD ? created : op->entity,
+                                   op->kind == FL_OP_ASSET_ADD ? created : op->asset};
         p->publishing = true; fl_event_publish(p->bus, p->changed, &change, sizeof(change)); p->publishing = false;
     }
     return true;
@@ -385,7 +567,7 @@ static bool save_scene(const Fl_Project *p, const Fl_Scene *s)
             fl_binary_write(&b, c->data, c->size);
         }
     }
-    bool ok = project_path(p, s->id, s->revision, path) && fl_binary_save(&b, path, "FLSCENE\0");
+    bool ok = project_path(p, s->id, s->revision, path) && fl_binary_save(&b, path, "FLSCENE\0", 1);
     free(b.data); return ok;
 }
 
@@ -400,7 +582,14 @@ bool fl_project_save(Fl_Project *p)
     Fl_Binary b = {0};
     fl_binary_string(&b, p->name); fl_binary_u64(&b, p->next_id); fl_binary_u64(&b, p->count);
     for (size_t i = 0; i < p->count; ++i) { fl_binary_u64(&b, p->scenes[i].id); fl_binary_u64(&b, p->scenes[i].revision); }
-    bool ok = project_path(p, 0, 0, path) && fl_binary_save(&b, path, "FLPROJ\0\0");
+    fl_binary_u64(&b, p->asset_count);
+    for (size_t i = 0; i < p->asset_count; ++i) {
+        const Fl_Asset *a = &p->assets[i];
+        fl_binary_u64(&b, a->id); fl_binary_string(&b, a->name); fl_binary_u64(&b, (uint64_t)a->kind);
+        fl_binary_write(&b, a->hash, 32); fl_binary_string(&b, a->extension);
+        fl_binary_u64(&b, a->size); fl_binary_u64(&b, a->width); fl_binary_u64(&b, a->height);
+    }
+    bool ok = project_path(p, 0, 0, path) && fl_binary_save(&b, path, "FLPROJ\0\0", MANIFEST_VERSION);
     free(b.data);
     if (ok) {
         p->dirty = false;
@@ -412,6 +601,12 @@ bool fl_project_save(Fl_Project *p)
         for (size_t i = 0; i < p->retired_count; ++i)
             if (project_path(p, p->retired[i].id, p->retired[i].revision, path)) fl_fs_remove(path);
         free(p->retired); p->retired = NULL; p->retired_count = 0;
+        for (size_t i = 0; i < p->retired_asset_count; ++i) {
+            const Fl_RetiredAsset *r = &p->retired_assets[i];
+            if (!fl_project_asset_by_hash(p, r->hash) && fl_asset_store_path(p->directory, r->hash, r->extension, path, sizeof(path)))
+                fl_fs_remove(path);
+        }
+        free(p->retired_assets); p->retired_assets = NULL; p->retired_asset_count = 0;
     }
     return ok;
 }
@@ -446,7 +641,7 @@ static size_t read_count(Fl_Binary *b, size_t stride, size_t minimum)
 static bool load_scene(Fl_Project *p, Fl_Scene *s)
 {
     char path[FL_PATH_MAX]; Fl_Binary b;
-    if (!project_path(p, s->id, s->revision, path) || !fl_binary_load(&b, path, "FLSCENE\0")) return false;
+    if (!project_path(p, s->id, s->revision, path) || !fl_binary_load(&b, path, "FLSCENE\0", 1, NULL)) return false;
     uint64_t id = fl_binary_get_u64(&b), revision = fl_binary_get_u64(&b);
     s->name = fl_binary_get_string(&b);
     s->width = fl_binary_get_u64(&b); s->height = fl_binary_get_u64(&b); s->duration = fl_binary_get_u64(&b);
@@ -472,7 +667,7 @@ static bool load_scene(Fl_Project *p, Fl_Scene *s)
             unsigned char *data = c->size ? malloc(c->size) : NULL; c->data = data;
             if (c->size && !data) { b.failed = true; break; }
             fl_binary_read(&b, data, c->size);
-            if (!valid_component(c)) b.failed = true;
+            if (!fl_widget_component_valid(c)) b.failed = true;
             for (size_t k = 0; k < j; ++k) if (components[k].type == c->type) b.failed = true;
         }
     }
@@ -481,6 +676,65 @@ static bool load_scene(Fl_Project *p, Fl_Scene *s)
               s->duration && s->duration <= INT64_MAX;
     if (ok) ok = reserve_identity(s, s->entity_count);
     free(b.data); return ok;
+}
+
+/* Decode asset records in strictly ascending id order with unique content hashes. */
+static void load_assets(Fl_Project *p, Fl_Binary *b)
+{
+    p->asset_count = read_count(b, sizeof(Fl_Asset), 88);
+    p->assets = p->asset_count ? calloc(p->asset_count, sizeof(*p->assets)) : NULL;
+    if (p->asset_count && !p->assets) { p->asset_count = 0; b->failed = true; return; }
+    for (size_t i = 0; !b->failed && i < p->asset_count; ++i) {
+        Fl_Asset *a = &p->assets[i];
+        a->id = fl_binary_get_u64(b); a->name = fl_binary_get_string(b);
+        uint64_t kind = fl_binary_get_u64(b);
+        fl_binary_read(b, a->hash, 32); a->extension = fl_binary_get_string(b);
+        a->size = fl_binary_get_u64(b); a->width = fl_binary_get_u64(b); a->height = fl_binary_get_u64(b);
+        a->kind = kind >= FL_ASSET_IMAGE && kind <= FL_ASSET_FONT ? (Fl_AssetKind)kind : FL_ASSET_IMAGE;
+        if (b->failed || !a->id || a->id >= p->next_id || (i && a->id <= p->assets[i - 1].id) || !a->name || !a->name[0] ||
+            kind < FL_ASSET_IMAGE || kind > FL_ASSET_FONT || !fl_asset_extension_valid(a->extension)) b->failed = true;
+        for (size_t j = 0; !b->failed && j < i; ++j) if (!memcmp(p->assets[j].hash, a->hash, 32)) b->failed = true;
+    }
+}
+
+/* Parse assets/<64 hex>.<extension>; false for any other name. */
+static bool parse_store_name(const char *name, unsigned char hash[32], const char **extension)
+{
+    for (size_t i = 0; i < 64; ++i) {
+        char c = name[i];
+        int value = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
+        if (value < 0) return false;
+        if (i & 1) hash[i / 2] = (unsigned char)(hash[i / 2] | value); else hash[i / 2] = (unsigned char)(value << 4);
+    }
+    *extension = name + 65;
+    return name[64] == '.' && fl_asset_extension_valid(*extension);
+}
+
+typedef struct Fl_StoreSweep { const Fl_Project *project; char folder[FL_PATH_MAX]; } Fl_StoreSweep;
+
+/* Remove one unreferenced content-addressed file or abandoned import; other names are never touched. */
+static bool sweep_entry(const char *name, bool directory, void *data)
+{
+    Fl_StoreSweep *sweep = data;
+    if (directory) return true;
+    unsigned char hash[32]; const char *extension;
+    size_t length = strlen(name);
+    bool abandoned = !strncmp(name, ".import-", 8) && length > 12 && !strcmp(name + length - 4, ".tmp");
+    bool orphan = !abandoned && parse_store_name(name, hash, &extension);
+    if (orphan) {
+        const Fl_Asset *a = fl_project_asset_by_hash(sweep->project, hash);
+        orphan = !a || strcmp(a->extension, extension);
+    }
+    char path[FL_PATH_MAX];
+    if ((abandoned || orphan) && fl_fs_join(path, sizeof(path), sweep->folder, name)) fl_fs_remove(path);
+    return true;
+}
+
+/* Collect store files left by crashes or unsaved imports while the project lock is held. */
+static void sweep_asset_store(const Fl_Project *p)
+{
+    Fl_StoreSweep sweep = {.project = p};
+    if (fl_fs_join(sweep.folder, sizeof(sweep.folder), p->directory, "assets")) fl_fs_list_dir(sweep.folder, sweep_entry, &sweep);
 }
 
 /* Sort identity keys for duplicate detection across all scene documents. */
@@ -493,7 +747,8 @@ static int compare_ids(const void *a, const void *b)
 /* Validate identities and hierarchy; reject dangling parents and cycles before exposing the project. */
 static bool validate_project(const Fl_Project *p)
 {
-    size_t count = p->count;
+    if (p->asset_count > SIZE_MAX - p->count) return false;
+    size_t count = p->count + p->asset_count;
     for (size_t i = 0; i < p->count; ++i) {
         if (p->scenes[i].entity_count > SIZE_MAX - count) return false;
         count += p->scenes[i].entity_count;
@@ -502,12 +757,14 @@ static bool validate_project(const Fl_Project *p)
     Fl_Id *ids = count ? malloc(count * sizeof(*ids)) : NULL;
     if (count && !ids) return false;
     size_t n = 0;
+    for (size_t i = 0; i < p->asset_count; ++i) ids[n++] = p->assets[i].id;
     for (size_t i = 0; i < p->count; ++i) {
         const Fl_Scene *s = &p->scenes[i]; ids[n++] = s->id;
         unsigned char *state = s->entity_count ? calloc(s->entity_count, 1) : NULL;
         if (s->entity_count && !state) { free(ids); return false; }
         for (size_t j = 0; j < s->entity_count; ++j) {
             const Fl_Entity *e = &s->entities[j]; ids[n++] = e->id;
+            if (!references_valid(p, e->components, e->component_count)) { free(state); free(ids); return false; }
             const Fl_Entity *current = e;
             while (current && !state[current - s->entities]) {
                 state[current - s->entities] = 1;
@@ -536,8 +793,8 @@ Fl_Project *fl_project_open(const char *directory, Fl_EventBus *bus)
     if (!directory || !fl_fs_join(path, sizeof(path), directory, "project.flow") || !fl_fs_exists(path)) return NULL;
     Fl_Project *p = allocate_project(directory, bus);
     if (!p) return NULL;
-    Fl_Binary b;
-    if (!fl_binary_load(&b, path, "FLPROJ\0\0")) { fl_project_destroy(p); return NULL; }
+    Fl_Binary b; uint64_t version;
+    if (!fl_binary_load(&b, path, "FLPROJ\0\0", MANIFEST_VERSION, &version)) { fl_project_destroy(p); return NULL; }
     p->name = fl_binary_get_string(&b); p->next_id = fl_binary_get_u64(&b);
     p->count = read_count(&b, sizeof(Fl_Scene), 16);
     p->scenes = p->count ? calloc(p->count, sizeof(*p->scenes)) : NULL;
@@ -548,9 +805,11 @@ Fl_Project *fl_project_open(const char *directory, Fl_EventBus *bus)
         s->id = fl_binary_get_u64(&b); s->revision = fl_binary_get_u64(&b); p->saved[i] = s->revision;
         if (!s->id || s->id >= p->next_id || !s->revision || !load_scene(p, s)) b.failed = true;
     }
+    if (!b.failed && version >= 2) load_assets(p, &b);
     bool ok = !b.failed && b.cursor == b.size && p->name && p->name[0] && p->next_id && validate_project(p);
     free(b.data);
     if (!ok) { fl_project_destroy(p); return NULL; }
+    sweep_asset_store(p);
     return p;
 }
 
@@ -558,7 +817,9 @@ void fl_project_destroy(Fl_Project *p)
 {
     if (!p || p->publishing || p->owner != fl_thread_current_id()) return;
     for (size_t i = 0; i < p->count; ++i) free_scene(&p->scenes[i]);
+    for (size_t i = 0; i < p->asset_count; ++i) free_asset(&p->assets[i]);
     free(p->scenes); free(p->saved); free(p->retired); free(p->directory); free(p->name);
+    free(p->assets); free(p->retired_assets);
     if (p->lock) fclose(p->lock);
     free(p);
 }

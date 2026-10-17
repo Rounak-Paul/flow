@@ -1,7 +1,9 @@
 #pragma once
 
 #include "core/fl_event.h"
+#include "core/fl_job.h"
 #include "project/fl_project.h"
+#include "text/fl_fonts.h"
 
 #include <ca_dock.h>
 #include <causality.h>
@@ -11,8 +13,10 @@
 /*
  * Editor workspace — the dockable panel layout of the main window.
  *
- * Owns the causality dock and Flow's panels (Scene, the central group, and
- * Console), seeds the default arrangement and persists the user's layout. Dock changes are published on
+ * Owns the causality dock and Flow's panels (Scene, the central group,
+ * Widgets, Assets, Inspector and Console), the project's asset importer and
+ * the OS file-drop handler; seeds the default arrangement and persists the
+ * user's layout. Dock changes are published on
  * the application bus (FL_EVENT_DOCK_*), and persistence itself observes
  * FL_EVENT_DOCK_LAYOUT_CHANGED, saving shortly after the layout settles.
  */
@@ -32,6 +36,8 @@ typedef struct Fl_WorkspaceDesc {
     Fl_Project  *project;       /* open project; required */
     Ca_Window   *window;        /* main window; required                     */
     Fl_EventBus *bus;           /* application bus; required                 */
+    Fl_JobSystem *jobs;         /* worker pool for imports and decoding; required */
+    Fl_Fonts    *fonts;         /* font service bound to project; required   */
     const char  *layout_path;   /* persisted layout file, or NULL to disable */
 } Fl_WorkspaceDesc;
 

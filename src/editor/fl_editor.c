@@ -25,6 +25,7 @@
 struct Fl_Editor {
     Fl_EventBus      *bus;
     Fl_JobSystem     *jobs;
+    Fl_Fonts         *fonts;
     Ca_Instance      *instance;
     Ca_Stylesheet    *stylesheet;
     Ca_Window        *window;
@@ -219,7 +220,8 @@ static bool build_ui(Fl_Editor *editor)
     if (!persist) FL_LOG_WARN(LOG_TAG, "config directory unavailable; workspace layout will not persist");
 
     editor->workspace = fl_workspace_create(&(Fl_WorkspaceDesc){
-        .window = editor->window, .bus = editor->bus, .project = editor->project, .layout_path = persist ? layout : NULL,
+        .window = editor->window, .bus = editor->bus, .jobs = editor->jobs, .fonts = editor->fonts,
+        .project = editor->project, .layout_path = persist ? layout : NULL,
     });
     if (!editor->workspace) return false;
 
@@ -318,13 +320,18 @@ static bool start_jobs(Fl_Editor *editor)
         return false;
     }
     FL_LOG_INFO(LOG_TAG, "job system: %u workers", fl_jobs_worker_count(editor->jobs));
+    editor->fonts = fl_fonts_create(&(Fl_FontsDesc){.bus = editor->bus, .jobs = editor->jobs, .scan_system = true});
+    if (!editor->fonts) {
+        FL_LOG_ERROR(LOG_TAG, "failed to start the font service");
+        return false;
+    }
     return true;
 }
 
 /* Assemble independent style sections without exceeding C's literal-size limit. */
 static Ca_Stylesheet *create_stylesheet(void)
 {
-    const char *parts[] = {FL_STYLE_CSS_PALETTE, FL_STYLE_CSS_SYSTEM, FL_STYLE_CSS_COMPONENTS, FL_STYLE_CSS_SCENE};
+    const char *parts[] = {FL_STYLE_CSS_PALETTE, FL_STYLE_CSS_SYSTEM, FL_STYLE_CSS_COMPONENTS, FL_STYLE_CSS_SCENE, FL_STYLE_CSS_AUTHORING, FL_STYLE_CSS_ASSETS, FL_STYLE_CSS_FILE_BROWSER};
     size_t size = 1;
     for (size_t i = 0; i < sizeof(parts) / sizeof(parts[0]); ++i) size += strlen(parts[i]);
     char *css = malloc(size);
@@ -422,6 +429,17 @@ void fl_editor_destroy(Fl_Editor *editor)
     if (!editor) return;
     FL_LOG_INFO(LOG_TAG, "shutting down");
 
+    /* Job clients (workspace importer/preview, fonts) wait on their own jobs before the pool stops. */
+    fl_menubar_destroy(editor->menubar);
+    editor->menubar = NULL;
+    fl_workspace_destroy(editor->workspace);
+    editor->workspace = NULL;
+    fl_launcher_destroy(editor->launcher); editor->launcher = NULL;
+    if (editor->project) fl_project_save(editor->project);
+    fl_project_destroy(editor->project); editor->project = NULL;
+    fl_fonts_destroy(editor->fonts);
+    editor->fonts = NULL;
+
     if (editor->jobs && !fl_jobs_destroy(editor->jobs))
         FL_LOG_ERROR(LOG_TAG, "job system destroyed from a worker thread");
     editor->jobs = NULL;
@@ -431,14 +449,6 @@ void fl_editor_destroy(Fl_Editor *editor)
     editor->termination_watched = false;
     if (editor->log_bridge.id) fl_log_remove_sink(editor->log_bridge);
     editor->log_bridge = (Fl_LogSink){0};
-
-    fl_menubar_destroy(editor->menubar);
-    editor->menubar = NULL;
-    fl_workspace_destroy(editor->workspace);
-    editor->workspace = NULL;
-    fl_launcher_destroy(editor->launcher); editor->launcher = NULL;
-    if (editor->project) fl_project_save(editor->project);
-    fl_project_destroy(editor->project); editor->project = NULL;
     ca_effect_destroy(editor->bus_pump);
     editor->bus_pump = NULL;
     fl_atomic_store_u32(&editor->ui_ready, 0u);

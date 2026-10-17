@@ -45,11 +45,32 @@ function(flow_target_warnings target)
     endif()
 endfunction()
 
+# Bundled default scene face, embedded at build time.
+set(FLOW_EMBEDDED_FONT_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/generated/fl_embedded_inter.c")
+add_custom_command(
+    OUTPUT "${FLOW_EMBEDDED_FONT_SOURCE}"
+    COMMAND ${CMAKE_COMMAND} -DINPUT=${PROJECT_SOURCE_DIR}/vendors/inter/Inter-Regular.ttf
+            -DOUTPUT=${FLOW_EMBEDDED_FONT_SOURCE} -DSYMBOL=fl_embedded_inter_regular
+            -P ${PROJECT_SOURCE_DIR}/cmake/embed_file.cmake
+    DEPENDS "${PROJECT_SOURCE_DIR}/vendors/inter/Inter-Regular.ttf" "${PROJECT_SOURCE_DIR}/cmake/embed_file.cmake"
+    COMMENT "Embedding Inter-Regular.ttf"
+    VERBATIM)
+
 # Engine: platform-independent core with no UI dependency.
 file(GLOB_RECURSE FLOW_ENGINE_SOURCES CONFIGURE_DEPENDS src/engine/*.c)
-add_library(flow_engine STATIC ${FLOW_ENGINE_SOURCES})
+add_library(flow_engine STATIC ${FLOW_ENGINE_SOURCES} "${FLOW_EMBEDDED_FONT_SOURCE}")
 target_include_directories(flow_engine PUBLIC "${PROJECT_SOURCE_DIR}/src/engine")
-target_link_libraries(flow_engine PUBLIC Threads::Threads)
+target_include_directories(flow_engine SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/vendors/stb")
+target_link_libraries(flow_engine PUBLIC Threads::Threads PRIVATE freetype)
+if(APPLE)
+    target_link_libraries(flow_engine PRIVATE "-framework CoreText" "-framework CoreFoundation")
+elseif(UNIX)
+    find_package(Fontconfig QUIET)
+    if(Fontconfig_FOUND)
+        target_link_libraries(flow_engine PRIVATE Fontconfig::Fontconfig)
+        target_compile_definitions(flow_engine PRIVATE FLOW_HAS_FONTCONFIG)
+    endif()
+endif()
 # Strict C11 hides POSIX/OS extensions the platform layer needs.
 target_compile_definitions(flow_engine PRIVATE
     $<$<PLATFORM_ID:Linux>:_GNU_SOURCE>
@@ -65,7 +86,7 @@ file(GLOB_RECURSE FLOW_EDITOR_SOURCES CONFIGURE_DEPENDS src/editor/*.c)
 add_library(flow_editor STATIC ${FLOW_EDITOR_SOURCES})
 target_include_directories(flow_editor PUBLIC "${PROJECT_SOURCE_DIR}/src/editor")
 target_include_directories(flow_editor SYSTEM PRIVATE $<TARGET_PROPERTY:VulkanMemoryAllocator,INTERFACE_INCLUDE_DIRECTORIES>)
-target_link_libraries(flow_editor PUBLIC flow_engine PRIVATE causality Vulkan::Vulkan VulkanMemoryAllocator)
+target_link_libraries(flow_editor PUBLIC flow_engine PRIVATE causality Vulkan::Vulkan VulkanMemoryAllocator freetype)
 # causality is linked statically into the executable, so its public symbols
 # must resolve as plain declarations rather than DLL imports on Windows.
 target_compile_definitions(flow_editor PRIVATE

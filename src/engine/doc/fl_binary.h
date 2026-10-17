@@ -22,7 +22,8 @@ uint64_t fl_binary_get_u64(Fl_Binary *stream);
 void fl_binary_string(Fl_Binary *stream, const char *text);
 /* Read an allocated, terminated string; reject embedded NUL bytes. Caller frees. */
 char *fl_binary_get_string(Fl_Binary *stream);
-/* Atomically write a versioned, checksummed file with the eight-byte magic. */
-bool fl_binary_save(Fl_Binary *stream, const char *path, const char magic[8]);
-/* Load and validate a file into an owning stream, positioned after its header. */
-bool fl_binary_load(Fl_Binary *stream, const char *path, const char magic[8]);
+/* Atomically write a checksummed file with the eight-byte magic and payload format version (>= 1). */
+bool fl_binary_save(Fl_Binary *stream, const char *path, const char magic[8], uint64_t version);
+/* Load and validate a file into an owning stream, positioned after its header.
+   Accepts payload versions 1..max_version; out_version (optional) receives the stored version. */
+bool fl_binary_load(Fl_Binary *stream, const char *path, const char magic[8], uint64_t max_version, uint64_t *out_version);

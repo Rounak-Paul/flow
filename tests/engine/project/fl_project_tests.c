@@ -24,7 +24,7 @@ static void fixture(const char *dir, Fl_Id parent, bool duplicate)
     fl_binary_string(&b, "Fixture"); fl_binary_u64(&b, 9); fl_binary_u64(&b, 1);
     fl_binary_u64(&b, 1); fl_binary_u64(&b, 1);
     CHECK(fl_fs_join(path, sizeof(path), dir, "project.flow"));
-    CHECK(fl_binary_save(&b, path, "FLPROJ\0\0")); free(b.data); b = (Fl_Binary){0};
+    CHECK(fl_binary_save(&b, path, "FLPROJ\0\0", 1)); free(b.data); b = (Fl_Binary){0};
     fl_binary_u64(&b, 1); fl_binary_u64(&b, 1); fl_binary_string(&b, "Scene");
     fl_binary_u64(&b, 1920); fl_binary_u64(&b, 1080); fl_binary_u64(&b, 600000); fl_binary_u64(&b, 2);
     for (size_t i = 0; i < 2; ++i) {
@@ -32,7 +32,7 @@ static void fixture(const char *dir, Fl_Id parent, bool duplicate)
         fl_binary_string(&b, "Entity"); fl_binary_u64(&b, 1); fl_binary_u64(&b, 0);
     }
     CHECK(fl_fs_join(path, sizeof(path), dir, "scenes/0000000000000001-0000000000000001.flscene"));
-    CHECK(fl_binary_save(&b, path, "FLSCENE\0")); free(b.data);
+    CHECK(fl_binary_save(&b, path, "FLSCENE\0", 1)); free(b.data);
 }
 
 /* Exercise model ownership, mutation validation, transaction persistence and corrupt-input rejection. */

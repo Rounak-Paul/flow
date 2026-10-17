@@ -1,7 +1,10 @@
 #include "fl_workspace.h"
 
+#include "fl_asset_panel.h"
 #include "fl_console.h"
 #include "fl_scene_panel.h"
+#include "fl_widget_library.h"
+#include "fl_inspector.h"
 #include "style.h"
 
 #include "core/fl_clock.h"
@@ -16,13 +19,20 @@
 #define SAVE_SETTLE_SECONDS 0.75
 #define SAVE_SETTLE_NS      750000000ull
 #define SCENE_PANEL_ID      "scene"
+#define ASSETS_PANEL_ID     "assets"
 
 struct Fl_Workspace {
     Ca_Instance *instance;
     Fl_EventBus *bus;
     Ca_Dock     *dock;
     Fl_Console  *console;
+    Fl_SceneEdit *edit;
     Fl_ScenePanel *scene;
+    Fl_WidgetLibrary *widgets;
+    Fl_Inspector *inspector;
+    Fl_AssetImporter *importer;
+    Fl_AssetPanel *assets;
+    Fl_Fonts    *fonts;
     Ca_Effect   *saver;
     char        *layout_path;
     char        *saved_layout;      /* read by the dock during mount */
@@ -53,6 +63,12 @@ static void seed_default_layout(Ca_DockLayout *layout, void *user_data)
     ca_dock_layout_set_root(layout, CA_DOCK_MAIN_WINDOW, root);
     ca_dock_layout_set_central(layout, scene);
     ca_dock_layout_set_split_size(layout, root, FL_STYLE_CONSOLE_HEIGHT);
+    int widgets=ca_dock_layout_find(layout,"widgets"),inspector=ca_dock_layout_find(layout,"inspector");
+    ca_dock_layout_dock_root(layout,CA_DOCK_MAIN_WINDOW,widgets,CA_DOCK_ZONE_LEFT,.16f);
+    ca_dock_layout_set_split_size(layout,ca_dock_layout_window_root(layout,CA_DOCK_MAIN_WINDOW),FL_STYLE_WIDGETS_W);
+    ca_dock_layout_add_tab(layout,ca_dock_layout_group_of(layout,widgets),ca_dock_layout_find(layout,ASSETS_PANEL_ID),-1);
+    ca_dock_layout_dock_root(layout,CA_DOCK_MAIN_WINDOW,inspector,CA_DOCK_ZONE_RIGHT,.22f);
+    ca_dock_layout_set_split_size(layout,ca_dock_layout_window_root(layout,CA_DOCK_MAIN_WINDOW),FL_STYLE_INSPECTOR_W);
 }
 
 /*
@@ -128,8 +144,40 @@ static bool register_events(Fl_Workspace *workspace)
     }).generation != 0;
 }
 
+/* Add newly introduced panels to existing layouts without resetting prior splits/floating windows. */
+static void migrate_authoring_layout(Fl_Workspace *workspace)
+{
+    if (!workspace->saved_layout) return;
+    Ca_DockLayout *layout=ca_dock_layout_create();if (!layout) return;
+    const char *ids[]={"scene","console","widgets","inspector",ASSETS_PANEL_ID};
+    bool valid=true;
+    for (size_t i=0;i<5;++i) valid &= ca_dock_layout_register(layout,ids[i])!=CA_DOCK_NONE;
+    bool changed=false;
+    if (valid&&ca_dock_layout_load(layout,workspace->saved_layout)) {
+        for (size_t i=2;i<5;++i) {
+            int panel=ca_dock_layout_find(layout,ids[i]);
+            if (ca_dock_layout_group_of(layout,panel)!=CA_DOCK_NONE||ca_dock_layout_home_of(layout,panel)!=CA_DOCK_NONE) continue;
+            int beside=i==4 ? ca_dock_layout_group_of(layout,ca_dock_layout_find(layout,"widgets")) : CA_DOCK_NONE;
+            if (beside!=CA_DOCK_NONE) { ca_dock_layout_add_tab(layout,beside,panel,-1); changed=true; continue; }
+            bool left=i!=3;
+            if (ca_dock_layout_dock_root(layout,CA_DOCK_MAIN_WINDOW,panel,left ? CA_DOCK_ZONE_LEFT : CA_DOCK_ZONE_RIGHT,.2f)) {
+                ca_dock_layout_set_split_size(layout,ca_dock_layout_window_root(layout,CA_DOCK_MAIN_WINDOW),
+                                              i==3 ? FL_STYLE_INSPECTOR_W : i==4 ? FL_STYLE_ASSETS_W : FL_STYLE_WIDGETS_W);
+                changed=true;
+            }
+        }
+        if (changed) {
+            size_t size=ca_dock_layout_save(layout,NULL,0);char *text=size ? malloc(size+1) : NULL;
+            if (text&&ca_dock_layout_save(layout,text,size+1)==size) {free(workspace->saved_layout);workspace->saved_layout=text;}
+            else free(text);
+        }
+    }
+    ca_dock_layout_destroy(layout);
+}
+
 static bool create_dock(Fl_Workspace *workspace, Ca_Window *window)
 {
+    migrate_authoring_layout(workspace);
     workspace->dock = ca_dock_create(window, &(Ca_DockDesc){
         .default_layout = seed_default_layout,
         .saved_layout   = workspace->saved_layout,
@@ -141,7 +189,16 @@ static bool create_dock(Fl_Workspace *workspace, Ca_Window *window)
         .id = SCENE_PANEL_ID, .title = "Scene", .build = fl_scene_panel_build, .teardown = fl_scene_panel_teardown,
         .user_data = workspace->scene,
     });
-    const bool console = scene && ca_dock_register_panel(workspace->dock, &(Ca_DockPanelDesc){
+    const bool widgets=scene&&ca_dock_register_panel(workspace->dock,&(Ca_DockPanelDesc){
+        .id="widgets",.title="Widgets",.dock_beside=SCENE_PANEL_ID,.build=fl_widget_library_build,
+        .teardown=fl_widget_library_teardown,.user_data=workspace->widgets});
+    const bool assets=widgets&&ca_dock_register_panel(workspace->dock,&(Ca_DockPanelDesc){
+        .id=ASSETS_PANEL_ID,.title="Assets",.dock_beside="widgets",.build=fl_asset_panel_build,
+        .teardown=fl_asset_panel_teardown,.user_data=workspace->assets});
+    const bool inspector=assets&&ca_dock_register_panel(workspace->dock,&(Ca_DockPanelDesc){
+        .id="inspector",.title="Inspector",.dock_beside=SCENE_PANEL_ID,.build=fl_inspector_build,
+        .teardown=fl_inspector_teardown,.user_data=workspace->inspector});
+    const bool console = inspector && ca_dock_register_panel(workspace->dock, &(Ca_DockPanelDesc){
         .id = FL_CONSOLE_PANEL_ID, .title = "Console", .dock_beside = SCENE_PANEL_ID,
         .build = fl_console_build_panel, .teardown = fl_console_teardown_panel,
         .user_data = workspace->console,
@@ -150,9 +207,20 @@ static bool create_dock(Fl_Workspace *workspace, Ca_Window *window)
     return console;
 }
 
+/*
+ * OS drop observer: every window of the instance forwards dropped files to
+ * the Assets panel, which imports them and places images dropped on the scene.
+ */
+static void on_files_dropped(Ca_Window *window, const char *const *paths, int count, float x, float y, void *user_data)
+{
+    (void)window;
+    Fl_Workspace *workspace = user_data;
+    fl_asset_panel_drop_files(workspace->assets, paths, count, x, y);
+}
+
 Fl_Workspace *fl_workspace_create(const Fl_WorkspaceDesc *desc)
 {
-    if (!desc || !desc->window || !desc->bus || !desc->project) return NULL;
+    if (!desc || !desc->window || !desc->bus || !desc->jobs || !desc->fonts || !desc->project) return NULL;
     Fl_Workspace *workspace = calloc(1, sizeof(*workspace));
     if (!workspace) return NULL;
     workspace->instance = ca_window_instance(desc->window);
@@ -179,8 +247,16 @@ Fl_Workspace *fl_workspace_create(const Fl_WorkspaceDesc *desc)
         fl_workspace_destroy(workspace);
         return NULL;
     }
-    workspace->scene = fl_scene_panel_create(desc->project, desc->bus);
-    if (!workspace->scene || !create_dock(workspace, desc->window)) {
+    workspace->fonts=desc->fonts;
+    fl_fonts_set_project(workspace->fonts,desc->project);
+    workspace->edit=fl_scene_edit_create(desc->project,desc->bus);
+    workspace->importer=fl_asset_importer_create(desc->project,desc->jobs,desc->bus);
+    workspace->scene=fl_scene_panel_create(workspace->edit,desc->fonts,desc->jobs,desc->bus);
+    workspace->widgets=fl_widget_library_create(workspace->edit,workspace->scene,desc->bus);
+    workspace->assets=fl_asset_panel_create(workspace->edit,workspace->scene,workspace->importer,desc->bus);
+    workspace->inspector=fl_inspector_create(workspace->edit,desc->fonts,desc->bus);
+    if (!workspace->edit||!workspace->importer||!workspace->scene||!workspace->widgets||!workspace->assets||
+        !workspace->inspector||!create_dock(workspace, desc->window)) {
         FL_LOG_ERROR(LOG_TAG, "failed to create the dock");
         fl_workspace_destroy(workspace);
         return NULL;
@@ -191,6 +267,7 @@ Fl_Workspace *fl_workspace_create(const Fl_WorkspaceDesc *desc)
         fl_workspace_destroy(workspace);
         return NULL;
     }
+    ca_instance_set_file_drop_handler(workspace->instance, on_files_dropped, workspace);
     return workspace;
 }
 
@@ -229,9 +306,16 @@ void fl_workspace_destroy(Fl_Workspace *workspace)
 {
     if (!workspace) return;
     if (workspace->mounted) fl_workspace_save(workspace);
+    if (workspace->instance) ca_instance_set_file_drop_handler(workspace->instance, NULL, NULL);
     ca_effect_destroy(workspace->saver);
     ca_dock_destroy(workspace->dock);
+    fl_widget_library_destroy(workspace->widgets);
+    fl_asset_panel_destroy(workspace->assets);
+    fl_inspector_destroy(workspace->inspector);
     fl_scene_panel_destroy(workspace->scene);
+    fl_asset_importer_destroy(workspace->importer);
+    fl_scene_edit_destroy(workspace->edit);
+    fl_fonts_set_project(workspace->fonts, NULL);
     fl_console_destroy(workspace->console);
     fl_event_unsubscribe_owner(workspace->bus, workspace);
     free(workspace->saved_layout);

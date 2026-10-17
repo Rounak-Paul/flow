@@ -79,5 +79,38 @@ char *fl_fs_read_file(const char *path, size_t max_size, size_t *out_size);
  */
 bool fl_fs_join(char *out, size_t cap, const char *dir, const char *name);
 
+/*
+ * Visitor for fl_fs_list_dir.
+ *
+ * name       Entry name (UTF-8, no directory part); never "." or "..".
+ * directory  true when the entry is a directory (symbolic links are followed).
+ * user_data  Pointer supplied to fl_fs_list_dir.
+ * Returns    false to stop the listing early.
+ */
+typedef bool (*Fl_FsEntryFn)(const char *name, bool directory, void *user_data);
+
+/*
+ * Enumerate a directory's entries in unspecified order.
+ *
+ * Returns  false when the directory cannot be opened; true otherwise, including
+ *          when the visitor stops early.
+ */
+bool fl_fs_list_dir(const char *path, Fl_FsEntryFn fn, void *user_data);
+
+/*
+ * Flush a stream written with fl_fs_fopen to stable storage.
+ *
+ * Returns  true when both the C buffer and the OS cache were flushed.
+ */
+bool fl_fs_flush(FILE *file);
+
+/*
+ * Rename a fully flushed file over path, then flush the parent directory so
+ * the new name survives a host crash.
+ *
+ * Returns  true when the rename was committed.
+ */
+bool fl_fs_commit(const char *from, const char *path);
+
 /* Resolve an existing path to an absolute UTF-8 path, writing at most cap bytes. */
 bool fl_fs_absolute(const char *path, char *out, size_t cap);
