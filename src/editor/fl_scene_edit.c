@@ -5,13 +5,16 @@
 
 typedef struct Fl_GestureTarget {
     Fl_TransformEdit initial;
+    Fl_Transform applied;       /* last value written by this gesture */
     Fl_Affine inverse, parent_inverse;
 } Fl_GestureTarget;
 struct Fl_SceneEdit {
     Fl_Project *project;
     Fl_EventBus *bus;
-    Fl_EventType selection_event;
+    Fl_EventType selection_event, time_event;
     Fl_Id scene;
+    Fl_Tick time;
+    Fl_SceneState state;
     Fl_Id *selection;
     size_t count;
     Fl_SceneGeometry geometry;
@@ -22,6 +25,13 @@ struct Fl_SceneEdit {
     double start_x, start_y;
     bool applying;
 };
+
+/* Publish a time change. */
+static void notify_time(Fl_SceneEdit *edit)
+{
+    Fl_TimeChange change = {edit, edit->time};
+    fl_event_publish(edit->bus, edit->time_event, &change, sizeof(change));
+}
 
 /* Publish selection changes after ids have been fully updated. */
 static void notify(Fl_SceneEdit *edit)
@@ -51,6 +61,8 @@ static bool document_changed(const Fl_Event *event, void *data)
     for (size_t i = 0; i < edit->count; ++i)
         if (fl_scene_entity(scene, edit->selection[i])) edit->selection[count++] = edit->selection[i];
     if (count != edit->count) { edit->count = count; notify(edit); }
+    Fl_Tick length = fl_scene_length(scene);
+    if (edit->time > length) { edit->time = length; notify_time(edit); }
     return false;
 }
 
@@ -61,8 +73,9 @@ Fl_SceneEdit *fl_scene_edit_create(Fl_Project *project, Fl_EventBus *bus)
     edit->project = project; edit->bus = bus;
     const Fl_Scene *scene = fl_project_scene_at(project, 0); edit->scene = scene ? scene->id : 0;
     edit->selection_event = fl_event_type_register(bus, FL_EVENT_SELECTION_CHANGED, sizeof(Fl_SelectionChange));
+    edit->time_event = fl_event_type_register(bus, FL_EVENT_TIME_CHANGED, sizeof(Fl_TimeChange));
     Fl_EventType changed = fl_event_type_register(bus, FL_EVENT_PROJECT_CHANGED, sizeof(Fl_ProjectChange));
-    if (edit->selection_event == FL_EVENT_TYPE_INVALID || changed == FL_EVENT_TYPE_INVALID ||
+    if (edit->selection_event == FL_EVENT_TYPE_INVALID || edit->time_event == FL_EVENT_TYPE_INVALID || changed == FL_EVENT_TYPE_INVALID ||
         !fl_event_subscribe(bus, &(Fl_SubscribeDesc){.type = changed, .fn = document_changed, .user_data = edit, .owner = edit}).generation) {
         free(edit); return NULL;
     }
@@ -72,7 +85,7 @@ void fl_scene_edit_destroy(Fl_SceneEdit *edit)
 {
     if (!edit) return;
     fl_event_unsubscribe_owner(edit->bus, edit); clear_gesture(edit);
-    fl_scene_geometry_clear(&edit->geometry); free(edit->selection); free(edit);
+    fl_scene_geometry_clear(&edit->geometry); fl_scene_state_clear(&edit->state); free(edit->selection); free(edit);
 }
 Fl_Project *fl_scene_edit_project(const Fl_SceneEdit *edit) { return edit ? edit->project : NULL; }
 Fl_Id fl_scene_edit_scene(const Fl_SceneEdit *edit) { return edit ? edit->scene : 0; }
@@ -102,11 +115,29 @@ bool fl_scene_edit_select(Fl_SceneEdit *edit, Fl_Id scene_id, Fl_Id id, bool add
     } else if (remove) {
         memmove(edit->selection+found, edit->selection+found+1, (count-found-1)*sizeof(*edit->selection)); --count;
     } else count = 0;
-    clear_gesture(edit); edit->scene = scene_id; edit->count = count; notify(edit); return true;
+    clear_gesture(edit); edit->scene = scene_id; edit->count = count; notify(edit);
+    if (!same_scene && edit->time) { edit->time = 0; notify_time(edit); }
+    return true;
+}
+Fl_Tick fl_scene_edit_time(const Fl_SceneEdit *edit) { return edit ? edit->time : 0; }
+void fl_scene_edit_set_time(Fl_SceneEdit *edit, Fl_Tick tick)
+{
+    if (!edit) return;
+    Fl_Tick length = fl_scene_length(fl_project_scene(edit->project, edit->scene));
+    tick = tick < 0 ? 0 : tick > length ? length : tick;
+    if (tick == edit->time) return;
+    edit->time = tick;
+    notify_time(edit);
+}
+const Fl_SceneState *fl_scene_edit_state(Fl_SceneEdit *edit)
+{
+    if (!edit || !fl_scene_state_update(&edit->state, fl_project_scene(edit->project, edit->scene), edit->time)) return NULL;
+    return &edit->state;
 }
 const Fl_SceneGeometry *fl_scene_edit_geometry(Fl_SceneEdit *edit)
 {
-    if (!edit || !fl_scene_geometry_update(&edit->geometry, fl_project_scene(edit->project, edit->scene))) return NULL;
+    const Fl_SceneState *state = fl_scene_edit_state(edit);
+    if (!edit || !fl_scene_geometry_update(&edit->geometry, fl_project_scene(edit->project, edit->scene), state)) return NULL;
     return &edit->geometry;
 }
 
@@ -129,7 +160,7 @@ bool fl_scene_edit_begin(Fl_SceneEdit *edit, Fl_EditGesture mode, double x, doub
         if (inherited) continue;
         const Fl_ResolvedEntity *v = &geometry->entities[entity-scene->entities];
         Fl_GestureTarget *target = &edit->targets[edit->target_count];
-        target->initial = (Fl_TransformEdit){entity->id,v->local}; target->inverse = v->inverse;
+        target->initial = (Fl_TransformEdit){entity->id,v->local}; target->applied = v->local; target->inverse = v->inverse;
         if (!v->invertible || !fl_affine_inverse(parent ? geometry->entities[parent-scene->entities].world : fl_affine_identity(), &target->parent_inverse)) {
             clear_gesture(edit); return false;
         }
@@ -176,19 +207,16 @@ bool fl_scene_edit_update(Fl_SceneEdit *edit, double x, double y)
         }
         edit->updates[i]=(Fl_TransformEdit){target->initial.entity,t};
     }
-    const Fl_Scene *scene=fl_project_scene(edit->project,edit->scene);
     bool changed=false;
-    for (size_t i=0;i<edit->target_count;++i) {
-        const Fl_Component *current=fl_entity_component(fl_scene_entity(scene,edit->updates[i].entity),FL_COMPONENT_TRANSFORM);
-        if (!current||current->size!=56) return false;
-        unsigned char bytes[56];fl_transform_encode(&edit->updates[i].transform,bytes);
-        changed|=memcmp(current->data,bytes,sizeof(bytes))!=0;
-    }
+    for (size_t i=0;i<edit->target_count;++i)
+        changed|=memcmp(&edit->targets[i].applied,&edit->updates[i].transform,sizeof(Fl_Transform))!=0;
     if (!changed) return true;
     edit->applying = true;
     bool ok = fl_project_apply(edit->project, &(Fl_Op){.kind=FL_OP_TRANSFORMS,.scene=edit->scene,
-        .transforms=edit->updates,.transform_count=edit->target_count},NULL);
-    edit->applying = false; return ok;
+        .transforms=edit->updates,.transform_count=edit->target_count,.keyed=true,.tick=edit->time},NULL);
+    edit->applying = false;
+    if (ok) for (size_t i=0;i<edit->target_count;++i) edit->targets[i].applied=edit->updates[i].transform;
+    return ok;
 }
 void fl_scene_edit_end(Fl_SceneEdit *edit, bool cancel)
 {

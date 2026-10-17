@@ -1,0 +1,155 @@
+#include "flow_test.h"
+#include "doc/fl_scene_geometry.h"
+#include "platform/fl_fs.h"
+#include "platform/fl_paths.h"
+#include "schema/fl_widgets.h"
+#include "time/fl_scene_state.h"
+#include <math.h>
+#include <string.h>
+
+#define SECOND ((Fl_Tick)FL_TICKS_PER_SECOND)
+
+/* Set a scalar key on entity at a beat-relative anchor. */
+static bool key(Fl_Project *p, Fl_Id scene, Fl_Id entity, Fl_AnimProperty prop, Fl_TimeAnchor at, double value, Fl_Ease ease, Fl_Id *id)
+{
+    return fl_project_apply(p, &(Fl_Op){.kind = FL_OP_KEY_SET, .scene = scene, .entity = entity, .property = prop,
+                                        .anchor = at, .value = {value, 0, 0, 0}, .ease = ease}, id);
+}
+
+/* Sample a scalar track. */
+static double sample(const Fl_Project *p, Fl_Id scene, Fl_Id entity, Fl_AnimProperty prop, Fl_Tick tick)
+{
+    const Fl_Scene *s = fl_project_scene(p, scene);
+    double v[4] = {NAN};
+    fl_track_sample(s, fl_scene_track(s, entity, prop), tick, v);
+    return v[0];
+}
+
+int main(int argc, char **argv)
+{
+    CHECK(argc == 2); if (argc != 2) return 1;
+    char manifest[FL_PATH_MAX];
+    CHECK(fl_fs_mkdir_p(argv[1]) && fl_fs_join(manifest, sizeof(manifest), argv[1], "project.flow")); fl_fs_remove(manifest);
+    Fl_Project *p = fl_project_create(argv[1], "Timeline", NULL);
+    CHECK(p != NULL); if (!p) return 1;
+    const Fl_Scene *s = fl_project_scene_at(p, 0);
+    Fl_Id scene = s->id, beat1 = s->beats[0].id, beat2 = 0, box = 0, group = 0, k = 0, k2 = 0;
+    CHECK(s->beat_count == 1 && fl_scene_length(s) == 5 * SECOND && !strcmp(s->beats[0].name, "Beat 1"));
+
+    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_BEAT_ADD, .scene = scene, .name = "Two", .position = 1, .beat_duration = 3 * SECOND}, &beat2));
+    CHECK(!fl_project_apply(p, &(Fl_Op){.kind = FL_OP_BEAT_ADD, .scene = scene, .name = "", .position = 0, .beat_duration = SECOND}, NULL));
+    CHECK(!fl_project_apply(p, &(Fl_Op){.kind = FL_OP_BEAT_ADD, .scene = scene, .name = "Zero", .position = 0, .beat_duration = 0}, NULL));
+    s = fl_project_scene(p, scene);
+    Fl_Tick start, end;
+    CHECK(s->beat_count == 2 && fl_scene_length(s) == 8 * SECOND && s->duration == 8 * SECOND);
+    CHECK(fl_scene_beat_range(s, beat2, &start, &end) && start == 5 * SECOND && end == 8 * SECOND);
+    Fl_TimeAnchor at = fl_anchor_at(s, 6 * SECOND);
+    CHECK(at.kind == FL_ANCHOR_BEAT && at.beat == beat2 && at.offset == SECOND && fl_anchor_resolve(s, &at) == 6 * SECOND);
+
+    CHECK(fl_widget_create(p, scene, 0, FL_WIDGET_GROUP, 0, 0, &group));
+    CHECK(fl_widget_create(p, scene, group, FL_WIDGET_RECTANGLE, 10, 20, &box));
+    Fl_TimeAnchor zero = {FL_ANCHOR_BEAT, beat1, false, 0}, one = {FL_ANCHOR_BEAT, beat1, false, SECOND};
+    CHECK(key(p, scene, box, FL_PROP_X, zero, 0, FL_EASE_LINEAR, &k));
+    CHECK(key(p, scene, box, FL_PROP_X, one, 100, FL_EASE_LINEAR, &k2));
+    CHECK(key(p, scene, box, FL_PROP_X, one, 120, FL_EASE_LINEAR, NULL) && fl_scene_track(fl_project_scene(p, scene), box, FL_PROP_X)->key_count == 2);
+    CHECK(key(p, scene, box, FL_PROP_X, one, 100, FL_EASE_LINEAR, NULL));
+    CHECK(!key(p, scene, box, FL_PROP_OPACITY, zero, 2, FL_EASE_LINEAR, NULL));
+    CHECK(!key(p, scene, 999999, FL_PROP_X, zero, 0, FL_EASE_LINEAR, NULL));
+    CHECK(!key(p, scene, box, FL_PROP_X, (Fl_TimeAnchor){FL_ANCHOR_BEAT, 424242, false, 0}, 0, FL_EASE_LINEAR, NULL));
+    CHECK(!fl_project_apply(p, &(Fl_Op){.kind = FL_OP_KEY_SET, .scene = scene, .entity = box, .property = FL_PROP_X, .anchor = zero, .ease = FL_EASE_COUNT}, NULL));
+    CHECK(fabs(sample(p, scene, box, FL_PROP_X, SECOND / 2) - 50) < 1e-9);
+    CHECK(sample(p, scene, box, FL_PROP_X, -SECOND) == 0 && sample(p, scene, box, FL_PROP_X, 3 * SECOND) == 100);
+    CHECK(fabs(fl_ease_apply(FL_EASE_IN_OUT, 0.5) - 0.5) < 1e-12 && fl_ease_apply(FL_EASE_IN, 0.5) < 0.5 && fl_ease_apply(FL_EASE_OUT, 0.5) > 0.5);
+    CHECK(key(p, scene, box, FL_PROP_X, zero, 0, FL_EASE_HOLD, NULL) && sample(p, scene, box, FL_PROP_X, SECOND - 1) == 0);
+    CHECK(key(p, scene, box, FL_PROP_X, zero, 0, FL_EASE_LINEAR, NULL));
+
+    /* Retiming the first beat moves keys anchored to later beats. */
+    CHECK(key(p, scene, box, FL_PROP_Y, (Fl_TimeAnchor){FL_ANCHOR_BEAT, beat2, false, SECOND}, 40, FL_EASE_LINEAR, NULL));
+    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_BEAT_UPDATE, .scene = scene, .beat = beat1, .name = "Intro", .beat_duration = 2 * SECOND}, NULL));
+    s = fl_project_scene(p, scene);
+    const Fl_Track *y = fl_scene_track(s, box, FL_PROP_Y);
+    CHECK(y && fl_anchor_resolve(s, &y->keys[0].at) == 3 * SECOND && fl_scene_length(s) == 5 * SECOND);
+
+    double black[4] = {0, 0, 0, 255}, white[4] = {255, 255, 255, 255}, mid[4];
+    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_KEY_SET, .scene = scene, .entity = box, .property = FL_PROP_FILL, .anchor = zero,
+        .value = {black[0], black[1], black[2], black[3]}}, NULL));
+    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_KEY_SET, .scene = scene, .entity = box, .property = FL_PROP_FILL, .anchor = one,
+        .value = {white[0], white[1], white[2], white[3]}}, NULL));
+    s = fl_project_scene(p, scene);
+    CHECK(fl_track_sample(s, fl_scene_track(s, box, FL_PROP_FILL), SECOND / 2, mid) && fabs(mid[0] - 187.5) < 1.5 && mid[3] == 255);
+
+    CHECK(key(p, scene, group, FL_PROP_OPACITY, zero, 0.5, FL_EASE_LINEAR, NULL) && key(p, scene, box, FL_PROP_OPACITY, zero, 0.5, FL_EASE_LINEAR, NULL));
+    Fl_SceneState state = {0}; Fl_SceneGeometry geometry = {0};
+    s = fl_project_scene(p, scene);
+    CHECK(fl_scene_state_update(&state, s, SECOND / 2) && fl_scene_geometry_update(&geometry, s, &state));
+    const Fl_Entity *e = fl_scene_entity(s, box);
+    size_t index = (size_t)(e - s->entities);
+    CHECK(fabs(state.entities[index].transform.x - 50) < 1e-9 && state.entities[index].appearance.fill[0] >= 186);
+    CHECK(fabs(geometry.entities[index].opacity - 0.25) < 1e-9 && geometry.animated && geometry.tick == SECOND / 2);
+    CHECK(fl_scene_geometry_update(&geometry, s, NULL) && geometry.entities[index].local.x == 10 && !geometry.animated);
+
+    /* Keyed edits: animated channels become keys at the tick, others change the base. */
+    Fl_Transform moved = state.entities[index].transform; moved.x = 70; moved.y = 33; moved.width = 400;
+    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_TRANSFORMS, .scene = scene, .transforms = &(Fl_TransformEdit){box, moved},
+        .transform_count = 1, .keyed = true, .tick = SECOND / 2}, NULL));
+    s = fl_project_scene(p, scene); e = fl_scene_entity(s, box);
+    Fl_Transform base; fl_transform_decode(fl_entity_component(e, FL_COMPONENT_TRANSFORM), &base);
+    CHECK(base.x == 10 && base.width == 400 && fl_scene_track(s, box, FL_PROP_X)->key_count == 3 && sample(p, scene, box, FL_PROP_X, SECOND / 2) == 70);
+    CHECK(fl_scene_track(s, box, FL_PROP_Y)->key_count == 2 && base.y == 20);
+    unsigned char alpha[8]; fl_opacity_encode(0.9, alpha);
+    Fl_Component opacity = {FL_COMPONENT_OPACITY, 1, 8, alpha};
+    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ENTITY_CONFIGURE, .scene = scene, .entity = box, .name = "Box", .visible = true,
+        .components = &opacity, .component_count = 1, .keyed = true, .tick = 2 * SECOND}, NULL));
+    s = fl_project_scene(p, scene); e = fl_scene_entity(s, box);
+    CHECK(fl_widget_opacity(e) == 1 && fl_scene_track(s, box, FL_PROP_OPACITY)->key_count == 2 && sample(p, scene, box, FL_PROP_OPACITY, 2 * SECOND) == 0.9);
+
+    /* Clips reference audio assets; referenced assets cannot be removed. */
+    Fl_Asset audio = {.name = "Voice", .kind = FL_ASSET_AUDIO, .hash = {7}, .extension = "wav", .size = 10, .duration = 2 * SECOND,
+                      .sample_rate = 48000, .channels = 1};
+    Fl_Asset picture = {.name = "Pic", .kind = FL_ASSET_IMAGE, .hash = {8}, .extension = "png", .size = 10, .width = 1, .height = 1};
+    Fl_Id voice, pic, clip;
+    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ASSET_ADD, .asset_record = &audio}, &voice));
+    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ASSET_ADD, .asset_record = &picture}, &pic));
+    Fl_AudioClip record = {.asset = voice, .start = {FL_ANCHOR_BEAT, beat2, false, 0}, .gain = 1, .fade_in = SECOND / 10};
+    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_CLIP_ADD, .scene = scene, .clip_record = &record}, &clip));
+    Fl_AudioClip bad = record; bad.asset = pic;
+    CHECK(!fl_project_apply(p, &(Fl_Op){.kind = FL_OP_CLIP_ADD, .scene = scene, .clip_record = &bad}, NULL));
+    bad = record; bad.gain = 9;
+    CHECK(!fl_project_apply(p, &(Fl_Op){.kind = FL_OP_CLIP_UPDATE, .scene = scene, .clip = clip, .clip_record = &bad}, NULL));
+    CHECK(fl_project_asset_uses(p, voice) == 1 && !fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ASSET_REMOVE, .asset = voice}, NULL));
+    record.gain = 0.5;
+    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_CLIP_UPDATE, .scene = scene, .clip = clip, .clip_record = &record}, NULL));
+
+    CHECK(fl_project_save(p));
+    fl_project_destroy(p);
+    p = fl_project_open(argv[1], NULL);
+    CHECK(p != NULL); if (!p) return 1;
+    s = fl_project_scene(p, scene);
+    CHECK(s && s->beat_count == 2 && !strcmp(s->beats[0].name, "Intro") && s->beats[0].duration == 2 * SECOND && fl_scene_length(s) == 5 * SECOND);
+    CHECK(s->track_count == 5 && fl_scene_track(s, box, FL_PROP_X)->key_count == 3 && sample(p, scene, box, FL_PROP_X, SECOND / 2) == 70);
+    CHECK(s->clip_count == 1 && s->clips[0].gain == 0.5 && s->clips[0].start.beat == beat2 && s->clips[0].fade_in == SECOND / 10);
+
+    /* Removing a beat keeps anchored times; the last beat cannot be removed. */
+    Fl_Tick before = fl_anchor_resolve(s, &fl_scene_track(s, box, FL_PROP_Y)->keys[0].at);
+    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_BEAT_REMOVE, .scene = scene, .beat = beat2}, NULL));
+    s = fl_project_scene(p, scene);
+    const Fl_Keyframe *moved_key = &fl_scene_track(s, box, FL_PROP_Y)->keys[0];
+    CHECK(moved_key->at.kind == FL_ANCHOR_ABSOLUTE && fl_anchor_resolve(s, &moved_key->at) == before);
+    CHECK(s->clips[0].start.kind == FL_ANCHOR_ABSOLUTE && fl_scene_length(s) == 2 * SECOND);
+    CHECK(!fl_project_apply(p, &(Fl_Op){.kind = FL_OP_BEAT_REMOVE, .scene = scene, .beat = beat1}, NULL));
+    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_SCENE_SETTINGS, .scene = scene, .width = 1920, .height = 1080, .duration = 4 * SECOND}, NULL));
+    s = fl_project_scene(p, scene);
+    CHECK(s->beats[0].duration == 4 * SECOND && fl_scene_length(s) == 4 * SECOND);
+
+    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_KEY_REMOVE, .scene = scene, .key = k}, NULL));
+    CHECK(!fl_project_apply(p, &(Fl_Op){.kind = FL_OP_KEY_REMOVE, .scene = scene, .key = k}, NULL));
+    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ENTITY_REMOVE, .scene = scene, .entity = group}, NULL));
+    s = fl_project_scene(p, scene);
+    CHECK(s->track_count == 0);
+    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_CLIP_REMOVE, .scene = scene, .clip = clip}, NULL) &&
+          fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ASSET_REMOVE, .asset = voice}, NULL));
+    CHECK(fl_project_save(p));
+    fl_scene_state_clear(&state); fl_scene_geometry_clear(&geometry);
+    fl_project_destroy(p);
+    return FLOW_TEST_RESULT("fl_timeline_tests");
+}

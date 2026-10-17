@@ -23,6 +23,7 @@ struct Fl_AssetPanel {
     Fl_AssetImporter *importer;
     Fl_JobSystem *jobs;
     Fl_AudioPlayer *player;
+    Fl_TimelinePanel *timeline;
     Fl_EventBus *bus;
     Fl_AssetThumbnails *thumbnails;
     Ca_Dock *dock;
@@ -291,8 +292,10 @@ static void row_menu(int index, void *data)
     Fl_AssetRow row = *(Fl_AssetRow *)data;
     const Fl_Asset *record = fl_project_asset(fl_scene_edit_project(row.panel->edit), row.asset);
     if (!record) return;
-    int action = record->kind == FL_ASSET_IMAGE ? index : index + 1;
-    if (action == 0) add_to_scene(row.panel, row.asset);
+    bool placeable = record->kind == FL_ASSET_IMAGE || record->kind == FL_ASSET_AUDIO;
+    int action = placeable ? index : index + 1;
+    if (action == 0 && record->kind == FL_ASSET_IMAGE) add_to_scene(row.panel, row.asset);
+    else if (action == 0) fl_timeline_panel_add_clip(row.panel->timeline, row.asset, fl_scene_edit_time(row.panel->edit));
     else if (action == 1) rename_asset(row.panel, row.asset);
     else if (action == 2) delete_asset(row.panel, row.asset);
 }
@@ -317,9 +320,10 @@ static void row_drag_end(const Ca_DragEvent *event, void *data)
     const Fl_Asset *record = fl_project_asset(fl_scene_edit_project(p->edit), row->asset);
     float x, y;
     Fl_SceneDropTarget target;
-    if (!record || record->kind != FL_ASSET_IMAGE) return;
-    if ((ca_window_mouse_release_position(event->window, 0, &x, &y) || ca_window_cursor_screen_position(event->window, &x, &y)) &&
-        fl_scene_panel_drop_target(p->scene, x, y, &target))
+    if (!record || (record->kind != FL_ASSET_IMAGE && record->kind != FL_ASSET_AUDIO)) return;
+    if (!ca_window_mouse_release_position(event->window, 0, &x, &y) && !ca_window_cursor_screen_position(event->window, &x, &y)) return;
+    if (record->kind == FL_ASSET_AUDIO) fl_timeline_panel_drop_asset(p->timeline, row->asset, x, y);
+    else if (fl_scene_panel_drop_target(p->scene, x, y, &target))
         fl_scene_edit_insert_image(p->edit, row->asset, target.parent, target.x, target.y, target.at_point);
 }
 
@@ -365,12 +369,12 @@ static bool project_changed(const Fl_Event *event, void *data)
 static void thumbnail_ready(void *data) { invalidate(data); }
 
 Fl_AssetPanel *fl_asset_panel_create(Fl_SceneEdit *edit, Fl_ScenePanel *scene, Fl_AssetImporter *importer,
-                                     Fl_JobSystem *jobs, Fl_AudioPlayer *player, Fl_EventBus *bus)
+                                     Fl_JobSystem *jobs, Fl_AudioPlayer *player, Fl_TimelinePanel *timeline, Fl_EventBus *bus)
 {
-    if (!edit || !scene || !importer || !jobs || !player || !bus) return NULL;
+    if (!edit || !scene || !importer || !jobs || !player || !timeline || !bus) return NULL;
     Fl_AssetPanel *p = calloc(1, sizeof(*p));
     if (!p) return NULL;
-    p->edit = edit; p->scene = scene; p->importer = importer; p->jobs = jobs; p->player = player; p->bus = bus;
+    p->edit = edit; p->scene = scene; p->importer = importer; p->jobs = jobs; p->player = player; p->timeline = timeline; p->bus = bus;
     if (!fl_event_subscribe(bus, &(Fl_SubscribeDesc){.type = fl_event_type_find(bus, FL_EVENT_ASSET_IMPORTED),
             .fn = imported, .user_data = p, .owner = p}).generation ||
         !fl_event_subscribe(bus, &(Fl_SubscribeDesc){.type = fl_event_type_find(bus, FL_EVENT_PROJECT_CHANGED),
@@ -435,9 +439,9 @@ static void emit_tile(Fl_AssetPanel *p, const Fl_Asset *a)
         snprintf(detail, sizeof(detail), "  %llu x %llu%s", (unsigned long long)a->width, (unsigned long long)a->height, length);
     else snprintf(detail, sizeof(detail), "%s", length);
     snprintf(tip, sizeof(tip), "%s\n%s%s  %s", a->name, label, detail, size);
-    bool image = a->kind == FL_ASSET_IMAGE;
+    bool image = a->kind == FL_ASSET_IMAGE, placeable = image || a->kind == FL_ASSET_AUDIO;
     ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_ASSET_TILE, .id = id,
-        .on_drag_end = image ? row_drag_end : NULL, .drag_data = row});
+        .on_drag_end = placeable ? row_drag_end : NULL, .drag_data = row});
     ca_btn_begin(&(Ca_BtnDesc){.direction = CA_VERTICAL, .on_click = row_clicked, .click_data = row,
         .style = p->selected == a->id ? FL_CLASS_ASSET_CARD_SELECTED : FL_CLASS_ASSET_CARD});
     ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_ASSET_PREVIEW});
@@ -457,9 +461,9 @@ static void emit_tile(Fl_AssetPanel *p, const Fl_Asset *a)
     }
     ca_div_end();
     ca_tooltip(&(Ca_TooltipDesc){.text = tip});
-    static const char *image_items[] = {"Add to scene", "Rename", "Delete"};
-    ca_context_menu(&(Ca_CtxMenuDesc){.items = image ? image_items : image_items + 1, .item_count = image ? 3 : 2,
-        .on_select = row_menu, .select_data = row});
+    static const char *image_items[] = {"Add to scene", "Rename", "Delete"}, *audio_items[] = {"Add to timeline", "Rename", "Delete"};
+    ca_context_menu(&(Ca_CtxMenuDesc){.items = image ? image_items : a->kind == FL_ASSET_AUDIO ? audio_items : image_items + 1,
+        .item_count = placeable ? 3 : 2, .on_select = row_menu, .select_data = row});
 }
 
 

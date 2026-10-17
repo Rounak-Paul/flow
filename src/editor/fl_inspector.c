@@ -7,12 +7,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { NAME,X,Y,WIDTH,HEIGHT,ROTATION,SCALE_X,SCALE_Y,FILL,STROKE,STROKE_WIDTH,FONT_SIZE,CONTENT,FONT_FILTER,FIELD_COUNT };
+enum { NAME,X,Y,WIDTH,HEIGHT,ROTATION,SCALE_X,SCALE_Y,FILL,STROKE,STROKE_WIDTH,FONT_SIZE,CONTENT,FONT_FILTER,OPACITY,FIELD_COUNT };
 #define WEIGHT_OPTIONS 32
 typedef struct Fl_InspectorField { struct Fl_Inspector *owner; char *value; } Fl_InspectorField;
 typedef struct Fl_FontChoice { struct Fl_Inspector *owner; size_t family; uint64_t generation; } Fl_FontChoice;
 struct Fl_Inspector {
     Fl_SceneEdit *edit;
+    Fl_Playback *playback;
     Fl_Fonts *fonts;
     Fl_EventBus *bus;
     Ca_Dock *dock;
@@ -28,7 +29,7 @@ struct Fl_Inspector {
     size_t weight_count;
     Fl_Id *image_options;
     size_t image_option_count;
-    Fl_EventType project_event;
+    Fl_EventType project_event, time_event, playback_event;
     bool visible,dirty,refresh,applying;
     char message[160];
 };
@@ -139,9 +140,11 @@ static void apply(Ca_Button *button,void *data)
         (def&&def->has_stroke&&(!color(p->fields[STROKE].value,appearance.stroke)||!number(p->fields[STROKE_WIDTH].value,&appearance.stroke_width)))||
         (def&&def->has_text&&!number(p->fields[FONT_SIZE].value,&appearance.font_size))) {status(p,"Check colour and appearance values.");return;}
     if (!p->fields[NAME].value||!p->fields[NAME].value[0]) {status(p,"Name cannot be empty.");return;}
-    unsigned char bytes[56],style[24],typography[3+FL_TYPOGRAPHY_FAMILY_MAX],image[8];
-    fl_transform_encode(&transform,bytes);fl_appearance_encode(&appearance,style);
-    Fl_Component components[5]={{FL_COMPONENT_TRANSFORM,1,56,bytes}};size_t count=1;
+    double opacity;
+    if (!number(p->fields[OPACITY].value,&opacity)||opacity<0||opacity>1) {status(p,"Opacity is between 0 and 1.");return;}
+    unsigned char bytes[56],style[24],typography[3+FL_TYPOGRAPHY_FAMILY_MAX],image[8],alpha[8];
+    fl_transform_encode(&transform,bytes);fl_appearance_encode(&appearance,style);fl_opacity_encode(opacity,alpha);
+    Fl_Component components[6]={{FL_COMPONENT_TRANSFORM,1,56,bytes},{FL_COMPONENT_OPACITY,1,8,alpha}};size_t count=2;
     if (def&&def->kind!=FL_WIDGET_GROUP&&def->kind!=FL_WIDGET_IMAGE) components[count++]=(Fl_Component){FL_COMPONENT_APPEARANCE,1,24,style};
     if (def&&def->has_text) {
         size_t size=fl_typography_encode(&p->typography,typography);
@@ -156,7 +159,8 @@ static void apply(Ca_Button *button,void *data)
     }
     p->applying=true;
     bool ok=fl_project_apply(fl_scene_edit_project(p->edit),&(Fl_Op){.kind=FL_OP_ENTITY_CONFIGURE,.scene=p->scene,.entity=p->entity,
-        .name=p->fields[NAME].value,.visible=p->visible,.components=components,.component_count=count},NULL);
+        .name=p->fields[NAME].value,.visible=p->visible,.components=components,.component_count=count,
+        .keyed=true,.tick=fl_scene_edit_time(p->edit)},NULL);
     p->applying=false;
     if (!ok) {status(p,"Invalid values or insufficient memory. Changes were not applied.");return;}
     p->dirty=false;p->refresh=true;status(p,"Saved");
@@ -190,13 +194,18 @@ static bool changed(const Fl_Event *event,void *data)
 /* Snapshot current values into controller-owned strings; no document pointers survive a build. */
 static bool load(Fl_Inspector *p,const Fl_Scene *scene,const Fl_Entity *entity)
 {
+    const Fl_SceneState *state=fl_scene_edit_state(p->edit);
+    bool evaluated=state&&state->scene==scene->id&&state->count==scene->entity_count;
+    const Fl_EntityState *now=evaluated ? &state->entities[entity-scene->entities] : NULL;
     Fl_Transform transform={.scale_x=1,.scale_y=1};
-    fl_transform_decode(fl_entity_component(entity,FL_COMPONENT_TRANSFORM),&transform);
+    if (now) transform=now->transform;
+    else fl_transform_decode(fl_entity_component(entity,FL_COMPONENT_TRANSFORM),&transform);
     double values[7]={transform.x,transform.y,transform.width,transform.height,transform.rotation*180/3.14159265358979323846,transform.scale_x,transform.scale_y};
     if (!field_set(&p->fields[NAME],entity->name)) return false;
     char text[96];
     for (size_t i=0;i<7;++i) {snprintf(text,sizeof(text),"%.9g",values[i]);if (!field_set(&p->fields[X+i],text)) return false;}
-    Fl_Appearance a=fl_widget_appearance(entity);
+    Fl_Appearance a=now ? now->appearance : fl_widget_appearance(entity);
+    snprintf(text,sizeof(text),"%.4g",now ? now->opacity : fl_widget_opacity(entity));if (!field_set(&p->fields[OPACITY],text)) return false;
     snprintf(text,sizeof(text),"#%02X%02X%02X%02X",a.fill[0],a.fill[1],a.fill[2],a.fill[3]);if (!field_set(&p->fields[FILL],text)) return false;
     snprintf(text,sizeof(text),"#%02X%02X%02X%02X",a.stroke[0],a.stroke[1],a.stroke[2],a.stroke[3]);if (!field_set(&p->fields[STROKE],text)) return false;
     snprintf(text,sizeof(text),"%.9g",a.stroke_width);if (!field_set(&p->fields[STROKE_WIDTH],text)) return false;
@@ -212,8 +221,13 @@ static bool load(Fl_Inspector *p,const Fl_Scene *scene,const Fl_Entity *entity)
 /* Emit one labelled retained draft field with its stable callback binding. */
 static void field(Fl_Inspector *p,int index,const char *label,bool numeric)
 {
+    static const int animated[FIELD_COUNT]={-1,FL_PROP_X,FL_PROP_Y,FL_PROP_WIDTH,FL_PROP_HEIGHT,FL_PROP_ROTATION,FL_PROP_SCALE_X,
+        FL_PROP_SCALE_Y,FL_PROP_FILL,FL_PROP_STROKE,FL_PROP_STROKE_WIDTH,FL_PROP_FONT_SIZE,-1,-1,FL_PROP_OPACITY};
+    const Fl_Scene *scene=fl_project_scene(fl_scene_edit_project(p->edit),p->scene);
+    bool keyed=animated[index]>=0&&fl_scene_track(scene,p->entity,(Fl_AnimProperty)animated[index]);
+    char text[64];snprintf(text,sizeof(text),keyed ? "%s " CA_ICON_NF_FA_DIAMOND : "%s",label);
     ca_div_begin(&(Ca_DivDesc){.direction=CA_HORIZONTAL,.style=FL_CLASS_PROPERTY_ROW});
-    ca_text(&(Ca_TextDesc){.text=label,.style=FL_CLASS_PROPERTY_LABEL});
+    ca_text(&(Ca_TextDesc){.text=text,.style=keyed ? FL_CLASS_PROPERTY_LABEL_KEYED : FL_CLASS_PROPERTY_LABEL});
     char id[32];snprintf(id,sizeof(id),"property-%d",index);
     ca_input(&(Ca_InputDesc){.text=p->fields[index].value,.id=id,.style=FL_CLASS_PROPERTY_INPUT,
         .input_mode=numeric ? CA_INPUT_FLOAT : CA_INPUT_TEXT,.on_change=edited,.change_data=&p->fields[index]});
@@ -226,14 +240,28 @@ static bool fonts_changed(const Fl_Event *event,void *data)
     if (change->fonts==p->fonts&&p->dock) ca_dock_invalidate_panel(p->dock,"inspector");
     return false;
 }
-Fl_Inspector *fl_inspector_create(Fl_SceneEdit *edit,Fl_Fonts *fonts,Fl_EventBus *bus)
+/* Show values at the new time unless playing or holding unsaved drafts; refresh when playback stops. */
+static bool timing_changed(const Fl_Event *event,void *data)
 {
-    if (!edit||!fonts||!bus) return NULL;
+    Fl_Inspector *p=data;
+    if (event->type==p->time_event&&(fl_playback_playing(p->playback)||p->dirty)) return false;
+    if (event->type==p->playback_event&&((const Fl_PlaybackChange *)event->payload)->playing) return false;
+    if (!p->dirty) p->refresh=true;
+    if (p->dock) ca_dock_invalidate_panel(p->dock,"inspector");
+    return false;
+}
+Fl_Inspector *fl_inspector_create(Fl_SceneEdit *edit,Fl_Fonts *fonts,Fl_Playback *playback,Fl_EventBus *bus)
+{
+    if (!edit||!fonts||!playback||!bus) return NULL;
     Fl_Inspector *p=calloc(1,sizeof(*p));if (!p) return NULL;
-    p->edit=edit;p->fonts=fonts;p->bus=bus;p->refresh=true;
+    p->edit=edit;p->fonts=fonts;p->playback=playback;p->bus=bus;p->refresh=true;
     for (int i=0;i<FIELD_COUNT;++i) p->fields[i].owner=p;
     for (size_t i=0;i<FL_STYLE_FONT_LIST_LIMIT;++i) p->choices[i].owner=p;
     p->project_event=fl_event_type_find(bus,FL_EVENT_PROJECT_CHANGED);
+    p->time_event=fl_event_type_find(bus,FL_EVENT_TIME_CHANGED);
+    p->playback_event=fl_event_type_find(bus,FL_EVENT_PLAYBACK_CHANGED);
+    for (int i=0;i<2;++i) if (!fl_event_subscribe(bus,&(Fl_SubscribeDesc){.type=i ? p->playback_event : p->time_event,
+        .fn=timing_changed,.user_data=p,.owner=p}).generation) {fl_inspector_destroy(p);return NULL;}
     const char *events[]={FL_EVENT_PROJECT_CHANGED,FL_EVENT_SELECTION_CHANGED};
     for (size_t i=0;i<2;++i) if (!fl_event_subscribe(bus,&(Fl_SubscribeDesc){.type=fl_event_type_find(bus,events[i]),
         .fn=changed,.user_data=p,.owner=p}).generation) {fl_inspector_destroy(p);return NULL;}
@@ -376,6 +404,7 @@ void fl_inspector_build(Ca_Dock *dock,Ca_Window *window,void *data)
     ca_text(&(Ca_TextDesc){.text="Transform",.style=FL_CLASS_HEADING});
     const char *labels[]={"X","Y","Width","Height","Rotation °","Scale X","Scale Y"};
     for (size_t i=0;i<7;++i) field(p,X+(int)i,labels[i],true);
+    field(p,OPACITY,"Opacity",true);
     if (def&&(def->has_fill||def->has_stroke)) ca_text(&(Ca_TextDesc){.text="Appearance",.style=FL_CLASS_HEADING});
     if (def&&def->has_fill) field(p,FILL,"Fill",false);
     if (def&&def->has_stroke) {field(p,STROKE,"Stroke",false);field(p,STROKE_WIDTH,"Stroke px",true);}

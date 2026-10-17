@@ -1,6 +1,7 @@
 #include "flow_test.h"
 #include "core/fl_clock.h"
 #include "media/fl_audio.h"
+#include "media/fl_audio_mixer.h"
 #include "media/fl_audio_player.h"
 #include "media/fl_thumbnail.h"
 #include "project/fl_asset_import.h"
@@ -148,6 +149,28 @@ static void test_player(const char *wav)
     fl_event_bus_destroy(bus);
 }
 
+static void test_mixer(const char *wav)
+{
+    Fl_AudioMixer *mixer = fl_audio_mixer_create(&(Fl_AudioMixerDesc){.silent = true});
+    CHECK(mixer != NULL); if (!mixer) return;
+    Fl_Tick tick = -1;
+    CHECK(!fl_audio_mixer_position(mixer, &tick));
+    Fl_MixerClip clips[2] = {{.start = FL_TICKS_PER_SECOND / 10, .gain = 1, .fade_in = FL_TICKS_PER_SECOND / 20},
+                             {.start = 0, .source_offset = FL_TICKS_PER_SECOND / 20, .duration = FL_TICKS_PER_SECOND / 10, .gain = 0.5}};
+    snprintf(clips[0].path, sizeof(clips[0].path), "%s", wav); snprintf(clips[1].path, sizeof(clips[1].path), "%s", wav);
+    Fl_Tick from = FL_TICKS_PER_SECOND / 20;
+    CHECK(fl_audio_mixer_start(mixer, clips, 2, from));
+    CHECK(fl_audio_mixer_position(mixer, &tick) && tick >= from);
+    Fl_Tick later = tick;
+    for (uint64_t deadline = fl_clock_monotonic_ns() + UINT64_C(3000000000); later < from + FL_TICKS_PER_SECOND / 10 &&
+         fl_clock_monotonic_ns() < deadline; ) fl_audio_mixer_position(mixer, &later);
+    CHECK(later >= from + FL_TICKS_PER_SECOND / 10);
+    CHECK(fl_audio_mixer_start(mixer, clips, 2, 10 * FL_TICKS_PER_SECOND));
+    fl_audio_mixer_stop(mixer);
+    CHECK(!fl_audio_mixer_position(mixer, &tick));
+    fl_audio_mixer_destroy(mixer);
+}
+
 int main(int argc, char **argv)
 {
     CHECK(argc == 2); if (argc != 2) return 1;
@@ -160,5 +183,6 @@ int main(int argc, char **argv)
     test_decode(wav, broken);
     test_import(argv[1], wav, broken);
     test_player(wav);
+    test_mixer(wav);
     return FLOW_TEST_RESULT("fl_audio_tests");
 }

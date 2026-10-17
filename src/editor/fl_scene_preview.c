@@ -53,6 +53,7 @@ struct Fl_ScenePreview {
     size_t text_count;
     Fl_Id text_scene;
     uint64_t text_revision, text_generation;
+    Fl_Tick text_tick;
     Fl_CachedImage *pictures;
     size_t picture_count, picture_capacity;
     Fl_Id picture_scene;
@@ -198,10 +199,11 @@ static Fl_GpuImage *rasterize_text(Fl_ScenePreview *p,const Fl_CachedText *entry
 }
 
 /* Prepare text masks only when content/box/font changes, preserving them on colour edits. */
-static void prepare_texts(Fl_ScenePreview *p,const Fl_Scene *scene)
+static void prepare_texts(Fl_ScenePreview *p,const Fl_Scene *scene,const Fl_SceneState *state)
 {
     uint64_t generation=fl_fonts_generation(p->fonts);
-    if (p->text_scene==scene->id&&p->text_revision==scene->revision&&p->text_generation==generation) return;
+    Fl_Tick tick=state ? state->tick : 0;
+    if (p->text_scene==scene->id&&p->text_revision==scene->revision&&p->text_generation==generation&&p->text_tick==tick) return;
     bool fonts_changed=p->text_generation!=generation;
     if (fonts_changed) fl_text_rasterizer_flush(p->rasterizer);
     size_t count=0;
@@ -214,8 +216,10 @@ static void prepare_texts(Fl_ScenePreview *p,const Fl_Scene *scene)
         const Fl_Entity *e=&scene->entities[i];const Fl_Component *text=fl_entity_component(e,FL_COMPONENT_TEXT);
         if (!text) continue;
         Fl_Transform t;Fl_CachedText *entry=&next[at++];entry->entity=e->id;
-        if (!fl_transform_decode(fl_entity_component(e,FL_COMPONENT_TRANSFORM),&t)) continue;
-        entry->length=text->size;entry->width=t.width;entry->height=t.height;entry->font_size=fl_widget_appearance(e).font_size;
+        if (state) t=state->entities[i].transform;
+        else if (!fl_transform_decode(fl_entity_component(e,FL_COMPONENT_TRANSFORM),&t)) continue;
+        entry->length=text->size;entry->width=t.width;entry->height=t.height;
+        entry->font_size=state ? state->entities[i].appearance.font_size : fl_widget_appearance(e).font_size;
         entry->typography=fl_widget_typography(e);
         entry->text=text->size ? malloc(text->size) : NULL;
         if (text->size&&!entry->text) continue;
@@ -238,6 +242,7 @@ static void prepare_texts(Fl_ScenePreview *p,const Fl_Scene *scene)
     if (retired) vkDeviceWaitIdle(p->device);
     for (size_t i=0;i<p->text_count;++i) {fl_gpu_image_destroy(p->texts[i].image);free(p->texts[i].text);}
     free(p->texts);p->texts=next;p->text_count=count;p->text_scene=scene->id;p->text_revision=scene->revision;p->text_generation=generation;
+    p->text_tick=tick;
 }
 
 /* Worker body: decode one stored image; touches only its request. */
@@ -365,9 +370,11 @@ void fl_scene_preview_render(Ca_Viewport *viewport,void *data)
     Fl_ScenePreview *p=data;
     const Fl_Scene *scene=fl_project_scene(fl_scene_edit_project(p->edit),fl_scene_edit_scene(p->edit));
     const Fl_SceneGeometry *g=fl_scene_edit_geometry(p->edit);
+    const Fl_SceneState *state=fl_scene_edit_state(p->edit);
+    if (state&&scene&&(state->scene!=scene->id||state->count!=scene->entity_count)) state=NULL;
     p->device=ca_gpu_device(ca_viewport_instance(viewport));
     if (!p->images) p->images=fl_gpu_images_create(ca_viewport_instance(viewport));
-    if (p->images&&scene) {prepare_texts(p,scene);prepare_pictures(p,scene);stage_pictures(p,scene);}
+    if (p->images&&scene) {prepare_texts(p,scene,state);prepare_pictures(p,scene);stage_pictures(p,scene);}
     uint32_t w=ca_viewport_width(viewport),h=ca_viewport_height(viewport);
     VkCommandBuffer cmd=ca_viewport_cmd(viewport);
     VkRenderingAttachmentInfo attachment={.sType=VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
@@ -385,11 +392,15 @@ void fl_scene_preview_render(Ca_Viewport *viewport,void *data)
             VkViewport view={(float)ax,(float)ay,(float)aw,(float)ah,0,1};
             vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,p->pipeline);vkCmdSetViewport(cmd,0,1,&view);vkCmdSetScissor(cmd,0,1,&area);
             VkDescriptorSet white=fl_gpu_images_white(p->images);
-            const Fl_Appearance picture={.fill={255,255,255,255}},placeholder={.fill=FL_STYLE_IMAGE_PLACEHOLDER_RGBA,
+            const Fl_Appearance placeholder={.fill=FL_STYLE_IMAGE_PLACEHOLDER_RGBA,
                 .stroke=FL_STYLE_IMAGE_PLACEHOLDER_STROKE_RGBA,.stroke_width=FL_STYLE_IMAGE_PLACEHOLDER_STROKE};
             for (size_t i=0;i<g->count;++i) {
                 size_t index=g->order[i];const Fl_ResolvedEntity *v=&g->entities[index];const Fl_Entity *e=&scene->entities[index];
-                if (!v->visible||v->kind==FL_WIDGET_GROUP) continue;
+                if (!v->visible||v->kind==FL_WIDGET_GROUP||v->opacity<=0) continue;
+                Fl_Appearance look=state ? state->entities[index].appearance : fl_widget_appearance(e);
+                look.fill[3]=(unsigned char)lround(look.fill[3]*v->opacity);
+                look.stroke[3]=(unsigned char)lround(look.stroke[3]*v->opacity);
+                Fl_Appearance picture={.fill={255,255,255,(unsigned char)lround(255*v->opacity)}};
                 VkDescriptorSet mask=white;
                 if (v->kind==FL_WIDGET_TEXT) {
                     mask=VK_NULL_HANDLE;
@@ -401,7 +412,7 @@ void fl_scene_preview_render(Ca_Viewport *viewport,void *data)
                     else draw_primitive(p,cmd,scene,v->world,v->local.width,v->local.height,FL_WIDGET_RECTANGLE,placeholder,white);
                     continue;
                 }
-                if (mask) draw_primitive(p,cmd,scene,v->world,v->local.width,v->local.height,v->kind,fl_widget_appearance(e),mask);
+                if (mask) draw_primitive(p,cmd,scene,v->world,v->local.width,v->local.height,v->kind,look,mask);
             }
             double scale=fmin(aw/scene->width,ah/scene->height);
             float node_x,node_y,node_width,node_height;

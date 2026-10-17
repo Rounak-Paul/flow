@@ -53,3 +53,8 @@ Fl_Typography fl_widget_typography(const Fl_Entity *entity);
 /* Encode/decode the image component's referenced asset id. */
 void fl_image_asset_encode(Fl_Id asset, unsigned char out[8]);
 bool fl_image_asset_decode(const Fl_Component *component, Fl_Id *asset);
+/* Encode/decode the base opacity component (LE binary64 in 0..1). */
+void fl_opacity_encode(double opacity, unsigned char out[8]);
+bool fl_opacity_decode(const Fl_Component *component, double *opacity);
+/* Read base opacity, defaulting to fully opaque. */
+double fl_widget_opacity(const Fl_Entity *entity);

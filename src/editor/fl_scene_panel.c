@@ -46,6 +46,15 @@ static bool fonts_changed(const Fl_Event *event, void *data)
     return false;
 }
 
+/* Redraw the viewport at the new scene time. */
+static bool time_changed(const Fl_Event *event, void *data)
+{
+    Fl_ScenePanel *p = data;
+    const Fl_TimeChange *change = event->payload;
+    if (change->edit == p->edit && p->viewport) ca_viewport_request_redraw(p->viewport);
+    return false;
+}
+
 /* Preview callback: redraw once asynchronously decoded images are ready to upload. */
 static void preview_invalidated(void *data)
 {
@@ -239,6 +248,7 @@ Fl_ScenePanel *fl_scene_panel_create(Fl_SceneEdit *edit, Fl_Fonts *fonts, Fl_Job
     Fl_EventType fonts_event=fl_event_type_find(bus,FL_EVENT_FONTS_CHANGED);
     if (!fl_event_subscribe(bus,&(Fl_SubscribeDesc){.type=selection,.fn=selection_changed,.user_data=p,.owner=p}).generation ||
         !fl_event_subscribe(bus,&(Fl_SubscribeDesc){.type=fonts_event,.fn=fonts_changed,.user_data=p,.owner=p}).generation ||
+        !fl_event_subscribe(bus,&(Fl_SubscribeDesc){.type=fl_event_type_find(bus,FL_EVENT_TIME_CHANGED),.fn=time_changed,.user_data=p,.owner=p}).generation ||
         type == FL_EVENT_TYPE_INVALID || !fl_event_subscribe(bus, &(Fl_SubscribeDesc){.type = type, .fn = changed, .user_data = p, .owner = p}).generation) {
         fl_event_unsubscribe_owner(bus,p); fl_scene_preview_destroy(p->preview); free(p); return NULL;
     }

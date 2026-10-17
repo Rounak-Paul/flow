@@ -75,7 +75,7 @@ Fl_Appearance fl_widget_appearance(const Fl_Entity *e)
 bool fl_widget_component_valid(const Fl_Component *c)
 {
     if (!c || !c->type || !c->version || (c->size && !c->data)) return false;
-    if (c->type <= FL_COMPONENT_IMAGE && c->version != 1) return false;
+    if (c->type <= FL_COMPONENT_OPACITY && c->version != 1) return false;
     switch (c->type) {
     case FL_COMPONENT_TRANSFORM: { Fl_Transform t; return fl_transform_decode(c, &t); }
     case FL_COMPONENT_RECTANGLE: return c->size == 4;
@@ -84,6 +84,7 @@ bool fl_widget_component_valid(const Fl_Component *c)
     case FL_COMPONENT_GEOMETRY: return c->size == 1 && c->data[0] >= FL_WIDGET_ELLIPSE && c->data[0] <= FL_WIDGET_ARROW;
     case FL_COMPONENT_TYPOGRAPHY: { Fl_Typography t; return fl_typography_decode(c, &t); }
     case FL_COMPONENT_IMAGE: { Fl_Id asset; return fl_image_asset_decode(c, &asset); }
+    case FL_COMPONENT_OPACITY: { double opacity; return fl_opacity_decode(c, &opacity); }
     default: return true;
     }
 }
@@ -176,4 +177,21 @@ bool fl_image_asset_decode(const Fl_Component *c, Fl_Id *asset)
     for (unsigned i = 0; i < 8; ++i) id |= (Fl_Id)c->data[i] << (8 * i);
     if (!id) return false;
     *asset = id; return true;
+}
+
+void fl_opacity_encode(double opacity, unsigned char out[8]) { write_double(out, opacity); }
+
+bool fl_opacity_decode(const Fl_Component *c, double *opacity)
+{
+    if (!c || !opacity || c->type != FL_COMPONENT_OPACITY || c->version != 1 || c->size != 8 || !c->data) return false;
+    double value = read_double(c->data);
+    if (!isfinite(value) || value < 0 || value > 1) return false;
+    *opacity = value; return true;
+}
+
+double fl_widget_opacity(const Fl_Entity *e)
+{
+    double opacity = 1;
+    fl_opacity_decode(fl_entity_component(e, FL_COMPONENT_OPACITY), &opacity);
+    return opacity;
 }

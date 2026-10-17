@@ -34,14 +34,16 @@ void fl_scene_geometry_clear(Fl_SceneGeometry *g)
     free(g->entities); free(g->order); *g = (Fl_SceneGeometry){0};
 }
 
-bool fl_scene_geometry_update(Fl_SceneGeometry *g, const Fl_Scene *s)
+bool fl_scene_geometry_update(Fl_SceneGeometry *g, const Fl_Scene *s, const Fl_SceneState *state)
 {
     if (!g) return false;
     if (!s) { fl_scene_geometry_clear(g); return true; }
-    if (g->scene == s->id && g->revision == s->revision) return true;
+    if (state && (!state->valid || state->scene != s->id || state->revision != s->revision || state->count != s->entity_count)) state = NULL;
+    Fl_Tick tick = state ? state->tick : 0;
+    if (g->entities && g->scene == s->id && g->revision == s->revision && g->animated == (state != NULL) && g->tick == tick) return true;
     size_t n = s->entity_count;
     if (n > SIZE_MAX / sizeof(Fl_ResolvedEntity) || n >= SIZE_MAX / sizeof(size_t) / 4) return false;
-    Fl_SceneGeometry next = {.scene = s->id, .revision = s->revision, .count = n};
+    Fl_SceneGeometry next = {.scene = s->id, .revision = s->revision, .tick = tick, .animated = state != NULL, .count = n};
     next.entities = n ? calloc(n, sizeof(*next.entities)) : NULL;
     next.order = n ? malloc(n * sizeof(*next.order)) : NULL;
     size_t *work = n ? malloc(n * 4 * sizeof(*work)) : NULL;
@@ -59,7 +61,10 @@ bool fl_scene_geometry_update(Fl_SceneGeometry *g, const Fl_Scene *s)
             const Fl_Entity *parent = fl_scene_entity(s, e->parent);
             Fl_ResolvedEntity *v = &next.entities[index];
             v->local = (Fl_Transform){.scale_x = 1, .scale_y = 1};
-            fl_transform_decode(fl_entity_component(e, FL_COMPONENT_TRANSFORM), &v->local);
+            double opacity = 1;
+            if (state) { v->local = state->entities[index].transform; opacity = state->entities[index].opacity; }
+            else { fl_transform_decode(fl_entity_component(e, FL_COMPONENT_TRANSFORM), &v->local); opacity = fl_widget_opacity(e); }
+            v->opacity = opacity * (parent ? next.entities[parent-s->entities].opacity : 1);
             v->world = fl_affine_compose(parent ? next.entities[parent-s->entities].world : fl_affine_identity(), fl_affine_transform(&v->local));
             v->invertible = fl_affine_inverse(v->world, &v->inverse);
             v->visible = e->visible && (!parent || next.entities[parent-s->entities].visible);

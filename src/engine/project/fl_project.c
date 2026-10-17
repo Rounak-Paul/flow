@@ -1,4 +1,5 @@
 #include "fl_project.h"
+#include "fl_timeline_internal.h"
 #include "schema/fl_widgets.h"
 #include "doc/fl_binary.h"
 #include "core/fl_sha256.h"
@@ -18,6 +19,7 @@
 #endif
 
 #define MANIFEST_VERSION 3
+#define SCENE_VERSION 2
 
 struct Fl_EntityIndex { Fl_Id id; size_t position; };
 
@@ -64,6 +66,7 @@ static void free_scene(Fl_Scene *scene)
 {
     for (size_t i = 0; i < scene->entity_count; ++i) free_entity((Fl_Entity *)&scene->entities[i]);
     free((void *)scene->entities); free((void *)scene->identity_index); free((void *)scene->name);
+    fl_timeline_free(scene);
 }
 
 /* Release one asset record's owned strings. */
@@ -223,6 +226,7 @@ const Fl_Asset *fl_project_asset_by_hash(const Fl_Project *p, const unsigned cha
 size_t fl_project_asset_uses(const Fl_Project *p, Fl_Id asset)
 {
     size_t uses = 0;
+    for (size_t i = 0; p && asset && i < p->count; ++i) uses += fl_timeline_asset_uses(&p->scenes[i], asset);
     for (size_t i = 0; p && asset && i < p->count; ++i)
         for (size_t j = 0; j < p->scenes[i].entity_count; ++j) {
             const Fl_Entity *e = &p->scenes[i].entities[j];
@@ -323,6 +327,53 @@ static bool descendant(const Fl_Scene *s, Fl_Id candidate, Fl_Id ancestor)
     return false;
 }
 
+/* Split keyed configure components: animated channels become key writes and keep their base values.
+   Rewritten components point at the caller's scratch buffers. Returns the number of writes. */
+static size_t keyed_components(const Fl_Scene *s, const Fl_Entity *e, Fl_Component *components, size_t count,
+                               unsigned char transform[56], unsigned char appearance[24], unsigned char opacity[8],
+                               Fl_KeyWrite *writes)
+{
+    size_t n = 0;
+    for (size_t i = 0; i < count; ++i) {
+        Fl_Component *c = &components[i];
+        if (c->type == FL_COMPONENT_TRANSFORM) {
+            Fl_Transform next, base;
+            if (!fl_transform_decode(c, &next) || !fl_transform_decode(fl_entity_component(e, FL_COMPONENT_TRANSFORM), &base)) continue;
+            double *value[7] = {&next.x, &next.y, &next.width, &next.height, &next.rotation, &next.scale_x, &next.scale_y};
+            const double kept[7] = {base.x, base.y, base.width, base.height, base.rotation, base.scale_x, base.scale_y};
+            for (int k = 0; k < 7; ++k) if (fl_scene_track(s, e->id, (Fl_AnimProperty)(FL_PROP_X + k))) {
+                writes[n++] = (Fl_KeyWrite){e->id, (Fl_AnimProperty)(FL_PROP_X + k), {*value[k], 0, 0, 0}};
+                *value[k] = kept[k];
+            }
+            fl_transform_encode(&next, transform); c->data = transform;
+        } else if (c->type == FL_COMPONENT_APPEARANCE) {
+            Fl_Appearance next, base = fl_widget_appearance(e);
+            if (!fl_appearance_decode(c, &next)) continue;
+            if (fl_scene_track(s, e->id, FL_PROP_FILL)) {
+                writes[n++] = (Fl_KeyWrite){e->id, FL_PROP_FILL, {next.fill[0], next.fill[1], next.fill[2], next.fill[3]}};
+                memcpy(next.fill, base.fill, 4);
+            }
+            if (fl_scene_track(s, e->id, FL_PROP_STROKE)) {
+                writes[n++] = (Fl_KeyWrite){e->id, FL_PROP_STROKE, {next.stroke[0], next.stroke[1], next.stroke[2], next.stroke[3]}};
+                memcpy(next.stroke, base.stroke, 4);
+            }
+            if (fl_scene_track(s, e->id, FL_PROP_STROKE_WIDTH)) {
+                writes[n++] = (Fl_KeyWrite){e->id, FL_PROP_STROKE_WIDTH, {next.stroke_width, 0, 0, 0}}; next.stroke_width = base.stroke_width;
+            }
+            if (fl_scene_track(s, e->id, FL_PROP_FONT_SIZE)) {
+                writes[n++] = (Fl_KeyWrite){e->id, FL_PROP_FONT_SIZE, {next.font_size, 0, 0, 0}}; next.font_size = base.font_size;
+            }
+            fl_appearance_encode(&next, appearance); c->data = appearance;
+        } else if (c->type == FL_COMPONENT_OPACITY) {
+            double next;
+            if (!fl_opacity_decode(c, &next) || !fl_scene_track(s, e->id, FL_PROP_OPACITY)) continue;
+            writes[n++] = (Fl_KeyWrite){e->id, FL_PROP_OPACITY, {next, 0, 0, 0}};
+            fl_opacity_encode(fl_widget_opacity(e), opacity); c->data = opacity;
+        }
+    }
+    return n;
+}
+
 bool fl_project_apply(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
 {
     if (out_id) *out_id = 0;
@@ -333,14 +384,17 @@ bool fl_project_apply(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
     if (s && s->revision == UINT64_MAX && op->kind != FL_OP_SCENE_REMOVE && op->kind != FL_OP_SCENE_MOVE) return false;
     switch (op->kind) {
     case FL_OP_SCENE_ADD: {
-        if (!op->name || !op->name[0] || p->next_id == UINT64_MAX || p->count >= SIZE_MAX / sizeof(*s) - 1) return false;
-        char *name = copy_string(op->name);
+        if (!op->name || !op->name[0] || p->next_id >= UINT64_MAX - 1 || p->count >= SIZE_MAX / sizeof(*s) - 1) return false;
+        char *name = copy_string(op->name), *beat_name = copy_string("Beat 1");
+        Fl_Beat *beat = malloc(sizeof(*beat));
         Fl_Scene *scenes = malloc((p->count + 1) * sizeof(*scenes));
         uint64_t *saved = malloc((p->count + 1) * sizeof(*saved));
-        if (!name || !scenes || !saved) { free(name); free(scenes); free(saved); return false; }
+        if (!name || !beat_name || !beat || !scenes || !saved) { free(name); free(beat_name); free(beat); free(scenes); free(saved); return false; }
         if (p->count) { memcpy(scenes, p->scenes, p->count * sizeof(*scenes)); memcpy(saved, p->saved, p->count * sizeof(*saved)); }
         created = p->next_id++;
-        scenes[p->count] = (Fl_Scene){.id = created, .name = name, .revision = 1, .duration = 600000, .width = 1920, .height = 1080};
+        *beat = (Fl_Beat){p->next_id++, beat_name, 600000, false};
+        scenes[p->count] = (Fl_Scene){.id = created, .name = name, .revision = 1, .duration = 600000, .width = 1920, .height = 1080,
+                                      .beats = beat, .beat_count = 1};
         saved[p->count++] = 0;
         free(p->scenes); free(p->saved); p->scenes = scenes; p->saved = saved;
         s = NULL; break;
@@ -428,7 +482,7 @@ bool fl_project_apply(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
         for (size_t i = 0; i < s->entity_count; ++i) {
             if (remove[i] == 2) free_entity(&entities[i]); else entities[count++] = entities[i];
         }
-        s->entity_count = count; rebuild_identity(s); free(remove); break;
+        s->entity_count = count; rebuild_identity(s); free(remove); fl_timeline_prune(s); break;
     }
     case FL_OP_ENTITY_PARENT:
         if (!e || (op->parent && !fl_scene_entity(s, op->parent)) || descendant(s, op->parent, e->id)) return false;
@@ -465,21 +519,39 @@ bool fl_project_apply(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
         memmove(c, c + 1, (e->component_count - index - 1) * sizeof(*c)); --e->component_count; break;
     }
     case FL_OP_ENTITY_CONFIGURE: {
-        if (!e || !op->name || !op->name[0] || !references_valid(p, op->components, op->component_count)) return false;
+        if (!e || !op->name || !op->name[0] || !references_valid(p, op->components, op->component_count) ||
+            op->component_count > 64) return false;
+        Fl_Component keyed[64];
+        unsigned char transform_bytes[56], appearance_bytes[24], opacity_bytes[8];
+        Fl_KeyWrite writes[FL_PROP_COUNT];
+        size_t write_count = 0, track_mark = 0;
+        const Fl_Component *components = op->components;
+        if (op->keyed && op->component_count) {
+            memcpy(keyed, op->components, op->component_count * sizeof(*keyed));
+            components = keyed;
+            write_count = keyed_components(s, e, keyed, op->component_count, transform_bytes, appearance_bytes, opacity_bytes, writes);
+        }
         Fl_Entity prepared = {.name = copy_string(op->name)};
-        Fl_Component *components = NULL;
-        if (!prepared.name || !merge_components(e, op->components, op->component_count, &components, &prepared.component_count)) {
+        Fl_Component *merged = NULL;
+        if (!prepared.name || !merge_components(e, components, op->component_count, &merged, &prepared.component_count)) {
             free((void *)prepared.name); return false;
         }
-        prepared.components = components; prepared.id = e->id; prepared.parent = e->parent; prepared.visible = op->visible;
-        free_entity(e); *e = prepared; break;
+        if (write_count && !fl_timeline_reserve(s, writes, write_count, p->next_id, &track_mark)) {
+            prepared.components = merged; free_entity(&prepared); return false;
+        }
+        prepared.components = merged; prepared.id = e->id; prepared.parent = e->parent; prepared.visible = op->visible;
+        free_entity(e); *e = prepared;
+        if (write_count) fl_timeline_commit(s, writes, write_count, op->tick, &p->next_id);
+        break;
     }
     case FL_OP_TRANSFORMS: {
         typedef struct Target { Fl_Component *component; unsigned char *bytes; } Target;
-        if (!s || !op->transforms || !op->transform_count || op->transform_count > SIZE_MAX / sizeof(Target)) return false;
+        if (!s || !op->transforms || !op->transform_count || op->transform_count > SIZE_MAX / sizeof(Target) / 7) return false;
         Target *targets = calloc(op->transform_count, sizeof(*targets));
-        if (!targets) return false;
+        Fl_KeyWrite *writes = op->keyed ? calloc(op->transform_count * 7, sizeof(*writes)) : NULL;
+        if (!targets || (op->keyed && !writes)) { free(targets); free(writes); return false; }
         bool valid = true;
+        size_t write_count = 0, track_mark = 0;
         for (size_t i = 0; valid && i < op->transform_count; ++i) {
             const Fl_TransformEdit *edit = &op->transforms[i];
             for (size_t j = 0; j < i; ++j) if (op->transforms[j].entity == edit->entity) valid = false;
@@ -487,17 +559,29 @@ bool fl_project_apply(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
             targets[i].component = (Fl_Component *)fl_entity_component(entity, FL_COMPONENT_TRANSFORM);
             targets[i].bytes = malloc(56);
             if (!targets[i].component || !targets[i].bytes) { valid = false; break; }
-            fl_transform_encode(&edit->transform, targets[i].bytes);
+            Fl_Transform base = edit->transform, current;
+            if (op->keyed && fl_transform_decode(targets[i].component, &current)) {
+                double *next[7] = {&base.x, &base.y, &base.width, &base.height, &base.rotation, &base.scale_x, &base.scale_y};
+                const double now[7] = {current.x, current.y, current.width, current.height, current.rotation, current.scale_x, current.scale_y};
+                for (int c = 0; c < 7; ++c) {
+                    if (!fl_scene_track(s, edit->entity, (Fl_AnimProperty)(FL_PROP_X + c))) continue;
+                    writes[write_count++] = (Fl_KeyWrite){edit->entity, (Fl_AnimProperty)(FL_PROP_X + c), {*next[c], 0, 0, 0}};
+                    *next[c] = now[c];
+                }
+            }
+            fl_transform_encode(&base, targets[i].bytes);
             Fl_Component candidate = {FL_COMPONENT_TRANSFORM, 1, 56, targets[i].bytes};
             valid &= fl_widget_component_valid(&candidate);
         }
+        if (valid && write_count) valid = fl_timeline_reserve(s, writes, write_count, p->next_id, &track_mark);
         for (size_t i = 0; i < op->transform_count; ++i) {
             if (valid) {
                 free((void *)targets[i].component->data);
                 *targets[i].component = (Fl_Component){FL_COMPONENT_TRANSFORM, 1, 56, targets[i].bytes};
             } else free(targets[i].bytes);
         }
-        free(targets); if (!valid) return false;
+        if (valid && write_count) fl_timeline_commit(s, writes, write_count, op->tick, &p->next_id);
+        free(targets); free(writes); if (!valid) return false;
         break;
     }
     case FL_OP_ASSET_ADD: {
@@ -534,9 +618,20 @@ bool fl_project_apply(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
         char *name = copy_string(op->name); if (!name) return false;
         free((void *)a->name); a->name = name; break;
     }
-    case FL_OP_SCENE_SETTINGS:
+    case FL_OP_BEAT_ADD: case FL_OP_BEAT_REMOVE: case FL_OP_BEAT_UPDATE: case FL_OP_BEAT_MOVE:
+    case FL_OP_KEY_SET: case FL_OP_KEY_REMOVE: case FL_OP_TRACK_REMOVE:
+    case FL_OP_CLIP_ADD: case FL_OP_CLIP_UPDATE: case FL_OP_CLIP_REMOVE:
+        if (!fl_timeline_apply(p, s, op, &p->next_id, &created)) return false;
+        break;
+    case FL_OP_SCENE_SETTINGS: {
         if (!s || !op->width || !op->height || op->width > 65536 || op->height > 65536 || !op->duration || op->duration > INT64_MAX) return false;
+        /* Beats partition the scene: a length change resizes the last beat. */
+        Fl_Beat *last = s->beat_count ? (Fl_Beat *)&s->beats[s->beat_count - 1] : NULL;
+        uint64_t others = last ? s->duration - last->duration : 0;
+        if (last && op->duration <= others) return false;
+        if (last) last->duration = op->duration - others;
         s->width = op->width; s->height = op->height; s->duration = op->duration; break;
+    }
     default: return false;
     }
     if (s) ++s->revision;
@@ -568,7 +663,8 @@ static bool save_scene(const Fl_Project *p, const Fl_Scene *s)
             fl_binary_write(&b, c->data, c->size);
         }
     }
-    bool ok = project_path(p, s->id, s->revision, path) && fl_binary_save(&b, path, "FLSCENE\0", 1);
+    fl_timeline_save(s, &b);
+    bool ok = project_path(p, s->id, s->revision, path) && fl_binary_save(&b, path, "FLSCENE\0", SCENE_VERSION);
     free(b.data); return ok;
 }
 
@@ -642,8 +738,8 @@ static size_t read_count(Fl_Binary *b, size_t stride, size_t minimum)
 /* Decode and validate component and entity records without trusting stored sizes. */
 static bool load_scene(Fl_Project *p, Fl_Scene *s)
 {
-    char path[FL_PATH_MAX]; Fl_Binary b;
-    if (!project_path(p, s->id, s->revision, path) || !fl_binary_load(&b, path, "FLSCENE\0", 1, NULL)) return false;
+    char path[FL_PATH_MAX]; Fl_Binary b; uint64_t version;
+    if (!project_path(p, s->id, s->revision, path) || !fl_binary_load(&b, path, "FLSCENE\0", SCENE_VERSION, &version)) return false;
     uint64_t id = fl_binary_get_u64(&b), revision = fl_binary_get_u64(&b);
     s->name = fl_binary_get_string(&b);
     s->width = fl_binary_get_u64(&b); s->height = fl_binary_get_u64(&b); s->duration = fl_binary_get_u64(&b);
@@ -673,6 +769,7 @@ static bool load_scene(Fl_Project *p, Fl_Scene *s)
             for (size_t k = 0; k < j; ++k) if (components[k].type == c->type) b.failed = true;
         }
     }
+    if (!b.failed && version >= 2 && !fl_timeline_load(s, &b)) b.failed = true;
     bool ok = !b.failed && b.cursor == b.size && id == s->id && revision == s->revision &&
               s->name && s->name[0] && s->width && s->width <= 65536 && s->height && s->height <= 65536 &&
               s->duration && s->duration <= INT64_MAX;
@@ -771,8 +868,10 @@ static bool validate_project(const Fl_Project *p)
     if (p->asset_count > SIZE_MAX - p->count) return false;
     size_t count = p->count + p->asset_count;
     for (size_t i = 0; i < p->count; ++i) {
-        if (p->scenes[i].entity_count > SIZE_MAX - count) return false;
-        count += p->scenes[i].entity_count;
+        size_t timeline = fl_timeline_id_count(&p->scenes[i]);
+        if (p->scenes[i].entity_count > SIZE_MAX - count || timeline > SIZE_MAX - count - p->scenes[i].entity_count) return false;
+        count += p->scenes[i].entity_count + timeline;
+        if (!fl_timeline_valid(p, &p->scenes[i], p->next_id)) return false;
     }
     if (count > SIZE_MAX / sizeof(Fl_Id)) return false;
     Fl_Id *ids = count ? malloc(count * sizeof(*ids)) : NULL;
@@ -781,6 +880,7 @@ static bool validate_project(const Fl_Project *p)
     for (size_t i = 0; i < p->asset_count; ++i) ids[n++] = p->assets[i].id;
     for (size_t i = 0; i < p->count; ++i) {
         const Fl_Scene *s = &p->scenes[i]; ids[n++] = s->id;
+        fl_timeline_ids(s, ids + n); n += fl_timeline_id_count(s);
         unsigned char *state = s->entity_count ? calloc(s->entity_count, 1) : NULL;
         if (s->entity_count && !state) { free(ids); return false; }
         for (size_t j = 0; j < s->entity_count; ++j) {

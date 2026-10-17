@@ -5,6 +5,8 @@
 #include "fl_scene_panel.h"
 #include "fl_widget_library.h"
 #include "fl_inspector.h"
+#include "fl_playback.h"
+#include "fl_timeline_panel.h"
 #include "style.h"
 
 #include "core/fl_clock.h"
@@ -20,6 +22,7 @@
 #define SAVE_SETTLE_NS      750000000ull
 #define SCENE_PANEL_ID      "scene"
 #define ASSETS_PANEL_ID     "assets"
+#define TIMELINE_PANEL_ID   "timeline"
 
 struct Fl_Workspace {
     Ca_Instance *instance;
@@ -33,6 +36,8 @@ struct Fl_Workspace {
     Fl_AssetImporter *importer;
     Fl_AssetPanel *assets;
     Fl_AudioPlayer *player;
+    Fl_Playback *playback;
+    Fl_TimelinePanel *timeline;
     Fl_Fonts    *fonts;
     Ca_Effect   *saver;
     char        *layout_path;
@@ -59,11 +64,12 @@ static void seed_default_layout(Ca_DockLayout *layout, void *user_data)
     const int scene = ca_dock_layout_new_group(layout);
     const int console = ca_dock_layout_new_group(layout);
     ca_dock_layout_add_tab(layout, scene, ca_dock_layout_find(layout, SCENE_PANEL_ID), -1);
+    ca_dock_layout_add_tab(layout, console, ca_dock_layout_find(layout, TIMELINE_PANEL_ID), -1);
     ca_dock_layout_add_tab(layout, console, ca_dock_layout_find(layout, FL_CONSOLE_PANEL_ID), -1);
     const int root = ca_dock_layout_new_split(layout, false, 0.75f, scene, console);
     ca_dock_layout_set_root(layout, CA_DOCK_MAIN_WINDOW, root);
     ca_dock_layout_set_central(layout, scene);
-    ca_dock_layout_set_split_size(layout, root, FL_STYLE_CONSOLE_HEIGHT);
+    ca_dock_layout_set_split_size(layout, root, FL_STYLE_TIMELINE_HEIGHT);
     int widgets=ca_dock_layout_find(layout,"widgets"),inspector=ca_dock_layout_find(layout,"inspector");
     ca_dock_layout_dock_root(layout,CA_DOCK_MAIN_WINDOW,widgets,CA_DOCK_ZONE_LEFT,.16f);
     ca_dock_layout_set_split_size(layout,ca_dock_layout_window_root(layout,CA_DOCK_MAIN_WINDOW),FL_STYLE_WIDGETS_W);
@@ -150,11 +156,15 @@ static void migrate_authoring_layout(Fl_Workspace *workspace)
 {
     if (!workspace->saved_layout) return;
     Ca_DockLayout *layout=ca_dock_layout_create();if (!layout) return;
-    const char *ids[]={"scene","console","widgets","inspector",ASSETS_PANEL_ID};
+    const char *ids[]={"scene","console","widgets","inspector",ASSETS_PANEL_ID,TIMELINE_PANEL_ID};
     bool valid=true;
-    for (size_t i=0;i<5;++i) valid &= ca_dock_layout_register(layout,ids[i])!=CA_DOCK_NONE;
+    for (size_t i=0;i<6;++i) valid &= ca_dock_layout_register(layout,ids[i])!=CA_DOCK_NONE;
     bool changed=false;
     if (valid&&ca_dock_layout_load(layout,workspace->saved_layout)) {
+        int timeline=ca_dock_layout_find(layout,TIMELINE_PANEL_ID);
+        int console_group=ca_dock_layout_group_of(layout,ca_dock_layout_find(layout,FL_CONSOLE_PANEL_ID));
+        if (ca_dock_layout_group_of(layout,timeline)==CA_DOCK_NONE&&ca_dock_layout_home_of(layout,timeline)==CA_DOCK_NONE&&
+            console_group!=CA_DOCK_NONE&&ca_dock_layout_add_tab(layout,console_group,timeline,0)) changed=true;
         for (size_t i=2;i<5;++i) {
             int panel=ca_dock_layout_find(layout,ids[i]);
             if (ca_dock_layout_group_of(layout,panel)!=CA_DOCK_NONE||ca_dock_layout_home_of(layout,panel)!=CA_DOCK_NONE) continue;
@@ -199,7 +209,11 @@ static bool create_dock(Fl_Workspace *workspace, Ca_Window *window)
     const bool inspector=assets&&ca_dock_register_panel(workspace->dock,&(Ca_DockPanelDesc){
         .id="inspector",.title="Inspector",.dock_beside=SCENE_PANEL_ID,.build=fl_inspector_build,
         .teardown=fl_inspector_teardown,.user_data=workspace->inspector});
-    const bool console = inspector && ca_dock_register_panel(workspace->dock, &(Ca_DockPanelDesc){
+    const bool timeline = inspector && ca_dock_register_panel(workspace->dock, &(Ca_DockPanelDesc){
+        .id = TIMELINE_PANEL_ID, .title = "Timeline", .dock_beside = SCENE_PANEL_ID, .build = fl_timeline_panel_build,
+        .teardown = fl_timeline_panel_teardown, .user_data = workspace->timeline,
+    });
+    const bool console = timeline && ca_dock_register_panel(workspace->dock, &(Ca_DockPanelDesc){
         .id = FL_CONSOLE_PANEL_ID, .title = "Console", .dock_beside = SCENE_PANEL_ID,
         .build = fl_console_build_panel, .teardown = fl_console_teardown_panel,
         .user_data = workspace->console,
@@ -255,9 +269,11 @@ Fl_Workspace *fl_workspace_create(const Fl_WorkspaceDesc *desc)
     workspace->scene=fl_scene_panel_create(workspace->edit,desc->fonts,desc->jobs,desc->bus);
     workspace->widgets=fl_widget_library_create(workspace->edit,workspace->scene,desc->bus);
     workspace->player=fl_audio_player_create(&(Fl_AudioPlayerDesc){.bus=desc->bus});
-    workspace->assets=workspace->player ? fl_asset_panel_create(workspace->edit,workspace->scene,workspace->importer,desc->jobs,
-                                                                workspace->player,desc->bus) : NULL;
-    workspace->inspector=fl_inspector_create(workspace->edit,desc->fonts,desc->bus);
+    workspace->playback=workspace->edit ? fl_playback_create(&(Fl_PlaybackDesc){.instance=workspace->instance,.edit=workspace->edit,.bus=desc->bus}) : NULL;
+    workspace->timeline=workspace->playback ? fl_timeline_panel_create(workspace->edit,workspace->playback,desc->bus) : NULL;
+    workspace->assets=workspace->player&&workspace->timeline ? fl_asset_panel_create(workspace->edit,workspace->scene,workspace->importer,desc->jobs,
+                                                                workspace->player,workspace->timeline,desc->bus) : NULL;
+    workspace->inspector=workspace->playback ? fl_inspector_create(workspace->edit,desc->fonts,workspace->playback,desc->bus) : NULL;
     if (!workspace->edit||!workspace->importer||!workspace->scene||!workspace->widgets||!workspace->assets||
         !workspace->inspector||!create_dock(workspace, desc->window)) {
         FL_LOG_ERROR(LOG_TAG, "failed to create the dock");
@@ -315,9 +331,11 @@ void fl_workspace_destroy(Fl_Workspace *workspace)
     fl_widget_library_destroy(workspace->widgets);
     fl_asset_panel_destroy(workspace->assets);
     fl_audio_player_destroy(workspace->player);
+    fl_timeline_panel_destroy(workspace->timeline);
     fl_inspector_destroy(workspace->inspector);
     fl_scene_panel_destroy(workspace->scene);
     fl_asset_importer_destroy(workspace->importer);
+    fl_playback_destroy(workspace->playback);
     fl_scene_edit_destroy(workspace->edit);
     fl_fonts_set_project(workspace->fonts, NULL);
     fl_console_destroy(workspace->console);
