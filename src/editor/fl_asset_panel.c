@@ -3,6 +3,7 @@
 #include "fl_file_browser.h"
 #include "style.h"
 #include "core/fl_log.h"
+#include "media/fl_audio_player.h"
 #include "platform/fl_fs.h"
 #include <ctype.h>
 #include <math.h>
@@ -21,6 +22,7 @@ struct Fl_AssetPanel {
     Fl_ScenePanel *scene;
     Fl_AssetImporter *importer;
     Fl_JobSystem *jobs;
+    Fl_AudioPlayer *player;
     Fl_EventBus *bus;
     Fl_AssetThumbnails *thumbnails;
     Ca_Dock *dock;
@@ -36,6 +38,8 @@ struct Fl_AssetPanel {
     Fl_Id selected;
     int filter;                 /* 0 shows every kind, else one Fl_AssetKind */
     Fl_KindChip chips[KIND_CHIPS];
+    Fl_Id playing;              /* audio asset being previewed */
+    uint64_t playing_token;
     Ca_Window *rename_window;
     Ca_TextInput *rename_input;
     Fl_Id rename_asset;
@@ -219,6 +223,48 @@ static void rename_asset(Fl_AssetPanel *p, Fl_Id asset)
     ca_ui_end(); ca_input_focus(p->rename_input);
 }
 
+/* Stop any audio preview. */
+static void stop_preview(Fl_AssetPanel *p)
+{
+    if (!p->playing) return;
+    fl_audio_player_stop(p->player);
+    p->playing = 0; p->playing_token = 0;
+    invalidate(p);
+}
+
+/* Toggle the audio preview of one asset. */
+static void toggle_preview(Fl_AssetPanel *p, Fl_Id asset)
+{
+    bool same = p->playing == asset;
+    stop_preview(p);
+    if (same) return;
+    Fl_Project *project = fl_scene_edit_project(p->edit);
+    const Fl_Asset *record = fl_project_asset(project, asset);
+    char path[FL_PATH_MAX];
+    if (!record || record->kind != FL_ASSET_AUDIO || !fl_project_asset_path(project, record, path, sizeof(path))) return;
+    p->playing_token = fl_audio_player_play(p->player, path);
+    if (!p->playing_token) { status(p, "Audio output unavailable"); return; }
+    p->playing = asset;
+    invalidate(p);
+}
+
+/* Play button on an audio tile. */
+static void play_clicked(Ca_Button *button, void *data)
+{
+    (void)button; Fl_AssetRow *row = data; toggle_preview(row->panel, row->asset);
+}
+
+/* Reset the play button when the previewed clip ends. */
+static bool playback_changed(const Fl_Event *event, void *data)
+{
+    Fl_AssetPanel *p = data;
+    const Fl_AudioPlayback *change = event->payload;
+    if (change->player == p->player && !change->playing && change->token == p->playing_token) {
+        p->playing = 0; p->playing_token = 0; invalidate(p);
+    }
+    return false;
+}
+
 /* Remove an unused asset; referenced assets are kept and the user is told why. */
 static void delete_asset(Fl_AssetPanel *p, Fl_Id asset)
 {
@@ -232,6 +278,7 @@ static void delete_asset(Fl_AssetPanel *p, Fl_Id asset)
         status(p, text); return;
     }
     snprintf(text, sizeof(text), "Removed \"%s\".", record->name);
+    if (p->playing == asset) stop_preview(p);
     if (fl_project_apply(project, &(Fl_Op){.kind = FL_OP_ASSET_REMOVE, .asset = asset}, NULL)) {
         if (p->selected == asset) p->selected = 0;
         status(p, text);
@@ -318,16 +365,18 @@ static bool project_changed(const Fl_Event *event, void *data)
 static void thumbnail_ready(void *data) { invalidate(data); }
 
 Fl_AssetPanel *fl_asset_panel_create(Fl_SceneEdit *edit, Fl_ScenePanel *scene, Fl_AssetImporter *importer,
-                                     Fl_JobSystem *jobs, Fl_EventBus *bus)
+                                     Fl_JobSystem *jobs, Fl_AudioPlayer *player, Fl_EventBus *bus)
 {
-    if (!edit || !scene || !importer || !jobs || !bus) return NULL;
+    if (!edit || !scene || !importer || !jobs || !player || !bus) return NULL;
     Fl_AssetPanel *p = calloc(1, sizeof(*p));
     if (!p) return NULL;
-    p->edit = edit; p->scene = scene; p->importer = importer; p->jobs = jobs; p->bus = bus;
+    p->edit = edit; p->scene = scene; p->importer = importer; p->jobs = jobs; p->player = player; p->bus = bus;
     if (!fl_event_subscribe(bus, &(Fl_SubscribeDesc){.type = fl_event_type_find(bus, FL_EVENT_ASSET_IMPORTED),
             .fn = imported, .user_data = p, .owner = p}).generation ||
         !fl_event_subscribe(bus, &(Fl_SubscribeDesc){.type = fl_event_type_find(bus, FL_EVENT_PROJECT_CHANGED),
-            .fn = project_changed, .user_data = p, .owner = p}).generation) {
+            .fn = project_changed, .user_data = p, .owner = p}).generation ||
+        !fl_event_subscribe(bus, &(Fl_SubscribeDesc){.type = fl_event_type_find(bus, FL_EVENT_AUDIO_PLAYBACK),
+            .fn = playback_changed, .user_data = p, .owner = p}).generation) {
         fl_asset_panel_destroy(p); return NULL;
     }
     return p;
@@ -342,6 +391,7 @@ void fl_asset_panel_destroy(Fl_AssetPanel *p)
 {
     if (!p) return;
     if (p->rename_window) ca_window_destroy(p->rename_window);
+    if (p->playing) fl_audio_player_stop(p->player);
     fl_file_browser_destroy(p->browser);
     fl_asset_thumbnails_destroy(p->thumbnails);
     fl_event_unsubscribe_owner(p->bus, p);
@@ -371,9 +421,20 @@ static void emit_tile(Fl_AssetPanel *p, const Fl_Asset *a)
     size_t n = 0;
     for (; a->extension[n] && n < sizeof(label) - 1; ++n) label[n] = (char)toupper((unsigned char)a->extension[n]);
     label[n] = 0;
-    if (a->width && a->height) snprintf(tip, sizeof(tip), "%s\n%s  %llu x %llu  %s", a->name, label,
-                                        (unsigned long long)a->width, (unsigned long long)a->height, size);
-    else snprintf(tip, sizeof(tip), "%s\n%s  %s", a->name, label, size);
+    char detail[160] = "", length[32] = "";
+    if (a->duration) {
+        uint64_t seconds = (a->duration + FL_TICKS_PER_SECOND / 2) / FL_TICKS_PER_SECOND;
+        if (seconds >= 3600) snprintf(length, sizeof(length), "  %llu:%02llu:%02llu", (unsigned long long)(seconds / 3600),
+                                      (unsigned long long)(seconds / 60 % 60), (unsigned long long)(seconds % 60));
+        else snprintf(length, sizeof(length), "  %llu:%02llu", (unsigned long long)(seconds / 60), (unsigned long long)(seconds % 60));
+    }
+    if (a->kind == FL_ASSET_AUDIO && a->sample_rate)
+        snprintf(detail, sizeof(detail), "%s  %.1f kHz  %s", length, a->sample_rate / 1000.0,
+                 a->channels == 1 ? "Mono" : a->channels == 2 ? "Stereo" : "Multichannel");
+    else if (a->width && a->height)
+        snprintf(detail, sizeof(detail), "  %llu x %llu%s", (unsigned long long)a->width, (unsigned long long)a->height, length);
+    else snprintf(detail, sizeof(detail), "%s", length);
+    snprintf(tip, sizeof(tip), "%s\n%s%s  %s", a->name, label, detail, size);
     bool image = a->kind == FL_ASSET_IMAGE;
     ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_ASSET_TILE, .id = id,
         .on_drag_end = image ? row_drag_end : NULL, .drag_data = row});
@@ -390,6 +451,10 @@ static void emit_tile(Fl_AssetPanel *p, const Fl_Asset *a)
     ca_div_end();
     ca_text(&(Ca_TextDesc){.text = a->name, .style = FL_CLASS_ASSET_NAME});
     ca_btn_end();
+    if (a->kind == FL_ASSET_AUDIO) {
+        ca_btn_begin(&(Ca_BtnDesc){.text = p->playing == a->id ? CA_ICON_NF_FA_STOP : CA_ICON_NF_FA_PLAY, .on_click = play_clicked,
+            .click_data = row, .style = p->playing == a->id ? FL_CLASS_PLAY_ACTIVE : FL_CLASS_PLAY}); ca_btn_end();
+    }
     ca_div_end();
     ca_tooltip(&(Ca_TooltipDesc){.text = tip});
     static const char *image_items[] = {"Add to scene", "Rename", "Delete"};

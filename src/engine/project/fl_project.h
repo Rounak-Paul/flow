@@ -22,8 +22,11 @@ typedef struct Fl_Asset {
     unsigned char hash[32];     /* SHA-256 of the stored bytes; unique per project */
     const char *extension;      /* canonical lowercase [a-z0-9]{1,15} */
     uint64_t size;              /* stored bytes */
-    uint64_t width, height;     /* pixel dimensions for images; zero when not applicable */
+    uint64_t width, height;     /* pixel dimensions for images and video; zero when not applicable */
+    uint64_t duration;          /* video/audio length in 120000-per-second ticks; zero when unknown */
+    uint32_t sample_rate, channels; /* audio stream description; zero otherwise */
 } Fl_Asset;
+#define FL_TICKS_PER_SECOND 120000u
 /* Transform values are local to the parent, in scene pixels and radians. */
 typedef struct Fl_Transform { double x, y, width, height, rotation, scale_x, scale_y; } Fl_Transform;
 typedef struct Fl_Component { uint64_t type, version; size_t size; const unsigned char *data; } Fl_Component;

@@ -17,7 +17,7 @@
 #include <unistd.h>
 #endif
 
-#define MANIFEST_VERSION 2
+#define MANIFEST_VERSION 3
 
 struct Fl_EntityIndex { Fl_Id id; size_t position; };
 
@@ -503,6 +503,7 @@ bool fl_project_apply(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
     case FL_OP_ASSET_ADD: {
         const Fl_Asset *r = op->asset_record;
         if (!r || !r->name || !r->name[0] || r->kind < FL_ASSET_IMAGE || r->kind > FL_ASSET_FONT ||
+            r->sample_rate > 768000 || r->channels > 64 ||
             !fl_asset_extension_valid(r->extension) || fl_project_asset_by_hash(p, r->hash) ||
             p->next_id == UINT64_MAX || p->asset_count >= SIZE_MAX / sizeof(Fl_Asset) - 1) return false;
         char *name = copy_string(r->name), *extension = copy_string(r->extension);
@@ -588,6 +589,7 @@ bool fl_project_save(Fl_Project *p)
         fl_binary_u64(&b, a->id); fl_binary_string(&b, a->name); fl_binary_u64(&b, (uint64_t)a->kind);
         fl_binary_write(&b, a->hash, 32); fl_binary_string(&b, a->extension);
         fl_binary_u64(&b, a->size); fl_binary_u64(&b, a->width); fl_binary_u64(&b, a->height);
+        fl_binary_u64(&b, a->duration); fl_binary_u64(&b, a->sample_rate); fl_binary_u64(&b, a->channels);
     }
     bool ok = project_path(p, 0, 0, path) && fl_binary_save(&b, path, "FLPROJ\0\0", MANIFEST_VERSION);
     free(b.data);
@@ -679,9 +681,9 @@ static bool load_scene(Fl_Project *p, Fl_Scene *s)
 }
 
 /* Decode asset records in strictly ascending id order with unique content hashes. */
-static void load_assets(Fl_Project *p, Fl_Binary *b)
+static void load_assets(Fl_Project *p, Fl_Binary *b, uint64_t version)
 {
-    p->asset_count = read_count(b, sizeof(Fl_Asset), 88);
+    p->asset_count = read_count(b, sizeof(Fl_Asset), version >= 3 ? 112 : 88);
     p->assets = p->asset_count ? calloc(p->asset_count, sizeof(*p->assets)) : NULL;
     if (p->asset_count && !p->assets) { p->asset_count = 0; b->failed = true; return; }
     for (size_t i = 0; !b->failed && i < p->asset_count; ++i) {
@@ -690,6 +692,10 @@ static void load_assets(Fl_Project *p, Fl_Binary *b)
         uint64_t kind = fl_binary_get_u64(b);
         fl_binary_read(b, a->hash, 32); a->extension = fl_binary_get_string(b);
         a->size = fl_binary_get_u64(b); a->width = fl_binary_get_u64(b); a->height = fl_binary_get_u64(b);
+        uint64_t rate = 0, channels = 0;
+        if (version >= 3) { a->duration = fl_binary_get_u64(b); rate = fl_binary_get_u64(b); channels = fl_binary_get_u64(b); }
+        if (rate > 768000 || channels > 64) b->failed = true;
+        a->sample_rate = (uint32_t)rate; a->channels = (uint32_t)channels;
         a->kind = kind >= FL_ASSET_IMAGE && kind <= FL_ASSET_FONT ? (Fl_AssetKind)kind : FL_ASSET_IMAGE;
         if (b->failed || !a->id || a->id >= p->next_id || (i && a->id <= p->assets[i - 1].id) || !a->name || !a->name[0] ||
             kind < FL_ASSET_IMAGE || kind > FL_ASSET_FONT || !fl_asset_extension_valid(a->extension)) b->failed = true;
@@ -820,7 +826,7 @@ Fl_Project *fl_project_open(const char *directory, Fl_EventBus *bus)
         s->id = fl_binary_get_u64(&b); s->revision = fl_binary_get_u64(&b); p->saved[i] = s->revision;
         if (!s->id || s->id >= p->next_id || !s->revision || !load_scene(p, s)) b.failed = true;
     }
-    if (!b.failed && version >= 2) load_assets(p, &b);
+    if (!b.failed && version >= 2) load_assets(p, &b, version);
     bool ok = !b.failed && b.cursor == b.size && p->name && p->name[0] && p->next_id && validate_project(p);
     free(b.data);
     if (!ok) { fl_project_destroy(p); return NULL; }

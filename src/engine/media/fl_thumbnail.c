@@ -1,10 +1,12 @@
 #include "fl_thumbnail.h"
 #include "core/fl_sha256.h"
 #include "doc/fl_binary.h"
+#include "media/fl_audio.h"
 #include "media/fl_media.h"
 #include "platform/fl_fs.h"
 #include "platform/fl_video_frame.h"
 #include "text/fl_text_raster.h"
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -89,17 +91,44 @@ static unsigned char *font_specimen(const char *path, uint32_t side, uint32_t *w
     return pixels;
 }
 
+/* Draw a centred min/max peak envelope, normalised to the clip's loudest sample, as white ink (side x side/2). */
+static unsigned char *waveform(const char *path, uint32_t side, uint32_t *w, uint32_t *h)
+{
+    uint32_t width = side, height = side / 2 ? side / 2 : 1;
+    float *peaks = malloc((size_t)width * 2 * sizeof(float));
+    unsigned char *pixels = peaks ? calloc((size_t)width * height, 4) : NULL;
+    if (!pixels || !fl_audio_waveform(path, peaks, width)) { free(peaks); free(pixels); return NULL; }
+    float loudest = 0;
+    for (uint32_t i = 0; i < width * 2; ++i) loudest = fmaxf(loudest, fabsf(peaks[i]));
+    float gain = loudest > 0.001f ? 0.95f / loudest : 1.0f;
+    float half = (height - 1) * 0.5f * gain;
+    float centre = (height - 1) * 0.5f;
+    for (uint32_t x = 0; x < width; ++x) {
+        int top = (int)(centre - peaks[2 * x + 1] * half + 0.5f), bottom = (int)(centre - peaks[2 * x] * half + 0.5f);
+        if (bottom < top) { int t = top; top = bottom; bottom = t; }
+        if (bottom == top && bottom + 1 < (int)height) ++bottom;
+        for (int y = top < 0 ? 0 : top; y <= bottom && y < (int)height; ++y) {
+            unsigned char *p = pixels + ((size_t)y * width + x) * 4;
+            p[0] = p[1] = p[2] = 255; p[3] = 230;
+        }
+    }
+    free(peaks);
+    *w = width; *h = height;
+    return pixels;
+}
+
 unsigned char *fl_thumbnail_get(const Fl_ThumbnailSource *s, uint32_t side, uint32_t *w, uint32_t *h)
 {
-    if (!s || !side || !w || !h || s->kind == FL_ASSET_AUDIO) return NULL;
+    if (!s || !side || !w || !h) return NULL;
     char cache[FL_PATH_MAX], file[FL_PATH_MAX];
     bool cacheable = cache_path(s, side, cache, sizeof(cache));
     unsigned char *pixels = cacheable ? load_cached(cache, side, w, h) : NULL;
     if (pixels) return pixels;
     if (!fl_asset_store_path(s->directory, s->hash, s->extension, file, sizeof(file))) return NULL;
     if (s->kind == FL_ASSET_IMAGE) pixels = fl_image_decode(file, side, w, h);
-    else if (s->kind == FL_ASSET_VIDEO) pixels = fl_video_frame(file, side, w, h, NULL, NULL);
+    else if (s->kind == FL_ASSET_VIDEO) pixels = fl_video_frame(file, side, w, h, NULL, NULL, NULL);
     else if (s->kind == FL_ASSET_FONT) pixels = font_specimen(file, side, w, h);
+    else if (s->kind == FL_ASSET_AUDIO) pixels = waveform(file, side, w, h);
     if (pixels && cacheable) store_cached(cache, pixels, *w, *h);
     return pixels;
 }

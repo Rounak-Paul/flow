@@ -4,6 +4,7 @@
 #include "core/fl_log.h"
 #include "core/fl_sha256.h"
 #include "core/fl_thread.h"
+#include "media/fl_audio.h"
 #include "media/fl_media.h"
 #include "platform/fl_fs.h"
 #include "platform/fl_video_frame.h"
@@ -55,12 +56,24 @@ static bool validate_media(const char *path, Fl_StoredAsset *out)
     return true;
 }
 
-/* Record a stored video's displayed size; platform frameworks identify containers by the final extension. */
+/* Record a stored video's displayed size and length; platform frameworks identify containers by the final extension. */
 static void probe_video(const char *path, Fl_StoredAsset *out)
 {
     uint32_t w, h, vw = 0, vh = 0;
-    free(fl_video_frame(path, 16, &w, &h, &vw, &vh));
+    double seconds = 0;
+    free(fl_video_frame(path, 16, &w, &h, &vw, &vh, &seconds));
     out->width = vw; out->height = vh;
+    out->duration = (uint64_t)(seconds * FL_TICKS_PER_SECOND + 0.5);
+}
+
+/* Decode a stored audio file's first block and record its stream description; false when undecodable. */
+static bool probe_audio(const char *path, Fl_StoredAsset *out)
+{
+    Fl_AudioInfo info;
+    if (!fl_audio_probe(path, &info)) return false;
+    out->sample_rate = info.sample_rate; out->channels = info.channels;
+    out->duration = info.frames ? (info.frames * FL_TICKS_PER_SECOND + info.sample_rate / 2) / info.sample_rate : 0;
+    return true;
 }
 
 Fl_ImportStatus fl_asset_store_file(const char *directory, const char *source, Fl_StoredAsset *out)
@@ -102,6 +115,11 @@ Fl_ImportStatus fl_asset_store_file(const char *directory, const char *source, F
     if (status == FL_IMPORT_ADDED && fl_fs_file_size(final) == (int64_t)out->size) fl_fs_remove(temp);
     else if (status == FL_IMPORT_ADDED && fl_fs_commit(temp, final)) out->created = true;
     else status = status == FL_IMPORT_ADDED ? FL_IMPORT_FAILED : status;
+    if (status == FL_IMPORT_ADDED && out->kind == FL_ASSET_AUDIO && !probe_audio(final, out)) {
+        if (out->created) fl_fs_remove(final);
+        out->created = false;
+        return FL_IMPORT_UNSUPPORTED;
+    }
     if (status == FL_IMPORT_ADDED) {
         if (out->kind == FL_ASSET_VIDEO) probe_video(final, out);
         return status;
@@ -148,7 +166,8 @@ static void finish(Fl_AssetImporter *im, Fl_ImportRequest *r)
             char *dot = strrchr(display, '.');
             if (dot && dot != display) *dot = 0;
             Fl_Asset record = {.name = display, .kind = r->stored.kind, .extension = r->stored.extension,
-                               .size = r->stored.size, .width = r->stored.width, .height = r->stored.height};
+                               .size = r->stored.size, .width = r->stored.width, .height = r->stored.height,
+                               .duration = r->stored.duration, .sample_rate = r->stored.sample_rate, .channels = r->stored.channels};
             memcpy(record.hash, r->stored.hash, 32);
             if (!fl_project_apply(im->project, &(Fl_Op){.kind = FL_OP_ASSET_ADD, .asset_record = &record}, &event.asset)) {
                 event.status = FL_IMPORT_FAILED; discard_store(im, r);

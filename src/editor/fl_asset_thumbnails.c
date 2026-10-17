@@ -92,7 +92,6 @@ Ca_Image *fl_asset_thumbnails_get(Fl_AssetThumbnails *t, const Fl_Asset *asset, 
         if (height) *height = e->height;
         return e->image;
     }
-    if (asset->kind == FL_ASSET_AUDIO) return NULL;
     if (t->count == t->capacity) {
         size_t capacity = t->capacity ? t->capacity * 2 : 32;
         Fl_ThumbnailEntry *grown = realloc(t->entries, capacity * sizeof(*grown));

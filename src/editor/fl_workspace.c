@@ -32,6 +32,7 @@ struct Fl_Workspace {
     Fl_Inspector *inspector;
     Fl_AssetImporter *importer;
     Fl_AssetPanel *assets;
+    Fl_AudioPlayer *player;
     Fl_Fonts    *fonts;
     Ca_Effect   *saver;
     char        *layout_path;
@@ -253,7 +254,9 @@ Fl_Workspace *fl_workspace_create(const Fl_WorkspaceDesc *desc)
     workspace->importer=fl_asset_importer_create(desc->project,desc->jobs,desc->bus);
     workspace->scene=fl_scene_panel_create(workspace->edit,desc->fonts,desc->jobs,desc->bus);
     workspace->widgets=fl_widget_library_create(workspace->edit,workspace->scene,desc->bus);
-    workspace->assets=fl_asset_panel_create(workspace->edit,workspace->scene,workspace->importer,desc->jobs,desc->bus);
+    workspace->player=fl_audio_player_create(&(Fl_AudioPlayerDesc){.bus=desc->bus});
+    workspace->assets=workspace->player ? fl_asset_panel_create(workspace->edit,workspace->scene,workspace->importer,desc->jobs,
+                                                                workspace->player,desc->bus) : NULL;
     workspace->inspector=fl_inspector_create(workspace->edit,desc->fonts,desc->bus);
     if (!workspace->edit||!workspace->importer||!workspace->scene||!workspace->widgets||!workspace->assets||
         !workspace->inspector||!create_dock(workspace, desc->window)) {
@@ -311,6 +314,7 @@ void fl_workspace_destroy(Fl_Workspace *workspace)
     ca_dock_destroy(workspace->dock);
     fl_widget_library_destroy(workspace->widgets);
     fl_asset_panel_destroy(workspace->assets);
+    fl_audio_player_destroy(workspace->player);
     fl_inspector_destroy(workspace->inspector);
     fl_scene_panel_destroy(workspace->scene);
     fl_asset_importer_destroy(workspace->importer);

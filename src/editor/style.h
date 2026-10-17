@@ -334,6 +334,8 @@
 #define FL_CLASS_CHIPS "fl-chips"
 #define FL_CLASS_CHIP "fl-chip"
 #define FL_CLASS_CHIP_SELECTED "fl-chip selected"
+#define FL_CLASS_PLAY "fl-play"
+#define FL_CLASS_PLAY_ACTIVE "fl-play active"
 #define FL_CLASS_EMPTY "fl-empty"
 #define FL_CLASS_EMPTY_ICON "fl-empty-icon"
 #define FL_STYLE_THUMBNAIL_PIXELS 192u
@@ -349,6 +351,8 @@
     ".fl-assets { width: 100%; height: 100%; padding: 8px; gap: 8px; overflow-y: auto; background: " FL_COLOR_BG_BASE "; }" \
     ".fl-asset-grid { width: 100%; flex-wrap: wrap; gap: 6px; flex-shrink: 0; }" \
     ".fl-asset-tile { width: 90px; height: 86px; flex-shrink: 0; }" \
+    ".fl-play { position: absolute; left: 8px; top: 38px; width: 22px; height: 22px; z-index: 1; font-size: " FL_FONT_XS "; border-radius: 11px; background: " FL_COLOR_BG_OVERLAY "; color: " FL_COLOR_TEXT_BRIGHT "; }" \
+    ".fl-play:hover, .fl-play.active { background: " FL_COLOR_ACCENT "; color: " FL_COLOR_ON_ACCENT "; }" \
     ".fl-asset-card { width: 100%; height: 100%; padding: 4px; gap: 4px; align-items: center; background: transparent; border-radius: " FL_RADIUS_MD "; }" \
     ".fl-asset-card:hover, .fl-font-row:hover, .fl-chip:hover { background: " FL_COLOR_HOVER "; }" \
     ".fl-asset-card.selected, .fl-font-row.selected, .fl-chip.selected { background: " FL_COLOR_SELECTION "; }" \

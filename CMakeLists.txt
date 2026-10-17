@@ -60,14 +60,16 @@ add_custom_command(
 file(GLOB_RECURSE FLOW_ENGINE_SOURCES CONFIGURE_DEPENDS src/engine/*.c)
 add_library(flow_engine STATIC ${FLOW_ENGINE_SOURCES} "${FLOW_EMBEDDED_FONT_SOURCE}")
 target_include_directories(flow_engine PUBLIC "${PROJECT_SOURCE_DIR}/src/engine")
-target_include_directories(flow_engine SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/vendors/stb")
+target_include_directories(flow_engine SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/vendors/stb" "${PROJECT_SOURCE_DIR}/vendors/miniaudio")
 target_link_libraries(flow_engine PUBLIC Threads::Threads PRIVATE freetype)
 if(APPLE)
     target_sources(flow_engine PRIVATE src/engine/platform/fl_video_frame_apple.m)
     set_source_files_properties(src/engine/platform/fl_video_frame_apple.m PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
     target_link_libraries(flow_engine PRIVATE "-framework CoreText" "-framework CoreFoundation" "-framework AVFoundation"
-                          "-framework CoreMedia" "-framework CoreGraphics" "-framework Foundation")
+                          "-framework CoreMedia" "-framework CoreGraphics" "-framework Foundation"
+                          "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
 elseif(UNIX)
+    target_link_libraries(flow_engine PRIVATE ${CMAKE_DL_LIBS})
     find_package(Fontconfig QUIET)
     if(Fontconfig_FOUND)
         target_link_libraries(flow_engine PRIVATE Fontconfig::Fontconfig)

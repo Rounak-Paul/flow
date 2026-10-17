@@ -15,11 +15,10 @@ typedef struct Fl_ThumbnailSource {
 bool fl_thumbnail_source(const Fl_Project *project, const Fl_Asset *asset, Fl_ThumbnailSource *out);
 /*
  * Return a straight-alpha sRGB RGBA8 preview fitting max_side: a downscaled
- * picture, a video frame (where the platform can decode it), or an "Aa"
- * specimen for fonts. Results are cached under .flow/cache/thumbnails.
- * Blocking; call from a worker.
+ * picture, a video frame (where the platform can decode it), an "Aa"
+ * specimen for fonts or a peak waveform for audio. Results are cached under
+ * .flow/cache/thumbnails. Blocking; call from a worker.
  *
- * Returns  malloc'd pixels (caller frees), or NULL for kinds without a visual
- *          (audio) or when generation fails.
+ * Returns  malloc'd pixels (caller frees), or NULL when generation fails.
  */
 unsigned char *fl_thumbnail_get(const Fl_ThumbnailSource *source, uint32_t max_side, uint32_t *width, uint32_t *height);

@@ -16,6 +16,8 @@ typedef struct Fl_StoredAsset {
     unsigned char hash[32];
     char extension[FL_ASSET_EXTENSION_MAX + 1];
     uint64_t size, width, height;
+    uint64_t duration;          /* ticks (FL_TICKS_PER_SECOND) for audio/video; zero when unknown */
+    uint32_t sample_rate, channels;
     bool created;               /* this call created the store file */
 } Fl_StoredAsset;
 

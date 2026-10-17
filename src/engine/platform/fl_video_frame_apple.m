@@ -32,7 +32,7 @@ static unsigned char *render(CGImageRef image, uint32_t w, uint32_t h)
 }
 
 unsigned char *fl_video_frame(const char *path, uint32_t max_side, uint32_t *width, uint32_t *height,
-                              uint32_t *video_width, uint32_t *video_height)
+                              uint32_t *video_width, uint32_t *video_height, double *out_seconds)
 {
     if (!path || !max_side || !width || !height) return NULL;
     if (@available(macOS 13.0, *)) {
@@ -61,6 +61,7 @@ unsigned char *fl_video_frame(const char *path, uint32_t max_side, uint32_t *wid
             if (video_width) *video_width = (uint32_t)lround(vw);
             if (video_height) *video_height = (uint32_t)lround(vh);
             double seconds = CMTIME_IS_NUMERIC(duration) ? CMTimeGetSeconds(duration) : 0;
+            if (out_seconds) *out_seconds = seconds > 0 && seconds < 1e9 ? seconds : 0;
             CMTime at = CMTimeMakeWithSeconds(fmin(1.0, fmax(0.0, seconds * 0.1)), 600);
             AVAssetImageGenerator *generator = [AVAssetImageGenerator assetImageGeneratorWithAsset:asset];
             generator.appliesPreferredTrackTransform = YES;
