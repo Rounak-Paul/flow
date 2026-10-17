@@ -37,6 +37,7 @@ bool fl_fs_join(char *out, size_t cap, const char *dir, const char *name)
 }
 
 static bool flush_to_disk(FILE *file);
+static bool sync_parent(const char *path);
 
 bool fl_fs_write_atomic(const char *path, const void *data, size_t size)
 {
@@ -53,6 +54,7 @@ bool fl_fs_write_atomic(const char *path, const void *data, size_t size)
     if (ok) ok = fflush(file) == 0 && flush_to_disk(file);
     if (file && fclose(file) != 0) ok = false;
     if (ok) ok = fl_fs_rename(temp, path);
+    if (ok) ok = sync_parent(path);
     if (!ok) fl_fs_remove(temp);
     free(temp);
     return ok;
@@ -190,6 +192,7 @@ int64_t fl_fs_file_size(const char *path)
 
 #include <errno.h>
 #include <sys/stat.h>
+#include <fcntl.h>
 #include <unistd.h>
 
 static bool flush_to_disk(FILE *file)
@@ -254,3 +257,46 @@ int64_t fl_fs_file_size(const char *path)
 }
 
 #endif
+
+/* Flush the renamed entry so file replacement survives a host crash. */
+static bool sync_parent(const char *path)
+{
+#ifdef _WIN32
+    (void)path; return true; /* MoveFileExW already requests WRITE_THROUGH. */
+#else
+    size_t size = strlen(path) + 1;
+    char *parent = malloc(size);
+    if (!parent) return false;
+    memcpy(parent, path, size);
+    char *slash = strrchr(parent, '/');
+    if (!slash) { free(parent); parent = NULL; }
+    else if (slash == parent) slash[1] = 0;
+    else *slash = 0;
+    int fd = open(parent ? parent : ".", O_RDONLY);
+    bool ok = fd >= 0 && fsync(fd) == 0;
+    if (fd >= 0) close(fd);
+    free(parent); return ok;
+#endif
+}
+
+bool fl_fs_absolute(const char *path, char *out, size_t cap)
+{
+    if (!path || !out || !cap) return false;
+    out[0] = 0;
+#ifdef _WIN32
+    wchar_t *wide = widen(path);
+    wchar_t *absolute = wide ? _wfullpath(NULL, wide, 0) : NULL;
+    free(wide);
+    int size = absolute ? WideCharToMultiByte(CP_UTF8, 0, absolute, -1, NULL, 0, NULL, NULL) : 0;
+    bool ok = size > 0 && (size_t)size <= cap &&
+        WideCharToMultiByte(CP_UTF8, 0, absolute, -1, out, size, NULL, NULL) != 0;
+    free(absolute); return ok;
+#else
+    char *absolute = realpath(path, NULL);
+    if (!absolute) return false;
+    size_t size = strlen(absolute) + 1;
+    bool ok = size <= cap;
+    if (ok) memcpy(out, absolute, size);
+    free(absolute); return ok;
+#endif
+}

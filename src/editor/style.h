@@ -231,4 +231,57 @@
     ".fl-log-error, .fl-log-fatal { color: " FL_COLOR_DANGER "; }"
 
 /* Complete editor stylesheet. */
-#define FL_STYLE_CSS FL_STYLE_CSS_PALETTE FL_STYLE_CSS_SYSTEM FL_STYLE_CSS_COMPONENTS
+
+
+/* Scene workspace and project manager metrics. */
+#define FL_STYLE_HIERARCHY_W 260.0f
+#define FL_STYLE_TREE_INDENT 14.0f
+#define FL_STYLE_FORM_W 420
+#define FL_STYLE_RENAME_H 150
+#define FL_STYLE_LAUNCHER_W 760
+#define FL_STYLE_LAUNCHER_H 580
+#define FL_STYLE_SCENE_RECT_RGBA {91,156,255,255}
+#define FL_STYLE_VIEW_CLEAR {0.002428f,0.002732f,0.003677f,1.0f}
+#define FL_STYLE_ARTBOARD_CLEAR {0.006995f,0.008568f,0.011612f,1.0f}
+#define FL_CLASS_TOOLBAR "fl-toolbar"
+#define FL_CLASS_HEADING "fl-heading"
+#define FL_CLASS_LABEL "fl-label"
+#define FL_CLASS_MUTED "fl-muted"
+#define FL_CLASS_ACTION "fl-action"
+#define FL_CLASS_SCENE_STRIP "fl-scene-strip"
+#define FL_CLASS_CARD "fl-scene-card"
+#define FL_CLASS_CARD_SELECTED "fl-scene-card selected"
+#define FL_CLASS_HIERARCHY "fl-hierarchy"
+#define FL_CLASS_ENTITY "fl-entity"
+#define FL_CLASS_ENTITY_SELECTED "fl-entity selected"
+#define FL_CLASS_VIEW "fl-view"
+#define FL_CLASS_VIEW_TITLE "fl-view-title"
+#define FL_CLASS_VIEWPORT "fl-viewport"
+#define FL_CLASS_FORM "fl-form"
+#define FL_CLASS_INPUT "fl-input"
+#define FL_CLASS_LAUNCHER "fl-launcher"
+#define FL_CLASS_LAUNCHER_TITLE "fl-launcher-title"
+#define FL_CLASS_RECENT "fl-recent"
+#define FL_STYLE_CSS_SCENE \
+    ".fl-scene { gap: 0px; overflow: hidden; }" \
+    ".fl-toolbar { width: 100%; min-height: 32px; height: auto; padding: 4px 8px; gap: 8px; align-items: center; flex-shrink: 0; }" \
+    ".fl-heading { color: " FL_COLOR_TEXT_BRIGHT "; font-size: " FL_FONT_MD "; }" \
+    ".fl-label { color: " FL_COLOR_TEXT_MEDIUM "; }" \
+    ".fl-muted { color: " FL_COLOR_TEXT_DIM "; font-size: " FL_FONT_SM "; }" \
+    ".fl-action { padding: 5px 10px; background: " FL_COLOR_BG_OVERLAY "; border-radius: " FL_RADIUS_SM "; color: " FL_COLOR_TEXT_BRIGHT "; flex-shrink: 0; }" \
+    ".fl-action:hover, .fl-recent:hover { background: " FL_COLOR_SELECTION "; }" \
+    ".fl-scene-strip { width: 100%; height: 104px; flex-shrink: 0; padding: 8px; gap: 8px; overflow-x: auto; background: " FL_COLOR_BG_ELEVATED "; }" \
+    ".fl-scene-card { width: 164px; height: 82px; flex-shrink: 0; overflow: hidden; padding: 12px; gap: 12px; background: " FL_COLOR_BG_SURFACE "; border: 1px solid " FL_COLOR_SEPARATOR "; border-radius: " FL_RADIUS_MD "; }" \
+    ".fl-scene-card.selected { border-color: " FL_COLOR_ACCENT "; background: " FL_COLOR_SELECTION "; }" \
+    ".fl-hierarchy { width: 100%; height: 100%; overflow-y: auto; gap: 4px; padding: 8px 0px; background: " FL_COLOR_BG_BASE "; }" \
+    ".fl-entity { width: 100%; height: 28px; flex-shrink: 0; overflow: hidden; padding: 4px 8px; background: transparent; gap: 0px; }" \
+    ".fl-entity:hover { background: " FL_COLOR_HOVER "; }" \
+    ".fl-entity.selected { background: " FL_COLOR_SELECTION "; }" \
+    ".fl-view { width: 100%; height: 100%; gap: 0px; overflow: hidden; }" \
+    ".fl-view-title { height: 30px; padding: 8px; flex-shrink: 0; color: " FL_COLOR_TEXT_MUTED "; }" \
+    ".fl-viewport { width: 100%; flex-grow: 1; min-height: 0px; }" \
+    ".fl-form { width: 100%; height: 100%; padding: 16px; gap: 12px; background: " FL_COLOR_BG_BASE "; }" \
+    ".fl-input { width: 100%; height: 32px; padding: 6px 8px; flex-shrink: 0; background: " FL_COLOR_BG_SURFACE "; color: " FL_COLOR_TEXT_BRIGHT "; border-radius: " FL_RADIUS_SM "; }" \
+    ".fl-launcher { width: 100%; height: 100%; padding: 28px; gap: 12px; overflow-y: auto; background: " FL_COLOR_BG_BASE "; }" \
+    ".fl-launcher-title { font-size: 28px; color: " FL_COLOR_TEXT_BRIGHT "; }" \
+    ".fl-recent { width: 100%; height: 36px; padding: 8px; flex-shrink: 0; justify-content: flex-start; color: " FL_COLOR_TEXT_MEDIUM "; background: " FL_COLOR_BG_ELEVATED "; }"

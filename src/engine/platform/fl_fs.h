@@ -55,7 +55,8 @@ int64_t fl_fs_file_size(const char *path);
  * flush it to stable storage, then rename it over the destination. Readers
  * see either the old or the new contents, never a partial write.
  *
- * Returns  true on success; on failure the destination is unchanged.
+ * Returns  true on success. Failure before rename preserves the destination;
+ *          failure flushing the directory may leave the new file committed.
  */
 bool fl_fs_write_atomic(const char *path, const void *data, size_t size);
 
@@ -77,3 +78,6 @@ char *fl_fs_read_file(const char *path, size_t max_size, size_t *out_size);
  * Returns  false when the result would not fit; out is then empty.
  */
 bool fl_fs_join(char *out, size_t cap, const char *dir, const char *name);
+
+/* Resolve an existing path to an absolute UTF-8 path, writing at most cap bytes. */
+bool fl_fs_absolute(const char *path, char *out, size_t cap);

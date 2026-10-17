@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/fl_event.h"
+#include "project/fl_project.h"
 
 #include <ca_dock.h>
 #include <causality.h>
@@ -28,6 +29,7 @@ typedef struct Fl_DockEventPayload {
 } Fl_DockEventPayload;
 
 typedef struct Fl_WorkspaceDesc {
+    Fl_Project  *project;       /* open project; required */
     Ca_Window   *window;        /* main window; required                     */
     Fl_EventBus *bus;           /* application bus; required                 */
     const char  *layout_path;   /* persisted layout file, or NULL to disable */

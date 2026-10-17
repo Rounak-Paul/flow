@@ -21,6 +21,9 @@ struct Fl_MenuBar {
     Ca_Window       *window;
     Fl_EventBus     *bus;
     Fl_Workspace    *workspace;
+    Fl_Project *project;
+    void (*projects)(void *);
+    void *projects_data;
     PanelToggle     *toggles;
     Ca_MenuItemDesc *items;
     char           (*labels)[LABEL_MAX];
@@ -41,6 +44,19 @@ static void toggle_panel(void *user_data)
     fl_workspace_toggle_panel(menubar->workspace, fl_workspace_panel_id(menubar->workspace, toggle->panel));
 }
 
+/* Save the current project through the shared persistence boundary. */
+static void save_project(void *data)
+{
+    Fl_MenuBar *bar = data;
+    if (!fl_project_save(bar->project)) FL_LOG_ERROR("project", "save failed");
+}
+
+/* Request a deferred transition back to the separate project manager. */
+static void show_projects(void *data)
+{
+    Fl_MenuBar *bar = data; bar->projects(bar->projects_data);
+}
+
 /* Rebuild the menus from the workspace's current panel visibility. */
 static void install_menus(Fl_MenuBar *menubar)
 {
@@ -56,7 +72,12 @@ static void install_menus(Fl_MenuBar *menubar)
             .label = menubar->labels[i], .action = toggle_panel, .action_data = &menubar->toggles[i],
         };
     }
+    const Ca_MenuItemDesc file[] = {
+        {.label = "Save project", .action = save_project, .action_data = menubar},
+        {.label = "Projects...", .action = show_projects, .action_data = menubar},
+    };
     const Ca_MenuDesc menus[] = {
+        {.label = "File", .items = file, .item_count = 2},
         { .label = "View", .items = menubar->items, .item_count = menubar->count },
     };
     ca_window_set_title_bar_menus(menubar->window, menus, (int)(sizeof(menus) / sizeof(menus[0])));
@@ -102,14 +123,16 @@ static bool observe(Fl_MenuBar *menubar, const char *name)
            }).generation != 0;
 }
 
-Fl_MenuBar *fl_menubar_create(Ca_Window *window, Fl_EventBus *bus, Fl_Workspace *workspace)
+Fl_MenuBar *fl_menubar_create(Ca_Window *window, Fl_EventBus *bus, Fl_Workspace *workspace,
+                                 Fl_Project *project, void (*projects)(void *), void *data)
 {
-    if (!window || !bus || !workspace) return NULL;
+    if (!window || !bus || !workspace || !project || !projects) return NULL;
     Fl_MenuBar *menubar = calloc(1, sizeof(*menubar));
     if (!menubar) return NULL;
     menubar->window = window;
     menubar->bus = bus;
     menubar->workspace = workspace;
+    menubar->project = project; menubar->projects = projects; menubar->projects_data = data;
     menubar->count = fl_workspace_panel_count(workspace);
     if (menubar->count > 0) {
         const size_t n = (size_t)menubar->count;

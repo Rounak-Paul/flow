@@ -2,6 +2,8 @@
 
 #include "fl_menubar.h"
 #include "fl_workspace.h"
+#include "fl_launcher.h"
+#include "core/fl_clock.h"
 #include "style.h"
 
 #include "core/fl_atomic.h"
@@ -28,6 +30,10 @@ struct Fl_Editor {
     Ca_Window        *window;
     Fl_Workspace     *workspace;
     Fl_MenuBar       *menubar;
+    Fl_Launcher *launcher;
+    Fl_Project *project;
+    uint64_t save_after;
+    bool show_projects;
     Ca_Effect        *bus_pump;
     Fl_EventType      quit_event;
     Fl_EventType      log_event;
@@ -49,16 +55,57 @@ static void wake_ui_loop(void *user_data)
     if (fl_atomic_load_u32(&editor->ui_ready)) ca_instance_wake();
 }
 
-/*
- * Per-tick frame effect delivering queued bus events before UI layout and
- * rendering, so posted changes appear in the same frame.
- *
- * user_data  Owning editor.
- */
+/* Build a project window after a launcher selection on the UI thread. */
+static bool open_project_window(Fl_Editor *editor);
+
+/* Pump operations and debounce project saves; window transitions occur outside UI callbacks. */
 static void pump_bus(void *user_data)
 {
     Fl_Editor *editor = user_data;
     fl_event_bus_dispatch(editor->bus);
+    if (editor->show_projects && editor->window) {
+        editor->show_projects = false;
+        if (!fl_project_save(editor->project)) {
+            FL_LOG_ERROR(LOG_TAG, "cannot close project: save failed"); return;
+        }
+        editor->launcher = fl_launcher_create(editor->instance, editor->bus);
+        if (editor->launcher) ca_window_destroy(editor->window);
+    }
+    if (editor->launcher) {
+        Fl_Project *selected = fl_launcher_take_project(editor->launcher);
+        if (selected) {
+            editor->project = selected;
+            if (open_project_window(editor)) {
+                fl_launcher_destroy(editor->launcher); editor->launcher = NULL;
+            } else {
+                if (editor->window) ca_window_destroy(editor->window);
+                else { fl_project_destroy(editor->project); editor->project = NULL; }
+                FL_LOG_ERROR(LOG_TAG, "could not open project workspace");
+            }
+        }
+    }
+    if (editor->project && fl_project_dirty(editor->project) &&
+        fl_clock_monotonic_ns() >= editor->save_after) {
+        if (!fl_project_save(editor->project)) FL_LOG_ERROR(LOG_TAG, "automatic save failed; retrying in five seconds");
+        editor->save_after = fl_clock_monotonic_ns() + UINT64_C(5000000000);
+        if (fl_project_dirty(editor->project)) ca_instance_request_frame_after(editor->instance, 5.0);
+    }
+}
+
+/* Observe model mutations and schedule one save after edits settle. */
+static bool on_project_changed(const Fl_Event *event, void *user_data)
+{
+    (void)event; Fl_Editor *editor = user_data;
+    editor->save_after = fl_clock_monotonic_ns() + UINT64_C(750000000);
+    ca_instance_request_frame_after(editor->instance, 0.75);
+    return false;
+}
+
+/* Defer project manager navigation until the menu callback has returned. */
+static void request_projects(void *data)
+{
+    Fl_Editor *editor = data; editor->show_projects = true;
+    ca_instance_request_frame_after(editor->instance, 0);
 }
 
 /*
@@ -88,6 +135,7 @@ static bool on_quit_requested(const Fl_Event *event, void *user_data)
     const int32_t *sig = event->payload;
     FL_LOG_INFO(LOG_TAG, "quit requested (signal %d)", sig ? *sig : 0);
     if (editor->window) ca_window_close(editor->window);
+    else if (editor->launcher) { fl_launcher_destroy(editor->launcher); editor->launcher = NULL; }
     return false;
 }
 
@@ -142,8 +190,19 @@ static void on_main_window_close(Ca_Window *window, void *user_data)
     editor->menubar = NULL;
     fl_workspace_destroy(editor->workspace);
     editor->workspace = NULL;
-    ca_instance_destroy_other_windows(editor->instance, window);
+    if (!editor->launcher) ca_instance_destroy_other_windows(editor->instance, window);
+    fl_project_destroy(editor->project); editor->project = NULL;
     editor->window = NULL;
+}
+
+/* Refuse to close a project when its current changes cannot be saved. */
+static bool on_project_close_request(Ca_Window *window, void *data)
+{
+    (void)window; Fl_Editor *editor = data;
+    if (!editor->project || fl_project_save(editor->project)) return true;
+    ca_popup_show(editor->instance, &(Ca_PopupDesc){.title = "Project not saved",
+        .message = "Saving failed. The project remains open so you can retry."});
+    return false;
 }
 
 /*
@@ -160,7 +219,7 @@ static bool build_ui(Fl_Editor *editor)
     if (!persist) FL_LOG_WARN(LOG_TAG, "config directory unavailable; workspace layout will not persist");
 
     editor->workspace = fl_workspace_create(&(Fl_WorkspaceDesc){
-        .window = editor->window, .bus = editor->bus, .layout_path = persist ? layout : NULL,
+        .window = editor->window, .bus = editor->bus, .project = editor->project, .layout_path = persist ? layout : NULL,
     });
     if (!editor->workspace) return false;
 
@@ -171,7 +230,7 @@ static bool build_ui(Fl_Editor *editor)
     const bool mounted = fl_workspace_mount(editor->workspace);
     ca_ui_end();
     if (!mounted) return false;
-    editor->menubar = fl_menubar_create(editor->window, editor->bus, editor->workspace);
+    editor->menubar = fl_menubar_create(editor->window, editor->bus, editor->workspace, editor->project, request_projects, editor);
     return editor->menubar != NULL;
 }
 
@@ -262,6 +321,19 @@ static bool start_jobs(Fl_Editor *editor)
     return true;
 }
 
+/* Assemble independent style sections without exceeding C's literal-size limit. */
+static Ca_Stylesheet *create_stylesheet(void)
+{
+    const char *parts[] = {FL_STYLE_CSS_PALETTE, FL_STYLE_CSS_SYSTEM, FL_STYLE_CSS_COMPONENTS, FL_STYLE_CSS_SCENE};
+    size_t size = 1;
+    for (size_t i = 0; i < sizeof(parts) / sizeof(parts[0]); ++i) size += strlen(parts[i]);
+    char *css = malloc(size);
+    if (!css) return NULL;
+    css[0] = 0;
+    for (size_t i = 0; i < sizeof(parts) / sizeof(parts[0]); ++i) strcat(css, parts[i]);
+    Ca_Stylesheet *sheet = ca_css_parse(css); free(css); return sheet;
+}
+
 static bool start_ui(Fl_Editor *editor)
 {
     editor->instance = ca_instance_create(&(Ca_InstanceDesc){
@@ -275,7 +347,7 @@ static bool start_ui(Fl_Editor *editor)
     }
     fl_atomic_store_u32(&editor->ui_ready, 1u);
 
-    editor->stylesheet = ca_css_parse(FL_STYLE_CSS);
+    editor->stylesheet = create_stylesheet();
     if (!editor->stylesheet) {
         FL_LOG_ERROR(LOG_TAG, "failed to parse the %s stylesheet", FL_THEME_NAME);
         return false;
@@ -283,12 +355,30 @@ static bool start_ui(Fl_Editor *editor)
     ca_instance_set_stylesheet(editor->instance, editor->stylesheet);
     FL_LOG_INFO(LOG_TAG, "theme: %s", FL_THEME_NAME);
 
+    editor->launcher = fl_launcher_create(editor->instance, editor->bus);
+    if (!editor->launcher) return false;
+    Fl_EventType changed = fl_event_type_register(editor->bus, FL_EVENT_PROJECT_CHANGED, sizeof(Fl_ProjectChange));
+    if (changed == FL_EVENT_TYPE_INVALID || !fl_event_subscribe(editor->bus, &(Fl_SubscribeDesc){
+            .type = changed, .fn = on_project_changed, .user_data = editor, .owner = editor}).generation) return false;
+
+    editor->bus_pump = ca_frame_effect(editor->instance, pump_bus, editor);
+    if (!editor->bus_pump) {
+        FL_LOG_ERROR(LOG_TAG, "failed to register event bus pump");
+        return false;
+    }
+    return true;
+}
+
+/* Create the editor workspace only after a project is selected. */
+static bool open_project_window(Fl_Editor *editor)
+{
     editor->window = ca_window_create(editor->instance, &(Ca_WindowDesc){
         .title         = FL_STYLE_APP_NAME " " FLOW_VERSION,
         .width         = FL_STYLE_WINDOW_RESTORE_W,
         .height        = FL_STYLE_WINDOW_RESTORE_H,
         .on_close      = on_main_window_close,
         .on_close_data = editor,
+        .on_close_request = on_project_close_request,
     });
     if (!editor->window) {
         FL_LOG_ERROR(LOG_TAG, "failed to create main window");
@@ -300,11 +390,7 @@ static bool start_ui(Fl_Editor *editor)
         return false;
     }
 
-    editor->bus_pump = ca_frame_effect(editor->instance, pump_bus, editor);
-    if (!editor->bus_pump) {
-        FL_LOG_ERROR(LOG_TAG, "failed to register event bus pump");
-        return false;
-    }
+    ca_window_set_title(editor->window, fl_project_name(editor->project));
     return true;
 }
 
@@ -350,6 +436,9 @@ void fl_editor_destroy(Fl_Editor *editor)
     editor->menubar = NULL;
     fl_workspace_destroy(editor->workspace);
     editor->workspace = NULL;
+    fl_launcher_destroy(editor->launcher); editor->launcher = NULL;
+    if (editor->project) fl_project_save(editor->project);
+    fl_project_destroy(editor->project); editor->project = NULL;
     ca_effect_destroy(editor->bus_pump);
     editor->bus_pump = NULL;
     fl_atomic_store_u32(&editor->ui_ready, 0u);

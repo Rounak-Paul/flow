@@ -1,6 +1,7 @@
 #include "fl_workspace.h"
 
 #include "fl_console.h"
+#include "fl_scene_panel.h"
 #include "style.h"
 
 #include "core/fl_clock.h"
@@ -21,6 +22,7 @@ struct Fl_Workspace {
     Fl_EventBus *bus;
     Ca_Dock     *dock;
     Fl_Console  *console;
+    Fl_ScenePanel *scene;
     Ca_Effect   *saver;
     char        *layout_path;
     char        *saved_layout;      /* read by the dock during mount */
@@ -32,22 +34,6 @@ struct Fl_Workspace {
     bool         save_pending;
     uint64_t     save_after_ns;
 };
-
-/*
- * Scene panel body: the stage surface the scene renderer will draw into.
- *
- * dock       Owning dock.
- * window     Window hosting the panel.
- * user_data  Unused.
- */
-static void build_scene_panel(Ca_Dock *dock, Ca_Window *window, void *user_data)
-{
-    (void)dock;
-    (void)window;
-    (void)user_data;
-    ca_div_begin(&(Ca_DivDesc){ .direction = CA_VERTICAL, .style = FL_CLASS_SCENE });
-    ca_div_end();
-}
 
 /*
  * Factory arrangement: the scene is the central group, so it alone absorbs
@@ -152,7 +138,8 @@ static bool create_dock(Fl_Workspace *workspace, Ca_Window *window)
     });
     if (!workspace->dock) return false;
     const bool scene = ca_dock_register_panel(workspace->dock, &(Ca_DockPanelDesc){
-        .id = SCENE_PANEL_ID, .title = "Scene", .build = build_scene_panel,
+        .id = SCENE_PANEL_ID, .title = "Scene", .build = fl_scene_panel_build, .teardown = fl_scene_panel_teardown,
+        .user_data = workspace->scene,
     });
     const bool console = scene && ca_dock_register_panel(workspace->dock, &(Ca_DockPanelDesc){
         .id = FL_CONSOLE_PANEL_ID, .title = "Console", .dock_beside = SCENE_PANEL_ID,
@@ -165,7 +152,7 @@ static bool create_dock(Fl_Workspace *workspace, Ca_Window *window)
 
 Fl_Workspace *fl_workspace_create(const Fl_WorkspaceDesc *desc)
 {
-    if (!desc || !desc->window || !desc->bus) return NULL;
+    if (!desc || !desc->window || !desc->bus || !desc->project) return NULL;
     Fl_Workspace *workspace = calloc(1, sizeof(*workspace));
     if (!workspace) return NULL;
     workspace->instance = ca_window_instance(desc->window);
@@ -192,7 +179,8 @@ Fl_Workspace *fl_workspace_create(const Fl_WorkspaceDesc *desc)
         fl_workspace_destroy(workspace);
         return NULL;
     }
-    if (!create_dock(workspace, desc->window)) {
+    workspace->scene = fl_scene_panel_create(desc->project, desc->bus);
+    if (!workspace->scene || !create_dock(workspace, desc->window)) {
         FL_LOG_ERROR(LOG_TAG, "failed to create the dock");
         fl_workspace_destroy(workspace);
         return NULL;
@@ -243,6 +231,7 @@ void fl_workspace_destroy(Fl_Workspace *workspace)
     if (workspace->mounted) fl_workspace_save(workspace);
     ca_effect_destroy(workspace->saver);
     ca_dock_destroy(workspace->dock);
+    fl_scene_panel_destroy(workspace->scene);
     fl_console_destroy(workspace->console);
     fl_event_unsubscribe_owner(workspace->bus, workspace);
     free(workspace->saved_layout);

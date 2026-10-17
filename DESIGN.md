@@ -43,7 +43,7 @@ Flow's bet: a shared, semantic, operation-based document where both parties edit
 
 ## 2. Product Principles
 
-1. **Document is data.** The scene graph is plain, versioned, schema-validated JSON. Code exists only inside sealed components with typed parameters.
+1. **Document is data.** The scene graph is plain, versioned, schema-validated data with a canonical binary disk representation. Code exists only inside sealed components with typed parameters.
 2. **Operations, not rewrites.** Every mutation is a typed op against stable IDs. Ops are logged, undoable, attributable and rebased.
 3. **Human edits are sovereign.** A user-authored value is never changed by an agent without explicit scope or approval.
 4. **Selection is scope.** What the user points at defines what the agent sees and what it may change.
@@ -183,25 +183,29 @@ Agents work with eyes open. Through MCP an agent can:
 
 ### 5.1 Project layout on disk
 
-Diff-friendly and git-friendly, one file per scene, stable key ordering:
+Versioned binary files, independently replaceable per scene. The project manifest records the render order; export will render those scenes in order and combine them into one video. Export is a later milestone.
 
 ```
 my-talk.flow/
-├── flow.json                 # project manifest: schema version, metadata, output presets
-├── theme.json                # design tokens
+├── project.flow                   # binary manifest: name, next stable id, ordered scene references
 ├── scenes/
-│   ├── <sceneId>.json        # entities, tracks, beats, script for one scene
-│   └── ...
-├── components/               # project-local component sources (JavaScript, run in QuickJS)
-├── assets/                   # content-addressed: <sha256>.<ext>
-├── audio/                    # voiceover takes + alignment JSON
-└── .flow/                    # local, not committed: oplog, caches, agent sessions
+│   └── <sceneId>-<revision>.flscene # immutable binary scene snapshots
+├── components/                    # project-local sources (future QuickJS runtime)
+├── assets/                        # imported assets; content addressing planned
+├── exports/                       # final video outputs (later)
+└── .flow/
+    ├── lock                       # OS-backed exclusive writer lock
+    └── cache/                     # disposable derived files
 ```
+
+The implemented v1 binary format and ownership contracts are in `.context/scenes-and-projects.md`. File headers contain magic, schema version, payload length and checksum. Strings/components are length-prefixed; numeric fields have explicit little-endian encodings. Unknown component schemas preserve opaque payloads. Scene snapshots commit before the manifest; failed writes leave the previous committed project readable. JSON remains suitable for agent protocol messages and schemas, but is not the project or scene storage format.
+
+The following conceptual types also include planned features; implemented C types are authoritative for v1.
 
 ### 5.2 Core types
 
 ```ts
-type Id = string; // 21-char nanoid, globally unique, never reused
+type Id = bigint; // stable project-wide monotonic u64; zero reserved, never reused
 
 interface Project {
   schemaVersion: number;
@@ -534,9 +538,9 @@ export default defineComponent({
 
 ### 6.8 Persistence and history
 
-- **OpLog:** append-only in `.flow/oplog`, made of length-prefixed binary records with a CRC32C each. A torn tail record (after a crash) is detected and truncated on open. It holds the authoritative session history: undo/redo, changeset rebase and provenance.
-- **Snapshots** are the committed scene JSON files (yyjson, sorted keys, stable formatting). They are written atomically (temp file → fsync → rename / `ReplaceFileW` → fsync directory) and debounced after ops.
-- On startup the core loads the snapshots. If the oplog head is ahead of them (crash recovery), it replays the remaining ops.
+- **OpLog (planned, not implemented in the initial project system):** append-only in `.flow/oplog`, made of length-prefixed binary records with a CRC32C each. A torn tail record (after a crash) is detected and truncated on open. It holds the authoritative session history: undo/redo, changeset rebase and provenance.
+- **Snapshots** are versioned binary `.flscene` files referenced by the ordered `project.flow` manifest. They are written atomically (temp file → fsync → rename / `ReplaceFileW` → fsync directory) and debounced after ops.
+- On startup the core validates and loads the committed snapshots. Future oplog replay will recover operations beyond the most recent snapshot.
 - **fs watching** ignores the core's own writes by content hash, so a save never triggers a re-import loop.
 - **Assets** are content-addressed (SHA-256) and deduplicated.
 - **Collaboration later:** ops address IDs and property paths with Lamport clocks, and children are ordered by fractional index. That makes the model convergent per property (last-writer-wins) and per list. Multi-user sync can be layered on top without changing the format.

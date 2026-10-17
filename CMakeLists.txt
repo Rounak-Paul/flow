@@ -28,6 +28,7 @@ endif()
 set(FLOW_BIN_DIR "${PROJECT_SOURCE_DIR}/bin" CACHE PATH "Directory receiving the flow executable")
 
 find_package(Threads REQUIRED)
+find_package(Vulkan REQUIRED)
 
 set(FLOW_BUILD_TESTING_SAVED ${BUILD_TESTING})
 set(BUILD_TESTING OFF)
@@ -54,13 +55,17 @@ target_compile_definitions(flow_engine PRIVATE
     $<$<PLATFORM_ID:Linux>:_GNU_SOURCE>
     $<$<PLATFORM_ID:Darwin>:_DARWIN_C_SOURCE>
 )
+if(UNIX)
+    target_link_libraries(flow_engine PUBLIC m)
+endif()
 flow_target_warnings(flow_engine)
 
 # Editor: causality-based UI on top of the engine.
 file(GLOB_RECURSE FLOW_EDITOR_SOURCES CONFIGURE_DEPENDS src/editor/*.c)
 add_library(flow_editor STATIC ${FLOW_EDITOR_SOURCES})
 target_include_directories(flow_editor PUBLIC "${PROJECT_SOURCE_DIR}/src/editor")
-target_link_libraries(flow_editor PUBLIC flow_engine PRIVATE causality)
+target_include_directories(flow_editor SYSTEM PRIVATE $<TARGET_PROPERTY:VulkanMemoryAllocator,INTERFACE_INCLUDE_DIRECTORIES>)
+target_link_libraries(flow_editor PUBLIC flow_engine PRIVATE causality Vulkan::Vulkan VulkanMemoryAllocator)
 # causality is linked statically into the executable, so its public symbols
 # must resolve as plain declarations rather than DLL imports on Windows.
 target_compile_definitions(flow_editor PRIVATE
