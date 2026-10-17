@@ -432,7 +432,8 @@ src/
     agent/         fl_context · fl_mcp · fl_session · fl_intents
   editor/          Causality host; static library `flow_editor`
                    fl_editor (instance, windows, bus pump) · ui/ (canvas, outline, inspector,
-                   timeline, beats, script, agent, review, export) · fl_presenter · theme.css (embedded)
+                   timeline, beats, script, agent, review, export) · fl_presenter · style.h (all
+                   theme tokens, class names and the stylesheet; the only place visuals are defined)
   main.c           mode dispatch: editor | mcp | render | export | lint | op | new
 tests/             mirrors src/: unit + golden-frame + fault-injection suites (CTest)
 ```

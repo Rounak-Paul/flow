@@ -1,5 +1,7 @@
 #include "fl_editor.h"
 
+#include "style.h"
+
 #include "core/fl_atomic.h"
 #include "core/fl_log.h"
 #include "core/fl_thread.h"
@@ -13,14 +15,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define FLOW_WINDOW_WIDTH  1024
-#define FLOW_WINDOW_HEIGHT 640
-#define LOG_TAG            "editor"
+#define LOG_TAG "editor"
 
 struct Fl_Editor {
     Fl_EventBus      *bus;
     Fl_JobSystem     *jobs;
     Ca_Instance      *instance;
+    Ca_Stylesheet    *stylesheet;
     Ca_Window        *window;
     Ca_Effect        *bus_pump;
     Fl_EventType      quit_event;
@@ -143,8 +144,8 @@ static void on_main_window_close(Ca_Window *window, void *user_data)
 static void build_ui(Ca_Window *window)
 {
     ca_ui_begin(window, &(Ca_DivDesc){
-        .direction  = CA_VERTICAL,
-        .background = ca_color(0.07f, 0.07f, 0.09f, 1.0f),
+        .direction = CA_VERTICAL,
+        .style     = FL_CLASS_APP_ROOT,
     });
     ca_ui_end();
 }
@@ -239,8 +240,9 @@ static bool start_jobs(Fl_Editor *editor)
 static bool start_ui(Fl_Editor *editor)
 {
     editor->instance = ca_instance_create(&(Ca_InstanceDesc){
-        .app_name             = "Flow",
+        .app_name             = FL_STYLE_APP_NAME,
         .prefer_dedicated_gpu = true,
+        .default_ui_scale     = FL_STYLE_UI_SCALE,
     });
     if (!editor->instance) {
         FL_LOG_ERROR(LOG_TAG, "failed to create causality instance");
@@ -248,10 +250,18 @@ static bool start_ui(Fl_Editor *editor)
     }
     fl_atomic_store_u32(&editor->ui_ready, 1u);
 
+    editor->stylesheet = ca_css_parse(FL_STYLE_CSS);
+    if (!editor->stylesheet) {
+        FL_LOG_ERROR(LOG_TAG, "failed to parse the %s stylesheet", FL_THEME_NAME);
+        return false;
+    }
+    ca_instance_set_stylesheet(editor->instance, editor->stylesheet);
+    FL_LOG_INFO(LOG_TAG, "theme: %s", FL_THEME_NAME);
+
     editor->window = ca_window_create(editor->instance, &(Ca_WindowDesc){
-        .title         = "Flow " FLOW_VERSION,
-        .width         = FLOW_WINDOW_WIDTH,
-        .height        = FLOW_WINDOW_HEIGHT,
+        .title         = FL_STYLE_APP_NAME " " FLOW_VERSION,
+        .width         = FL_STYLE_WINDOW_RESTORE_W,
+        .height        = FL_STYLE_WINDOW_RESTORE_H,
         .on_close      = on_main_window_close,
         .on_close_data = editor,
     });
@@ -313,6 +323,9 @@ void fl_editor_destroy(Fl_Editor *editor)
     fl_atomic_store_u32(&editor->ui_ready, 0u);
     if (editor->instance) ca_instance_destroy(editor->instance);
     editor->instance = NULL;
+    /* Causality borrows the stylesheet; it may only go once the instance has. */
+    ca_css_destroy(editor->stylesheet);
+    editor->stylesheet = NULL;
 
     if (editor->bus && !fl_event_bus_destroy(editor->bus))
         FL_LOG_ERROR(LOG_TAG, "event bus destroyed from an invalid context");
