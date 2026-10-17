@@ -261,14 +261,13 @@ static void typography_section(Fl_Inspector *p)
     ca_text(&(Ca_TextDesc){.text="Typography",.style=FL_CLASS_HEADING});
     Fl_FontMatch match=fl_fonts_match(p->fonts,&p->typography);
     char line[FL_TYPOGRAPHY_FAMILY_MAX+96];
-    snprintf(line,sizeof(line),"Font: %s",p->typography.family);
-    ca_text(&(Ca_TextDesc){.text=line,.style=FL_CLASS_LABEL,.wrap=true});
+    ca_text(&(Ca_TextDesc){.text=p->typography.family,.style=FL_CLASS_LABEL,.wrap=true});
     if (!match.found) {
-        snprintf(line,sizeof(line),"%s is not available on this computer; showing %s.",p->typography.family,FL_TYPOGRAPHY_DEFAULT_FAMILY);
+        snprintf(line,sizeof(line),"Not installed, using %s",FL_TYPOGRAPHY_DEFAULT_FAMILY);
         ca_text(&(Ca_TextDesc){.text=line,.style=FL_CLASS_WARNING,.wrap=true});
     }
-    if (fl_fonts_scanning(p->fonts)) ca_text(&(Ca_TextDesc){.text="Loading installed fonts...",.style=FL_CLASS_MUTED});
-    ca_input(&(Ca_InputDesc){.text=p->fields[FONT_FILTER].value,.placeholder="Search fonts",.id="property-font-filter",
+    if (fl_fonts_scanning(p->fonts)) ca_text(&(Ca_TextDesc){.text="Loading fonts...",.style=FL_CLASS_MUTED});
+    ca_input(&(Ca_InputDesc){.text=p->fields[FONT_FILTER].value,.placeholder="Search",.id="property-font-filter",
         .style=FL_CLASS_INPUT,.on_change=filter_changed,.change_data=&p->fields[FONT_FILTER]});
     ca_div_begin(&(Ca_DivDesc){.direction=CA_VERTICAL,.style=FL_CLASS_FONT_LIST,.id="font-list"});
     uint64_t generation=fl_fonts_generation(p->fonts);
@@ -297,7 +296,7 @@ static void typography_section(Fl_Inspector *p)
     }
     ca_div_end();
     if (matching>shown) {
-        snprintf(line,sizeof(line),"Showing %zu of %zu families. Refine the search to see more.",shown,matching);
+        snprintf(line,sizeof(line),"%zu of %zu",shown,matching);
         ca_text(&(Ca_TextDesc){.text=line,.style=FL_CLASS_MUTED,.wrap=true});
     }
     const Fl_FontFace *faces;size_t face_count=fl_fonts_faces(p->fonts,p->typography.family,&faces);
@@ -325,8 +324,6 @@ static void typography_section(Fl_Inspector *p)
         .style=FL_CLASS_PROPERTY_SELECT,.on_change=weight_chosen,.change_data=p});
     ca_div_end();
     ca_checkbox(&(Ca_CheckboxDesc){.text="Italic",.checked=p->typography.italic,.on_change=italic_changed,.change_data=p});
-    if (match.synthetic_bold||match.synthetic_italic)
-        ca_text(&(Ca_TextDesc){.text="This family has no matching style; it is synthesized.",.style=FL_CLASS_MUTED,.wrap=true});
 }
 /* Emit the image asset chooser. */
 static void image_section(Fl_Inspector *p)
@@ -366,7 +363,7 @@ void fl_inspector_build(Ca_Dock *dock,Ca_Window *window,void *data)
     p->selection_count=fl_scene_edit_count(p->edit);
     ca_div_begin(&(Ca_DivDesc){.direction=CA_VERTICAL,.style=FL_CLASS_INSPECTOR});
     if (!entity||fl_scene_edit_count(p->edit)!=1) {
-        ca_text(&(Ca_TextDesc){.text=entity ? "Multiple entities selected. Drag in the viewport to move them together." : "Select an entity in the hierarchy or viewport.",.style=FL_CLASS_MUTED,.wrap=true});
+        ca_text(&(Ca_TextDesc){.text=entity ? "Multiple selected" : "Nothing selected",.style=FL_CLASS_MUTED,.wrap=true});
         ca_div_end();return;
     }
     if ((p->refresh||p->entity!=entity->id||p->scene!=scene->id)&&!load(p,scene,entity)) {

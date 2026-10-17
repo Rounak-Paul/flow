@@ -2,6 +2,7 @@
 #include "core/fl_clock.h"
 #include "core/fl_sha256.h"
 #include "media/fl_media.h"
+#include "media/fl_thumbnail.h"
 #include "project/fl_asset_import.h"
 #include "platform/fl_fs.h"
 #include "platform/fl_paths.h"
@@ -158,6 +159,46 @@ static void test_project_assets(const char *root)
     fl_project_destroy(p);
 }
 
+static void test_thumbnails(const char *root)
+{
+    char dir[FL_PATH_MAX], source[FL_PATH_MAX], cache[FL_PATH_MAX];
+    CHECK(fl_fs_join(dir, sizeof(dir), root, "thumbs"));
+    Fl_Project *p = fl_project_create(dir, "Thumbs", NULL);
+    CHECK(p != NULL); if (!p) return;
+    CHECK(write_file(root, "thumb.png", PNG, sizeof(PNG), source));
+    Fl_StoredAsset s;
+    CHECK(fl_asset_store_file(dir, source, &s) == FL_IMPORT_ADDED);
+    Fl_Asset record = {.name = "Thumb", .kind = s.kind, .extension = s.extension, .size = s.size, .width = s.width, .height = s.height};
+    memcpy(record.hash, s.hash, 32);
+    Fl_Id id;
+    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ASSET_ADD, .asset_record = &record}, &id));
+    Fl_ThumbnailSource src;
+    CHECK(fl_thumbnail_source(p, fl_project_asset(p, id), &src));
+    uint32_t w = 0, h = 0, w2 = 0, h2 = 0;
+    unsigned char *first = fl_thumbnail_get(&src, 2, &w, &h), *second = fl_thumbnail_get(&src, 2, &w2, &h2);
+    CHECK(first && second && w == 1 && h == 1 && w2 == w && h2 == h && !memcmp(first, second, 4));
+    free(first); free(second);
+    Fl_Count cached = {"", 0};
+    CHECK(fl_fs_join(cache, sizeof(cache), dir, ".flow/cache/thumbnails") && fl_fs_list_dir(cache, count_entry, &cached) && cached.count == 1);
+    Fl_ThumbnailSource audio = src; audio.kind = FL_ASSET_AUDIO;
+    CHECK(!fl_thumbnail_get(&audio, 64, &w, &h));
+#ifdef FLOW_TEST_FONT
+    Fl_StoredAsset f;
+    CHECK(fl_asset_store_file(dir, FLOW_TEST_FONT, &f) == FL_IMPORT_ADDED);
+    Fl_ThumbnailSource font = src; font.kind = FL_ASSET_FONT; memcpy(font.hash, f.hash, 32);
+    snprintf(font.extension, sizeof(font.extension), "%s", f.extension);
+    unsigned char *specimen = fl_thumbnail_get(&font, 96, &w, &h);
+    CHECK(specimen && w > h && w <= 96 && specimen[3] == 0 && specimen[0] == 255);
+    free(specimen);
+#endif
+    CHECK(fl_project_save(p));
+    fl_project_destroy(p);
+    p = fl_project_open(dir, NULL);
+    cached.count = 0;
+    CHECK(p && fl_fs_list_dir(cache, count_entry, &cached) && cached.count == 1);
+    fl_project_destroy(p);
+}
+
 typedef struct Fl_Results { Fl_AssetImported events[8]; size_t count; } Fl_Results;
 static bool collect(const Fl_Event *event, void *data)
 {
@@ -212,5 +253,6 @@ int main(int argc, char **argv)
     test_store(argv[1]);
     test_project_assets(argv[1]);
     test_importer(argv[1]);
+    test_thumbnails(argv[1]);
     return FLOW_TEST_RESULT("fl_assets_tests");
 }

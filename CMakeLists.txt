@@ -63,7 +63,10 @@ target_include_directories(flow_engine PUBLIC "${PROJECT_SOURCE_DIR}/src/engine"
 target_include_directories(flow_engine SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/vendors/stb")
 target_link_libraries(flow_engine PUBLIC Threads::Threads PRIVATE freetype)
 if(APPLE)
-    target_link_libraries(flow_engine PRIVATE "-framework CoreText" "-framework CoreFoundation")
+    target_sources(flow_engine PRIVATE src/engine/platform/fl_video_frame_apple.m)
+    set_source_files_properties(src/engine/platform/fl_video_frame_apple.m PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    target_link_libraries(flow_engine PRIVATE "-framework CoreText" "-framework CoreFoundation" "-framework AVFoundation"
+                          "-framework CoreMedia" "-framework CoreGraphics" "-framework Foundation")
 elseif(UNIX)
     find_package(Fontconfig QUIET)
     if(Fontconfig_FOUND)

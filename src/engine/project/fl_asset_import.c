@@ -6,6 +6,7 @@
 #include "core/fl_thread.h"
 #include "media/fl_media.h"
 #include "platform/fl_fs.h"
+#include "platform/fl_video_frame.h"
 #include "text/fl_font_catalog.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -54,6 +55,14 @@ static bool validate_media(const char *path, Fl_StoredAsset *out)
     return true;
 }
 
+/* Record a stored video's displayed size; platform frameworks identify containers by the final extension. */
+static void probe_video(const char *path, Fl_StoredAsset *out)
+{
+    uint32_t w, h, vw = 0, vh = 0;
+    free(fl_video_frame(path, 16, &w, &h, &vw, &vh));
+    out->width = vw; out->height = vh;
+}
+
 Fl_ImportStatus fl_asset_store_file(const char *directory, const char *source, Fl_StoredAsset *out)
 {
     if (!directory || !source || !out) return FL_IMPORT_FAILED;
@@ -90,10 +99,15 @@ Fl_ImportStatus fl_asset_store_file(const char *directory, const char *source, F
     if (ok && !validate_media(temp, out)) status = FL_IMPORT_UNSUPPORTED;
     if (status == FL_IMPORT_ADDED && !fl_asset_store_path(directory, out->hash, out->extension, final, sizeof(final)))
         status = FL_IMPORT_FAILED;
-    if (status == FL_IMPORT_ADDED && fl_fs_file_size(final) == (int64_t)out->size) { fl_fs_remove(temp); return status; }
-    if (status == FL_IMPORT_ADDED && fl_fs_commit(temp, final)) { out->created = true; return status; }
+    if (status == FL_IMPORT_ADDED && fl_fs_file_size(final) == (int64_t)out->size) fl_fs_remove(temp);
+    else if (status == FL_IMPORT_ADDED && fl_fs_commit(temp, final)) out->created = true;
+    else status = status == FL_IMPORT_ADDED ? FL_IMPORT_FAILED : status;
+    if (status == FL_IMPORT_ADDED) {
+        if (out->kind == FL_ASSET_VIDEO) probe_video(final, out);
+        return status;
+    }
     fl_fs_remove(temp);
-    return status == FL_IMPORT_ADDED ? FL_IMPORT_FAILED : status;
+    return status;
 }
 
 /* Worker body; only the request's own storage is touched. */

@@ -730,11 +730,26 @@ static bool sweep_entry(const char *name, bool directory, void *data)
     return true;
 }
 
-/* Collect store files left by crashes or unsaved imports while the project lock is held. */
+/* Remove cached thumbnails (<64 hex>-<side>.flthumb) whose asset no longer exists. */
+static bool sweep_thumbnail(const char *name, bool directory, void *data)
+{
+    Fl_StoreSweep *sweep = data;
+    unsigned char hash[32]; const char *rest; char probe[80];
+    size_t length = strlen(name);
+    if (directory || length < 66 || length > 79 || strcmp(name + length - 8, ".flthumb")) return true;
+    memcpy(probe, name, 64); memcpy(probe + 64, ".flthumb", 9);
+    char path[FL_PATH_MAX];
+    if (parse_store_name(probe, hash, &rest) && name[64] == '-' && !fl_project_asset_by_hash(sweep->project, hash) &&
+        fl_fs_join(path, sizeof(path), sweep->folder, name)) fl_fs_remove(path);
+    return true;
+}
+
+/* Collect store files left by crashes or unsaved imports, and stale thumbnails, while the project lock is held. */
 static void sweep_asset_store(const Fl_Project *p)
 {
     Fl_StoreSweep sweep = {.project = p};
     if (fl_fs_join(sweep.folder, sizeof(sweep.folder), p->directory, "assets")) fl_fs_list_dir(sweep.folder, sweep_entry, &sweep);
+    if (fl_fs_join(sweep.folder, sizeof(sweep.folder), p->directory, ".flow/cache/thumbnails")) fl_fs_list_dir(sweep.folder, sweep_thumbnail, &sweep);
 }
 
 /* Sort identity keys for duplicate detection across all scene documents. */

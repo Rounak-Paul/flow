@@ -1,4 +1,5 @@
 #include "fl_asset_panel.h"
+#include "fl_asset_thumbnails.h"
 #include "fl_file_browser.h"
 #include "style.h"
 #include "core/fl_log.h"
@@ -13,11 +14,15 @@
 
 typedef struct Fl_AssetRow { struct Fl_AssetPanel *panel; Fl_Id asset; } Fl_AssetRow;
 typedef struct Fl_Placement { uint64_t request; Fl_SceneDropTarget target; } Fl_Placement;
+typedef struct Fl_KindChip { struct Fl_AssetPanel *panel; int kind; } Fl_KindChip;
+#define KIND_CHIPS 5
 struct Fl_AssetPanel {
     Fl_SceneEdit *edit;
     Fl_ScenePanel *scene;
     Fl_AssetImporter *importer;
+    Fl_JobSystem *jobs;
     Fl_EventBus *bus;
+    Fl_AssetThumbnails *thumbnails;
     Ca_Dock *dock;
     Ca_Window *window;
     Ca_Label *status;
@@ -29,6 +34,8 @@ struct Fl_AssetPanel {
     char folder[FL_PATH_MAX];
     Fl_FileBrowser *browser;
     Fl_Id selected;
+    int filter;                 /* 0 shows every kind, else one Fl_AssetKind */
+    Fl_KindChip chips[KIND_CHIPS];
     Ca_Window *rename_window;
     Ca_TextInput *rename_input;
     Fl_Id rename_asset;
@@ -41,11 +48,13 @@ static void invalidate(Fl_AssetPanel *p)
     if (p->dock) ca_dock_invalidate_panel(p->dock, PANEL_ID);
 }
 
-/* Show a status message without rebuilding focused inputs. */
+/* Show (or with "" clear) the status line; it is only emitted while non-empty. */
 static void status(Fl_AssetPanel *p, const char *message)
 {
+    bool visibility = !p->message[0] != !message[0];
     snprintf(p->message, sizeof(p->message), "%s", message);
-    if (p->status) ca_set_text(p->status, p->message);
+    if (visibility) invalidate(p);
+    else if (p->status) ca_set_text(p->status, p->message);
 }
 
 /* Replace an owned draft string, keeping the previous one on allocation failure. */
@@ -119,9 +128,8 @@ static void report_pending(Fl_AssetPanel *p)
 {
     size_t pending = fl_asset_importer_pending(p->importer);
     char text[96];
-    if (pending) snprintf(text, sizeof(text), "Importing %zu file%s...", pending, pending == 1 ? "" : "s");
-    else snprintf(text, sizeof(text), "No supported files to import.");
-    status(p, text);
+    snprintf(text, sizeof(text), "Importing %zu...", pending);
+    if (pending) status(p, text);
 }
 
 void fl_asset_panel_drop_files(Fl_AssetPanel *p, const char *const *paths, int count, double screen_x, double screen_y)
@@ -287,10 +295,10 @@ static bool imported(const Fl_Event *event, void *data)
     if (result->asset) p->selected = result->asset;
     char text[256];
     size_t pending = fl_asset_importer_pending(p->importer);
-    const char *outcome = result->status == FL_IMPORT_ADDED ? "Imported" : result->status == FL_IMPORT_EXISTING ? "Already imported" :
-                          result->status == FL_IMPORT_UNSUPPORTED ? "Unsupported file" : "Could not import";
-    if (pending) snprintf(text, sizeof(text), "%s %s. %zu remaining...", outcome, result->name, pending);
-    else snprintf(text, sizeof(text), "%s %s.", outcome, result->name);
+    if (result->status == FL_IMPORT_UNSUPPORTED) snprintf(text, sizeof(text), "%s: unsupported format", result->name);
+    else if (result->status == FL_IMPORT_FAILED) snprintf(text, sizeof(text), "%s: import failed", result->name);
+    else if (pending) snprintf(text, sizeof(text), "Importing %zu...", pending);
+    else text[0] = 0;
     status(p, text);
     invalidate(p);
     return false;
@@ -306,12 +314,16 @@ static bool project_changed(const Fl_Event *event, void *data)
     return false;
 }
 
-Fl_AssetPanel *fl_asset_panel_create(Fl_SceneEdit *edit, Fl_ScenePanel *scene, Fl_AssetImporter *importer, Fl_EventBus *bus)
+/* Thumbnail callback: rebuild to show a finished preview. */
+static void thumbnail_ready(void *data) { invalidate(data); }
+
+Fl_AssetPanel *fl_asset_panel_create(Fl_SceneEdit *edit, Fl_ScenePanel *scene, Fl_AssetImporter *importer,
+                                     Fl_JobSystem *jobs, Fl_EventBus *bus)
 {
-    if (!edit || !scene || !importer || !bus) return NULL;
+    if (!edit || !scene || !importer || !jobs || !bus) return NULL;
     Fl_AssetPanel *p = calloc(1, sizeof(*p));
     if (!p) return NULL;
-    p->edit = edit; p->scene = scene; p->importer = importer; p->bus = bus;
+    p->edit = edit; p->scene = scene; p->importer = importer; p->jobs = jobs; p->bus = bus;
     if (!fl_event_subscribe(bus, &(Fl_SubscribeDesc){.type = fl_event_type_find(bus, FL_EVENT_ASSET_IMPORTED),
             .fn = imported, .user_data = p, .owner = p}).generation ||
         !fl_event_subscribe(bus, &(Fl_SubscribeDesc){.type = fl_event_type_find(bus, FL_EVENT_PROJECT_CHANGED),
@@ -331,69 +343,111 @@ void fl_asset_panel_destroy(Fl_AssetPanel *p)
     if (!p) return;
     if (p->rename_window) ca_window_destroy(p->rename_window);
     fl_file_browser_destroy(p->browser);
+    fl_asset_thumbnails_destroy(p->thumbnails);
     fl_event_unsubscribe_owner(p->bus, p);
     free(p->rows); free(p->placements); free(p->query); free(p);
 }
 
-/* Emit one asset row with drag-to-scene for images and per-asset context actions. */
-static void emit_row(Fl_AssetPanel *p, const Fl_Asset *a)
+/* Icon representing an asset kind when no preview exists. */
+static const char *kind_icon(Fl_AssetKind kind)
+{
+    switch (kind) {
+    case FL_ASSET_IMAGE: return CA_ICON_NF_FA_IMAGE;
+    case FL_ASSET_VIDEO: return CA_ICON_NF_FA_FILM;
+    case FL_ASSET_AUDIO: return CA_ICON_NF_FA_MUSIC;
+    case FL_ASSET_FONT: return CA_ICON_NF_FA_FONT;
+    }
+    return CA_ICON_NF_FA_FILE;
+}
+
+/* Emit one tile: preview (thumbnail or kind icon) and name; details live in the tooltip. */
+static void emit_tile(Fl_AssetPanel *p, const Fl_Asset *a)
 {
     Fl_AssetRow *row = &p->rows[p->row_count++];
     *row = (Fl_AssetRow){p, a->id};
-    char id[48], meta[128], size[32], label[16];
+    char id[48], tip[512], size[32], label[16];
     snprintf(id, sizeof(id), "asset-%llu", (unsigned long long)a->id);
     format_size(a->size, size, sizeof(size));
     size_t n = 0;
     for (; a->extension[n] && n < sizeof(label) - 1; ++n) label[n] = (char)toupper((unsigned char)a->extension[n]);
     label[n] = 0;
-    if (a->width && a->height) snprintf(meta, sizeof(meta), "%s  %llux%llu  %s", label, (unsigned long long)a->width, (unsigned long long)a->height, size);
-    else snprintf(meta, sizeof(meta), "%s  %s", label, size);
+    if (a->width && a->height) snprintf(tip, sizeof(tip), "%s\n%s  %llu x %llu  %s", a->name, label,
+                                        (unsigned long long)a->width, (unsigned long long)a->height, size);
+    else snprintf(tip, sizeof(tip), "%s\n%s  %s", a->name, label, size);
     bool image = a->kind == FL_ASSET_IMAGE;
-    ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_ASSET_WRAP, .id = id,
+    ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_ASSET_TILE, .id = id,
         .on_drag_end = image ? row_drag_end : NULL, .drag_data = row});
     ca_btn_begin(&(Ca_BtnDesc){.direction = CA_VERTICAL, .on_click = row_clicked, .click_data = row,
-        .style = p->selected == a->id ? FL_CLASS_ASSET_ROW_SELECTED : FL_CLASS_ASSET_ROW});
-    ca_text(&(Ca_TextDesc){.text = a->name, .style = FL_CLASS_LABEL});
-    ca_text(&(Ca_TextDesc){.text = meta, .style = FL_CLASS_MUTED});
+        .style = p->selected == a->id ? FL_CLASS_ASSET_CARD_SELECTED : FL_CLASS_ASSET_CARD});
+    ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_ASSET_PREVIEW});
+    uint32_t w = 0, h = 0;
+    Ca_Image *preview = fl_asset_thumbnails_get(p->thumbnails, a, &w, &h);
+    if (preview && w && h) {
+        float scale = fminf(FL_STYLE_THUMBNAIL_W / (float)w, FL_STYLE_THUMBNAIL_H / (float)h);
+        if (a->kind == FL_ASSET_FONT) scale = fminf(scale, FL_STYLE_SPECIMEN_SCALE);
+        ca_image(&(Ca_ImageDesc){.image = preview, .width = fmaxf(1, w * scale), .height = fmaxf(1, h * scale)});
+    } else ca_text(&(Ca_TextDesc){.text = kind_icon(a->kind), .style = FL_CLASS_ASSET_ICON});
+    ca_div_end();
+    ca_text(&(Ca_TextDesc){.text = a->name, .style = FL_CLASS_ASSET_NAME});
     ca_btn_end();
     ca_div_end();
+    ca_tooltip(&(Ca_TooltipDesc){.text = tip});
     static const char *image_items[] = {"Add to scene", "Rename", "Delete"};
     ca_context_menu(&(Ca_CtxMenuDesc){.items = image ? image_items : image_items + 1, .item_count = image ? 3 : 2,
         .on_select = row_menu, .select_data = row});
+}
+
+
+/* Narrow the grid to one asset kind (or all). */
+static void chip_clicked(Ca_Button *button, void *data)
+{
+    (void)button; Fl_KindChip *chip = data;
+    chip->panel->filter = chip->kind; invalidate(chip->panel);
 }
 
 void fl_asset_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
 {
     Fl_AssetPanel *p = data; p->dock = dock; p->window = window;
     Fl_Project *project = fl_scene_edit_project(p->edit);
+    if (!p->thumbnails) p->thumbnails = fl_asset_thumbnails_create(ca_window_instance(window), project, p->jobs, p->bus, thumbnail_ready, p);
     size_t count = fl_project_asset_count(project);
     free(p->rows); p->rows = count ? calloc(count, sizeof(*p->rows)) : NULL; p->row_count = 0;
     if (count && !p->rows) return;
     ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_ASSETS});
-    ca_input(&(Ca_InputDesc){.text = p->query, .placeholder = "Search assets", .id = "asset-search", .style = FL_CLASS_INPUT,
+    ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_PROPERTY_ROW});
+    ca_input(&(Ca_InputDesc){.text = p->query, .placeholder = "Search", .id = "asset-search", .style = FL_CLASS_PROPERTY_INPUT,
         .on_change = query_changed, .change_data = p});
-    ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_TOOLBAR});
-    ca_btn_begin(&(Ca_BtnDesc){.text = "Import files...", .id = "asset-import", .on_click = browse_clicked, .click_data = p, .style = FL_CLASS_ACTION}); ca_btn_end();
+    ca_btn_begin(&(Ca_BtnDesc){.text = CA_ICON_NF_FA_PLUS, .id = "asset-import", .on_click = browse_clicked, .click_data = p,
+        .style = FL_CLASS_ICON_ACTION}); ca_btn_end();
+    ca_tooltip(&(Ca_TooltipDesc){.text = "Import files"});
     ca_div_end();
-    p->status = ca_text(&(Ca_TextDesc){.text = p->message, .style = FL_CLASS_MUTED, .wrap = true});
-    if (!count) ca_text(&(Ca_TextDesc){.text = "Drop images, videos, audio or fonts anywhere in this window, or use Import files. "
-        "Images dropped on the viewport are placed where you drop them.", .style = FL_CLASS_DROP_HINT, .wrap = true});
-    static const struct { Fl_AssetKind kind; const char *title, *note; } groups[] = {
-        {FL_ASSET_IMAGE, "Images", "Drag onto the viewport or hierarchy to place."},
-        {FL_ASSET_FONT, "Fonts", "Available in the Inspector's font list for text."},
-        {FL_ASSET_VIDEO, "Video", "Stored in the project; placement arrives with the media decoder."},
-        {FL_ASSET_AUDIO, "Audio", "Stored in the project; playback arrives with the timeline."}};
-    for (size_t g = 0; g < sizeof(groups) / sizeof(groups[0]); ++g) {
-        size_t shown = 0;
+    static const struct { int kind; const char *icon, *tip; } kinds[KIND_CHIPS] = {
+        {0, CA_ICON_NF_FA_TABLE_CELLS, "All"}, {FL_ASSET_IMAGE, CA_ICON_NF_FA_IMAGE, "Images"},
+        {FL_ASSET_VIDEO, CA_ICON_NF_FA_FILM, "Video"}, {FL_ASSET_AUDIO, CA_ICON_NF_FA_MUSIC, "Audio"}, {FL_ASSET_FONT, CA_ICON_NF_FA_FONT, "Fonts"}};
+    ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_CHIPS});
+    for (size_t i = 0; i < KIND_CHIPS; ++i) {
+        p->chips[i] = (Fl_KindChip){p, kinds[i].kind};
+        ca_btn_begin(&(Ca_BtnDesc){.text = kinds[i].icon, .on_click = chip_clicked, .click_data = &p->chips[i],
+            .style = p->filter == kinds[i].kind ? FL_CLASS_CHIP_SELECTED : FL_CLASS_CHIP}); ca_btn_end();
+        ca_tooltip(&(Ca_TooltipDesc){.text = kinds[i].tip});
+    }
+    ca_div_end();
+    p->status = p->message[0] ? ca_text(&(Ca_TextDesc){.text = p->message, .style = FL_CLASS_MUTED, .wrap = true}) : NULL;
+    if (!count) {
+        ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_EMPTY});
+        ca_text(&(Ca_TextDesc){.text = CA_ICON_NF_FA_FILE_IMPORT, .style = FL_CLASS_EMPTY_ICON});
+        ca_text(&(Ca_TextDesc){.text = "Drop files here", .style = FL_CLASS_MUTED});
+        ca_div_end();
+    }
+    ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_ASSET_GRID});
+    static const Fl_AssetKind order[] = {FL_ASSET_IMAGE, FL_ASSET_VIDEO, FL_ASSET_AUDIO, FL_ASSET_FONT};
+    for (size_t k = 0; k < 4; ++k) {
+        if (p->filter && p->filter != (int)order[k]) continue;
         for (size_t i = 0; i < count; ++i) {
             const Fl_Asset *a = fl_project_asset_at(project, i);
-            if (a->kind != groups[g].kind || !matches(a->name, p->query)) continue;
-            if (!shown++) {
-                ca_text(&(Ca_TextDesc){.text = groups[g].title, .style = FL_CLASS_HEADING});
-                ca_text(&(Ca_TextDesc){.text = groups[g].note, .style = FL_CLASS_MUTED, .wrap = true});
-            }
-            emit_row(p, a);
+            if (a->kind == order[k] && matches(a->name, p->query)) emit_tile(p, a);
         }
     }
+    ca_div_end();
     ca_div_end();
 }

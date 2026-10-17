@@ -1,5 +1,6 @@
 #include "fl_widget_library.h"
 #include "style.h"
+#include <ca_icons.h>
 #include "core/fl_log.h"
 #include <ctype.h>
 #include <math.h>
@@ -91,19 +92,23 @@ void fl_widget_library_build(Ca_Dock *dock,Ca_Window *window,void *data)
     (void)window;Fl_WidgetLibrary *library=data;library->dock=dock;library->active_scene=fl_scene_edit_scene(library->edit);
     bool enabled=fl_project_scene(fl_scene_edit_project(library->edit),fl_scene_edit_scene(library->edit))!=NULL;
     ca_div_begin(&(Ca_DivDesc){.direction=CA_VERTICAL,.style=FL_CLASS_LIBRARY});
-    ca_input(&(Ca_InputDesc){.text=library->query,.placeholder="Search widgets",.id="widget-search",.style=FL_CLASS_INPUT,
+    ca_input(&(Ca_InputDesc){.text=library->query,.placeholder="Search",.id="widget-search",.style=FL_CLASS_INPUT,
         .on_change=search_changed,.change_data=library});
-    ca_text(&(Ca_TextDesc){.text="Click to add. Drag to place or parent.",.style=FL_CLASS_MUTED,.wrap=true});
-    for (int kind=FL_WIDGET_TEXT;kind>=FL_WIDGET_GROUP;--kind) {
+    static const char *icons[FL_WIDGET_COUNT]={CA_ICON_NF_FA_LAYER_GROUP,CA_ICON_NF_FA_SQUARE,CA_ICON_NF_FA_CIRCLE,
+        CA_ICON_NF_FA_MINUS,CA_ICON_NF_FA_ARROW_RIGHT_LONG,CA_ICON_NF_FA_FONT,CA_ICON_NF_FA_IMAGE};
+    ca_div_begin(&(Ca_DivDesc){.direction=CA_HORIZONTAL,.style=FL_CLASS_ASSET_GRID});
+    for (int kind=FL_WIDGET_GROUP;kind<=FL_WIDGET_TEXT;++kind) {
         const Fl_WidgetDef *def=fl_widget_definition((Fl_WidgetKind)kind);
         if (!matches(def->name,library->query)) continue;
         Fl_WidgetAction *action=&library->actions[kind];
         ca_div_begin(&(Ca_DivDesc){.direction=CA_VERTICAL,.style=FL_CLASS_WIDGET_WRAP,.id=def->name,
             .on_drag_end=drag_end,.drag_data=action,.disabled=!enabled});
         ca_btn_begin(&(Ca_BtnDesc){.direction=CA_VERTICAL,.style=FL_CLASS_WIDGET_CARD,.on_click=activate,.click_data=action,.disabled=!enabled});
-        ca_text(&(Ca_TextDesc){.text=def->name,.style=FL_CLASS_HEADING});
-        ca_text(&(Ca_TextDesc){.text=def->description,.style=FL_CLASS_MUTED,.wrap=true});
+        ca_text(&(Ca_TextDesc){.text=icons[kind],.style=FL_CLASS_WIDGET_ICON});
+        ca_text(&(Ca_TextDesc){.text=def->name,.style=FL_CLASS_ASSET_NAME});
         ca_btn_end();ca_div_end();
+        ca_tooltip(&(Ca_TooltipDesc){.text=def->description});
     }
+    ca_div_end();
     ca_div_end();
 }

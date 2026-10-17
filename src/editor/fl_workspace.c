@@ -253,7 +253,7 @@ Fl_Workspace *fl_workspace_create(const Fl_WorkspaceDesc *desc)
     workspace->importer=fl_asset_importer_create(desc->project,desc->jobs,desc->bus);
     workspace->scene=fl_scene_panel_create(workspace->edit,desc->fonts,desc->jobs,desc->bus);
     workspace->widgets=fl_widget_library_create(workspace->edit,workspace->scene,desc->bus);
-    workspace->assets=fl_asset_panel_create(workspace->edit,workspace->scene,workspace->importer,desc->bus);
+    workspace->assets=fl_asset_panel_create(workspace->edit,workspace->scene,workspace->importer,desc->jobs,desc->bus);
     workspace->inspector=fl_inspector_create(workspace->edit,desc->fonts,desc->bus);
     if (!workspace->edit||!workspace->importer||!workspace->scene||!workspace->widgets||!workspace->assets||
         !workspace->inspector||!create_dock(workspace, desc->window)) {
