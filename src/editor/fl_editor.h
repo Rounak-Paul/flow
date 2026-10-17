@@ -1,16 +1,35 @@
 #pragma once
 
 #include "core/fl_event.h"
+#include "core/fl_job.h"
 
 /*
- * Flow editor — owns the causality instance, the main window and the
- * application event bus, and pumps queued bus events once per UI tick.
+ * Flow editor — the application host. Owns process services (logging, crash
+ * capture, termination handling), the application event bus, the job system,
+ * the causality instance and the main window, and pumps queued bus events once
+ * per UI tick.
  */
 typedef struct Fl_Editor Fl_Editor;
 
+/* Posted when the OS or user asks the app to quit; payload is the int signal number. */
+#define FL_EVENT_APP_QUIT_REQUESTED "app.quit_requested"
+
+/* Posted for every log record at INFO and above; payload is Fl_LogEvent. */
+#define FL_EVENT_LOG_RECORD "log.record"
+
+#define FL_LOG_EVENT_TAG_MAX     32u
+#define FL_LOG_EVENT_MESSAGE_MAX 480u
+
+typedef struct Fl_LogEvent {
+    uint64_t sequence;
+    int32_t  level;                               /* Fl_LogLevel                 */
+    char     tag[FL_LOG_EVENT_TAG_MAX];           /* truncated, NUL-terminated   */
+    char     message[FL_LOG_EVENT_MESSAGE_MAX];   /* truncated, NUL-terminated   */
+} Fl_LogEvent;
+
 /*
- * Create the editor: event bus, causality instance and maximized main window.
- * Must be called on the thread that will run the editor.
+ * Create the editor and every process service. Must be called on the main
+ * thread before any other thread is started.
  *
  * Returns  A new editor, or NULL when any part fails to initialise.
  */
@@ -25,7 +44,8 @@ Fl_Editor *fl_editor_create(void);
 int fl_editor_run(Fl_Editor *editor);
 
 /*
- * Destroy the editor and everything it owns. NULL is a no-op.
+ * Destroy the editor and shut every service down in reverse order. NULL is a
+ * no-op.
  */
 void fl_editor_destroy(Fl_Editor *editor);
 
@@ -35,3 +55,10 @@ void fl_editor_destroy(Fl_Editor *editor);
  * Returns  The bus, valid until fl_editor_destroy; NULL for a NULL editor.
  */
 Fl_EventBus *fl_editor_bus(Fl_Editor *editor);
+
+/*
+ * Application-wide job system owned by the editor.
+ *
+ * Returns  The job system, valid until fl_editor_destroy; NULL for a NULL editor.
+ */
+Fl_JobSystem *fl_editor_jobs(Fl_Editor *editor);

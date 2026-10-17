@@ -383,6 +383,14 @@ Flow is a native **C11** application built on **[causality](https://github.com/R
 - **Headless mode** creates a causality instance with no visible windows and renders only to offscreen targets. *Integration requirement:* causality must support a windowless instance (Vulkan device without a surface), or Flow falls back to a hidden 1×1 window. This is tracked in §14.
 - **Long work is time-sliced.** Export and multi-frame `render_frames` requests render a bounded batch of frames per tick, so the editor stays responsive while an export runs.
 
+### 6.2.1 Process services (implemented)
+
+- **Logging (`core/fl_log`, `platform/fl_log_file`):** a process-wide, thread-safe logger. Every record goes to registered **sinks** (observers): coloured console, a rotating file (`flow.log`, rotated at 8 MiB, 3 kept), and a bridge that posts `log.record` events onto the bus for in-app consumers. The last 64 KiB of output is kept in a lock-free ring for crash reports. `FL_PANIC` / `FL_ASSERT` log fatally, flush and abort, so they go through crash capture.
+- **Jobs (`core/fl_job`):** a worker pool (logical CPUs − 1) with high/normal/low FIFO queues, dependencies, cooperative waiting (a waiting thread runs other jobs, so nested waits never deadlock), `parallel_for`, and `job.done` completion events on the bus. Worker start/exit hooks attach crash handling.
+- **Crash capture (`platform/fl_crash`):** handlers for SIGSEGV/BUS/ILL/FPE/ABRT/TRAP, with an alternate signal stack per thread so stack overflows are caught too. On Windows: an unhandled-exception filter, abort and CRT invalid-parameter handlers, plus a minidump. The async-signal-safe report covers app, version, UTC time, pid, thread, fault and address, the faulting frame, a backtrace and the recent log. A marker lets the next launch surface the previous crash. Default handling then resumes, so OS crash reporters and core dumps still work.
+- **Graceful termination (`platform/fl_signal`):** SIGINT/SIGTERM/SIGHUP (or console control events on Windows) are received on a watcher thread and posted as `app.quit_requested`, which closes the main window. A second request force-exits.
+- **Startup order:** name the main thread → logger → log file → crash handler → bus → termination watcher (before any other thread) → log bridge → jobs → UI. Shutdown runs in reverse: producers stop before the things they wake.
+
 ### 6.3 Source layout
 
 ```
@@ -400,10 +408,13 @@ packs/
 shaders/           GLSL → SPIR-V at build time (glslc), embedded as byte arrays
 src/
   engine/          Causality-free engine; static library `flow_engine`
-    core/          fl_event (event bus) · fl_thread (threads, mutex) · fl_alloc · fl_array · fl_map
-                   · fl_str (interning) · fl_id · fl_json · fl_hash (SHA-256, CRC32C) · fl_log · fl_embed
-    platform/      fl_fs (atomic write, fsync, rename, dirs) · fl_lock · fl_sock (UDS / named pipes)
-                   · fl_proc (spawn, pipes, kill) · fl_watch · fl_paths (config/cache, portable mode)
+    core/          fl_event (event bus) · fl_job (worker pool, deps, parallel_for) · fl_log (logger,
+                   sinks, panic/assert) · fl_thread (threads, mutex, condvar, names) · fl_atomic
+                   · fl_clock · fl_alloc · fl_array · fl_map · fl_str (interning) · fl_id · fl_json
+                   · fl_hash (SHA-256, CRC32C) · fl_embed
+    platform/      fl_crash (fault capture, reports, minidumps) · fl_signal (graceful termination)
+                   · fl_log_file (rotating log sink) · fl_paths (user dirs, portable mode) · fl_fs
+                   · fl_lock · fl_sock (UDS / named pipes) · fl_proc (spawn, pipes, kill) · fl_watch
     schema/        fl_value (tagged JSON-like variant) · fl_types · fl_props (built-in prop registry)
                    · fl_validate · fl_serde · fl_migrate
     doc/           fl_doc · fl_op (encode / apply / invert / expand) · fl_history · fl_prov

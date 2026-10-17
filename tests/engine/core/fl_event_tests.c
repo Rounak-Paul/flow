@@ -1,19 +1,9 @@
 #include "core/fl_event.h"
 #include "core/fl_thread.h"
 
-#include <stdio.h>
+#include "flow_test.h"
+
 #include <string.h>
-
-static int g_failures;
-
-#define CHECK(cond)                                                          \
-    do {                                                                     \
-        if (!(cond)) {                                                       \
-            fprintf(stderr, "%s:%d: CHECK failed: %s\n", __FILE__, __LINE__, \
-                    #cond);                                                  \
-            g_failures++;                                                    \
-        }                                                                    \
-    } while (0)
 
 typedef struct Value {
     int v;
@@ -500,10 +490,5 @@ int main(void)
     test_post_during_dispatch_waits_for_next_round();
     test_many_subscribers_and_churn();
 
-    if (g_failures) {
-        fprintf(stderr, "fl_event_tests: %d check(s) failed\n", g_failures);
-        return 1;
-    }
-    printf("fl_event_tests: all passed\n");
-    return 0;
+    return FLOW_TEST_RESULT("fl_event_tests");
 }

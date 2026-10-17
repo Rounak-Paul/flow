@@ -49,6 +49,11 @@ file(GLOB_RECURSE FLOW_ENGINE_SOURCES CONFIGURE_DEPENDS src/engine/*.c)
 add_library(flow_engine STATIC ${FLOW_ENGINE_SOURCES})
 target_include_directories(flow_engine PUBLIC "${PROJECT_SOURCE_DIR}/src/engine")
 target_link_libraries(flow_engine PUBLIC Threads::Threads)
+# Strict C11 hides POSIX/OS extensions the platform layer needs.
+target_compile_definitions(flow_engine PRIVATE
+    $<$<PLATFORM_ID:Linux>:_GNU_SOURCE>
+    $<$<PLATFORM_ID:Darwin>:_DARWIN_C_SOURCE>
+)
 flow_target_warnings(flow_engine)
 
 # Editor: causality-based UI on top of the engine.
@@ -67,6 +72,10 @@ flow_target_warnings(flow_editor)
 add_executable(flow src/main.c)
 target_link_libraries(flow PRIVATE flow_editor)
 flow_target_warnings(flow)
+# Export symbols so crash-report backtraces resolve function names on Linux.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set_target_properties(flow PROPERTIES ENABLE_EXPORTS ON)
+endif()
 
 set_target_properties(flow PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${FLOW_BIN_DIR}")
 foreach(config IN ITEMS Debug Release RelWithDebInfo MinSizeRel)
