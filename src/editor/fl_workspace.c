@@ -1,5 +1,6 @@
 #include "fl_workspace.h"
 
+#include "fl_console.h"
 #include "style.h"
 
 #include "core/fl_clock.h"
@@ -13,36 +14,13 @@
 #define LAYOUT_FILE_MAX     (1u << 20)
 #define SAVE_SETTLE_SECONDS 0.75
 #define SAVE_SETTLE_NS      750000000ull
-
-/* Static description of one editor panel. */
-typedef struct PanelSpec {
-    const char *id;
-    const char *title;
-} PanelSpec;
-
-enum {
-    PANEL_CANVAS,
-    PANEL_OUTLINE,
-    PANEL_INSPECTOR,
-    PANEL_AGENT,
-    PANEL_TIMELINE,
-    PANEL_SCRIPT,
-    PANEL_COUNT
-};
-
-static const PanelSpec k_panels[PANEL_COUNT] = {
-    [PANEL_CANVAS]    = { "canvas",    "Canvas" },
-    [PANEL_OUTLINE]   = { "outline",   "Outline" },
-    [PANEL_INSPECTOR] = { "inspector", "Inspector" },
-    [PANEL_AGENT]     = { "agent",     "Agent" },
-    [PANEL_TIMELINE]  = { "timeline",  "Timeline" },
-    [PANEL_SCRIPT]    = { "script",    "Script" },
-};
+#define SCENE_PANEL_ID      "scene"
 
 struct Fl_Workspace {
     Ca_Instance *instance;
     Fl_EventBus *bus;
     Ca_Dock     *dock;
+    Fl_Console  *console;
     Ca_Effect   *saver;
     char        *layout_path;
     char        *saved_layout;      /* read by the dock during mount */
@@ -56,31 +34,24 @@ struct Fl_Workspace {
 };
 
 /*
- * Panel body until each panel's real UI lands: an empty-state caption.
+ * Scene panel body: the stage surface the scene renderer will draw into.
  *
  * dock       Owning dock.
  * window     Window hosting the panel.
- * user_data  PanelSpec of the panel.
+ * user_data  Unused.
  */
-static void build_empty_panel(Ca_Dock *dock, Ca_Window *window, void *user_data)
+static void build_scene_panel(Ca_Dock *dock, Ca_Window *window, void *user_data)
 {
     (void)dock;
     (void)window;
-    const PanelSpec *spec = user_data;
-    ca_div_begin(&(Ca_DivDesc){ .direction = CA_VERTICAL, .style = FL_CLASS_PANEL_EMPTY });
-    ca_text(&(Ca_TextDesc){ .text = spec->title, .style = FL_CLASS_PANEL_EMPTY_TEXT });
+    (void)user_data;
+    ca_div_begin(&(Ca_DivDesc){ .direction = CA_VERTICAL, .style = FL_CLASS_SCENE });
     ca_div_end();
 }
 
-#define DEFAULT_OUTLINE_WIDTH  260.0f
-#define DEFAULT_SIDE_WIDTH     340.0f
-#define DEFAULT_BOTTOM_HEIGHT  260.0f
-
 /*
- * Factory arrangement, with the canvas as the central group so it alone
- * absorbs window resizes and keeps its area when emptied:
- *   outline | canvas | inspector+agent
- *   --------- timeline+script ---------
+ * Factory arrangement: the scene is the central group, so it alone absorbs
+ * window resizes and keeps its area when emptied; the console sits below it.
  *
  * layout     Cleared layout with every panel registered.
  * user_data  Unused.
@@ -88,30 +59,14 @@ static void build_empty_panel(Ca_Dock *dock, Ca_Window *window, void *user_data)
 static void seed_default_layout(Ca_DockLayout *layout, void *user_data)
 {
     (void)user_data;
-    int panel[PANEL_COUNT];
-    for (int i = 0; i < PANEL_COUNT; ++i) panel[i] = ca_dock_layout_find(layout, k_panels[i].id);
-
-    const int outline = ca_dock_layout_new_group(layout);
-    const int canvas = ca_dock_layout_new_group(layout);
-    const int side = ca_dock_layout_new_group(layout);
-    const int bottom = ca_dock_layout_new_group(layout);
-    ca_dock_layout_add_tab(layout, outline, panel[PANEL_OUTLINE], -1);
-    ca_dock_layout_add_tab(layout, canvas, panel[PANEL_CANVAS], -1);
-    ca_dock_layout_add_tab(layout, side, panel[PANEL_INSPECTOR], -1);
-    ca_dock_layout_add_tab(layout, side, panel[PANEL_AGENT], -1);
-    ca_dock_layout_set_active(layout, side, 0);
-    ca_dock_layout_add_tab(layout, bottom, panel[PANEL_TIMELINE], -1);
-    ca_dock_layout_add_tab(layout, bottom, panel[PANEL_SCRIPT], -1);
-    ca_dock_layout_set_active(layout, bottom, 0);
-
-    const int center = ca_dock_layout_new_split(layout, true, 0.76f, canvas, side);
-    const int top = ca_dock_layout_new_split(layout, true, 0.18f, outline, center);
-    const int root = ca_dock_layout_new_split(layout, false, 0.70f, top, bottom);
+    const int scene = ca_dock_layout_new_group(layout);
+    const int console = ca_dock_layout_new_group(layout);
+    ca_dock_layout_add_tab(layout, scene, ca_dock_layout_find(layout, SCENE_PANEL_ID), -1);
+    ca_dock_layout_add_tab(layout, console, ca_dock_layout_find(layout, FL_CONSOLE_PANEL_ID), -1);
+    const int root = ca_dock_layout_new_split(layout, false, 0.75f, scene, console);
     ca_dock_layout_set_root(layout, CA_DOCK_MAIN_WINDOW, root);
-    ca_dock_layout_set_central(layout, canvas);
-    ca_dock_layout_set_split_size(layout, center, DEFAULT_SIDE_WIDTH);
-    ca_dock_layout_set_split_size(layout, top, DEFAULT_OUTLINE_WIDTH);
-    ca_dock_layout_set_split_size(layout, root, DEFAULT_BOTTOM_HEIGHT);
+    ca_dock_layout_set_central(layout, scene);
+    ca_dock_layout_set_split_size(layout, root, FL_STYLE_CONSOLE_HEIGHT);
 }
 
 /*
@@ -196,15 +151,16 @@ static bool create_dock(Fl_Workspace *workspace, Ca_Window *window)
         .event_data     = workspace,
     });
     if (!workspace->dock) return false;
-    for (int i = 0; i < PANEL_COUNT; ++i) {
-        if (!ca_dock_register_panel(workspace->dock, &(Ca_DockPanelDesc){
-                .id = k_panels[i].id, .title = k_panels[i].title,
-                .build = build_empty_panel, .user_data = (void *)&k_panels[i] })) {
-            FL_LOG_ERROR(LOG_TAG, "failed to register panel '%s'", k_panels[i].id);
-            return false;
-        }
-    }
-    return true;
+    const bool scene = ca_dock_register_panel(workspace->dock, &(Ca_DockPanelDesc){
+        .id = SCENE_PANEL_ID, .title = "Scene", .build = build_scene_panel,
+    });
+    const bool console = scene && ca_dock_register_panel(workspace->dock, &(Ca_DockPanelDesc){
+        .id = FL_CONSOLE_PANEL_ID, .title = "Console", .dock_beside = SCENE_PANEL_ID,
+        .build = fl_console_build_panel, .teardown = fl_console_teardown_panel,
+        .user_data = workspace->console,
+    });
+    if (!console) FL_LOG_ERROR(LOG_TAG, "failed to register workspace panels");
+    return console;
 }
 
 Fl_Workspace *fl_workspace_create(const Fl_WorkspaceDesc *desc)
@@ -227,6 +183,12 @@ Fl_Workspace *fl_workspace_create(const Fl_WorkspaceDesc *desc)
     }
     if (!register_events(workspace)) {
         FL_LOG_ERROR(LOG_TAG, "failed to register workspace events");
+        fl_workspace_destroy(workspace);
+        return NULL;
+    }
+    workspace->console = fl_console_create(workspace->bus, workspace->instance);
+    if (!workspace->console) {
+        FL_LOG_ERROR(LOG_TAG, "failed to create the console");
         fl_workspace_destroy(workspace);
         return NULL;
     }
@@ -281,8 +243,34 @@ void fl_workspace_destroy(Fl_Workspace *workspace)
     if (workspace->mounted) fl_workspace_save(workspace);
     ca_effect_destroy(workspace->saver);
     ca_dock_destroy(workspace->dock);
+    fl_console_destroy(workspace->console);
     fl_event_unsubscribe_owner(workspace->bus, workspace);
     free(workspace->saved_layout);
     free(workspace->layout_path);
     free(workspace);
+}
+
+int fl_workspace_panel_count(const Fl_Workspace *workspace)
+{
+    return workspace ? ca_dock_panel_count(workspace->dock) : 0;
+}
+
+const char *fl_workspace_panel_id(const Fl_Workspace *workspace, int index)
+{
+    return workspace ? ca_dock_panel_id(workspace->dock, index) : NULL;
+}
+
+const char *fl_workspace_panel_title(const Fl_Workspace *workspace, int index)
+{
+    return workspace ? ca_dock_panel_title(workspace->dock, index) : NULL;
+}
+
+bool fl_workspace_panel_visible(const Fl_Workspace *workspace, const char *id)
+{
+    return workspace && ca_dock_panel_visible(workspace->dock, id);
+}
+
+bool fl_workspace_toggle_panel(Fl_Workspace *workspace, const char *id)
+{
+    return workspace && workspace->mounted && ca_dock_toggle_panel(workspace->dock, id);
 }

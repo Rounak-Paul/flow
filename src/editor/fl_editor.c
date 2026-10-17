@@ -1,5 +1,6 @@
 #include "fl_editor.h"
 
+#include "fl_menubar.h"
 #include "fl_workspace.h"
 #include "style.h"
 
@@ -26,6 +27,7 @@ struct Fl_Editor {
     Ca_Stylesheet    *stylesheet;
     Ca_Window        *window;
     Fl_Workspace     *workspace;
+    Fl_MenuBar       *menubar;
     Ca_Effect        *bus_pump;
     Fl_EventType      quit_event;
     Fl_EventType      log_event;
@@ -135,7 +137,9 @@ static void on_worker_exit(uint32_t worker_index, void *user_data)
 static void on_main_window_close(Ca_Window *window, void *user_data)
 {
     Fl_Editor *editor = user_data;
-    /* The workspace saves and closes its floating windows while the main window still exists. */
+    /* Menus and the workspace (which closes its floating windows) go while the main window exists. */
+    fl_menubar_destroy(editor->menubar);
+    editor->menubar = NULL;
     fl_workspace_destroy(editor->workspace);
     editor->workspace = NULL;
     ca_instance_destroy_other_windows(editor->instance, window);
@@ -166,7 +170,9 @@ static bool build_ui(Fl_Editor *editor)
     });
     const bool mounted = fl_workspace_mount(editor->workspace);
     ca_ui_end();
-    return mounted;
+    if (!mounted) return false;
+    editor->menubar = fl_menubar_create(editor->window, editor->bus, editor->workspace);
+    return editor->menubar != NULL;
 }
 
 /*
@@ -340,6 +346,8 @@ void fl_editor_destroy(Fl_Editor *editor)
     if (editor->log_bridge.id) fl_log_remove_sink(editor->log_bridge);
     editor->log_bridge = (Fl_LogSink){0};
 
+    fl_menubar_destroy(editor->menubar);
+    editor->menubar = NULL;
     fl_workspace_destroy(editor->workspace);
     editor->workspace = NULL;
     ca_effect_destroy(editor->bus_pump);

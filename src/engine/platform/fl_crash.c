@@ -480,6 +480,7 @@ static const int k_signals[] = { SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT, SIGTR
 static struct sigaction g_previous[SIGNAL_COUNT];
 static int g_report_fd = -1;
 static _Thread_local void *t_alt_stack;
+static _Thread_local stack_t t_previous_stack;   /* restored on detach (e.g. a sanitizer's own) */
 static _Thread_local volatile sig_atomic_t t_in_handler;
 
 static void write_fd(int fd, const char *data, size_t len)
@@ -618,7 +619,7 @@ bool fl_crash_thread_attach(void)
     memset(&ss, 0, sizeof(ss));
     ss.ss_sp = stack;
     ss.ss_size = ALT_STACK_BYTES;
-    if (sigaltstack(&ss, NULL) != 0) {
+    if (sigaltstack(&ss, &t_previous_stack) != 0) {
         free(stack);
         return false;
     }
@@ -629,10 +630,14 @@ bool fl_crash_thread_attach(void)
 void fl_crash_thread_detach(void)
 {
     if (!t_alt_stack) return;
-    stack_t ss;
-    memset(&ss, 0, sizeof(ss));
-    ss.ss_flags = SS_DISABLE;
-    sigaltstack(&ss, NULL);
+    /* Hand back whatever stack the thread had before attaching, so other
+       owners (sanitizer runtimes, host code) find their own stack again. */
+    stack_t restore = t_previous_stack;
+    if (restore.ss_flags & SS_DISABLE) {
+        memset(&restore, 0, sizeof(restore));
+        restore.ss_flags = SS_DISABLE;
+    }
+    sigaltstack(&restore, NULL);
     free(t_alt_stack);
     t_alt_stack = NULL;
 }

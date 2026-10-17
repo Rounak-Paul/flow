@@ -10,8 +10,8 @@
 /*
  * Editor workspace — the dockable panel layout of the main window.
  *
- * Owns the causality dock, registers Flow's panels, seeds the default
- * arrangement and persists the user's layout. Dock changes are published on
+ * Owns the causality dock and Flow's panels (Scene, the central group, and
+ * Console), seeds the default arrangement and persists the user's layout. Dock changes are published on
  * the application bus (FL_EVENT_DOCK_*), and persistence itself observes
  * FL_EVENT_DOCK_LAYOUT_CHANGED, saving shortly after the layout settles.
  */
@@ -62,3 +62,22 @@ bool fl_workspace_save(Fl_Workspace *workspace);
  * workspace. Must run while the main window is still alive. NULL is a no-op.
  */
 void fl_workspace_destroy(Fl_Workspace *workspace);
+
+/* Number of panels the workspace offers. */
+int fl_workspace_panel_count(const Fl_Workspace *workspace);
+
+/* Stable id of panel `index`, or NULL. */
+const char *fl_workspace_panel_id(const Fl_Workspace *workspace, int index);
+
+/* Display title of panel `index`, or NULL. */
+const char *fl_workspace_panel_title(const Fl_Workspace *workspace, int index);
+
+/* Report whether a panel is currently part of the layout. */
+bool fl_workspace_panel_visible(const Fl_Workspace *workspace, const char *id);
+
+/*
+ * Show a hidden panel (back in its remembered place) or close a shown one.
+ *
+ * Returns  true when the panel is visible afterwards.
+ */
+bool fl_workspace_toggle_panel(Fl_Workspace *workspace, const char *id);

@@ -88,6 +88,9 @@
 
 #define FL_STYLE_APP_NAME          "Flow"
 
+/* Default height of the console when docked below the scene. */
+#define FL_STYLE_CONSOLE_HEIGHT    220.0f
+
 /* Size the main window returns to when un-maximized; it opens maximized. */
 #define FL_STYLE_WINDOW_RESTORE_W  1024
 #define FL_STYLE_WINDOW_RESTORE_H  640
@@ -99,9 +102,17 @@
    3. CLASS NAMES
    ===================================================================== */
 
-#define FL_CLASS_APP_ROOT         "fl-app-root"
-#define FL_CLASS_PANEL_EMPTY      "fl-panel-empty"
-#define FL_CLASS_PANEL_EMPTY_TEXT "fl-panel-empty-text"
+#define FL_CLASS_APP_ROOT       "fl-app-root"
+#define FL_CLASS_SCENE          "fl-scene"
+#define FL_CLASS_CONSOLE        "fl-console"
+#define FL_CLASS_CONSOLE_LINE   "fl-console-line"
+
+/* Console line modifiers, indexed by Fl_LogLevel (TRACE … FATAL). */
+#define FL_CLASS_CONSOLE_LEVELS { "fl-log-trace", "fl-log-debug", "fl-log-info", \
+                                  "fl-log-warn", "fl-log-error", "fl-log-fatal" }
+
+/* Mark shown before visible panels in the View menu. */
+#define FL_STYLE_MENU_CHECK     CA_ICON_NF_FA_CHECK
 
 /* =====================================================================
    4. STYLESHEET
@@ -207,10 +218,17 @@
     "  background: " FL_COLOR_BG_BASE "; color: " FL_COLOR_TEXT_MEDIUM ";"       \
     "  font-size: " FL_FONT_MD ";"                                               \
     "}"                                                                          \
-    "." FL_CLASS_PANEL_EMPTY " {"                                                \
-    "  width: 100%; height: 100%; align-items: center; justify-content: center;" \
+    "." FL_CLASS_SCENE " { width: 100%; height: 100%; background: " FL_COLOR_BG_VOID "; }" \
+    "." FL_CLASS_CONSOLE " {"                                                    \
+    "  width: 100%; height: 100%; padding: " FL_SPACE_SM " " FL_SPACE_MD ";"     \
+    "  gap: " FL_SPACE_XS "; overflow-y: auto; background: " FL_COLOR_BG_BASE ";" \
+    "  font-size: " FL_FONT_SM ";"                                               \
     "}"                                                                          \
-    "." FL_CLASS_PANEL_EMPTY_TEXT " { color: " FL_COLOR_TEXT_DIM "; font-size: " FL_FONT_SM "; }"
+    "." FL_CLASS_CONSOLE_LINE " { width: 100%; color: " FL_COLOR_TEXT_MEDIUM "; }" \
+    ".fl-log-trace, .fl-log-debug { color: " FL_COLOR_TEXT_DIM "; }"             \
+    ".fl-log-info { color: " FL_COLOR_TEXT_MEDIUM "; }"                          \
+    ".fl-log-warn { color: " FL_COLOR_WARNING "; }"                              \
+    ".fl-log-error, .fl-log-fatal { color: " FL_COLOR_DANGER "; }"
 
 /* Complete editor stylesheet. */
 #define FL_STYLE_CSS FL_STYLE_CSS_PALETTE FL_STYLE_CSS_SYSTEM FL_STYLE_CSS_COMPONENTS
