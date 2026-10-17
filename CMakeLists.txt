@@ -25,7 +25,7 @@ if(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
 endif()
 
-set(FLOW_BIN_DIR "${PROJECT_SOURCE_DIR}/bin")
+set(FLOW_BIN_DIR "${PROJECT_SOURCE_DIR}/bin" CACHE PATH "Directory receiving the flow executable")
 
 find_package(Threads REQUIRED)
 

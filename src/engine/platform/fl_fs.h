@@ -51,6 +51,25 @@ bool fl_fs_exists(const char *path);
 int64_t fl_fs_file_size(const char *path);
 
 /*
+ * Replace a file's contents atomically: write a sibling temporary file,
+ * flush it to stable storage, then rename it over the destination. Readers
+ * see either the old or the new contents, never a partial write.
+ *
+ * Returns  true on success; on failure the destination is unchanged.
+ */
+bool fl_fs_write_atomic(const char *path, const void *data, size_t size);
+
+/*
+ * Read a whole file into a NUL-terminated heap buffer (caller frees).
+ *
+ * max_size  Files larger than this are rejected.
+ * out_size  Optional; receives the byte count excluding the terminator.
+ * Returns   The buffer, or NULL when missing, unreadable, too large or on
+ *           allocation failure.
+ */
+char *fl_fs_read_file(const char *path, size_t max_size, size_t *out_size);
+
+/*
  * Join two path components with the platform separator.
  *
  * out      Destination buffer.

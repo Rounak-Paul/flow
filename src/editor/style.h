@@ -79,6 +79,7 @@
 
 /* Chrome metrics. */
 #define FL_TITLEBAR_HEIGHT      "30px"
+#define FL_TAB_BAR_HEIGHT       "30px"
 #define FL_SCROLLBAR_WIDTH      "8px"
 
 /* =====================================================================
@@ -98,7 +99,9 @@
    3. CLASS NAMES
    ===================================================================== */
 
-#define FL_CLASS_APP_ROOT  "fl-app-root"
+#define FL_CLASS_APP_ROOT         "fl-app-root"
+#define FL_CLASS_PANEL_EMPTY      "fl-panel-empty"
+#define FL_CLASS_PANEL_EMPTY_TEXT "fl-panel-empty-text"
 
 /* =====================================================================
    4. STYLESHEET
@@ -176,7 +179,26 @@
     "  border-radius: " FL_RADIUS_MD ";"                                         \
     "}"                                                                          \
     ".ca-overlay-hover { background: " FL_COLOR_HOVER "; border-radius: " FL_RADIUS_SM "; }" \
-    ".ca-overlay-selected { background: " FL_COLOR_SELECTION "; color: " FL_COLOR_TEXT_BRIGHT "; }"
+    ".ca-overlay-selected { background: " FL_COLOR_SELECTION "; color: " FL_COLOR_TEXT_BRIGHT "; }" \
+    ".ca-dock-host, .ca-dock-group { background: " FL_COLOR_BG_BASE "; }"          \
+    ".ca-dock-group.ca-dock-empty { background: " FL_COLOR_BG_VOID "; }"         \
+    ".ca-dock-tabs {"                                                            \
+    "  height: " FL_TAB_BAR_HEIGHT "; gap: " FL_SPACE_XS ";"                     \
+    "  padding: " FL_SPACE_SM " " FL_SPACE_SM " 0px " FL_SPACE_SM ";"            \
+    "  background: " FL_COLOR_BG_ELEVATED "; font-size: " FL_FONT_SM ";"         \
+    "}"                                                                          \
+    ".ca-dock-tab {"                                                             \
+    "  padding: 0px " FL_SPACE_LG "; color: " FL_COLOR_TEXT_DIM ";"              \
+    "  border-top-left-radius: " FL_RADIUS_MD "; border-top-right-radius: " FL_RADIUS_MD ";" \
+    "}"                                                                          \
+    ".ca-dock-tab:hover { color: " FL_COLOR_TEXT_BRIGHT "; background: " FL_COLOR_HOVER "; }" \
+    ".ca-dock-tab.active, .ca-dock-tab.active:hover {"                           \
+    "  color: " FL_COLOR_TEXT_BRIGHT "; background: " FL_COLOR_BG_BASE ";"       \
+    "}"                                                                          \
+    ".ca-dock-target { background: " FL_COLOR_FLOATING "; border-radius: " FL_RADIUS_LG "; }" \
+    ".ca-dock-target.hot { border: 1px solid " FL_COLOR_ACCENT "; }"             \
+    ".ca-dock-target-glyph.hot, .ca-dock-preview { background: " FL_COLOR_ACCENT "; }" \
+    ".ca-dock-preview { border-radius: " FL_RADIUS_LG "; }"
 
 /* Flow components. */
 #define FL_STYLE_CSS_COMPONENTS                                                  \
@@ -184,7 +206,11 @@
     "  width: 100%; height: 100%; padding: 0px; gap: 0px;"                       \
     "  background: " FL_COLOR_BG_BASE "; color: " FL_COLOR_TEXT_MEDIUM ";"       \
     "  font-size: " FL_FONT_MD ";"                                               \
-    "}"
+    "}"                                                                          \
+    "." FL_CLASS_PANEL_EMPTY " {"                                                \
+    "  width: 100%; height: 100%; align-items: center; justify-content: center;" \
+    "}"                                                                          \
+    "." FL_CLASS_PANEL_EMPTY_TEXT " { color: " FL_COLOR_TEXT_DIM "; font-size: " FL_FONT_SM "; }"
 
 /* Complete editor stylesheet. */
 #define FL_STYLE_CSS FL_STYLE_CSS_PALETTE FL_STYLE_CSS_SYSTEM FL_STYLE_CSS_COMPONENTS

@@ -1,11 +1,13 @@
 #include "fl_editor.h"
 
+#include "fl_workspace.h"
 #include "style.h"
 
 #include "core/fl_atomic.h"
 #include "core/fl_log.h"
 #include "core/fl_thread.h"
 #include "platform/fl_crash.h"
+#include "platform/fl_fs.h"
 #include "platform/fl_log_file.h"
 #include "platform/fl_paths.h"
 #include "platform/fl_signal.h"
@@ -23,6 +25,7 @@ struct Fl_Editor {
     Ca_Instance      *instance;
     Ca_Stylesheet    *stylesheet;
     Ca_Window        *window;
+    Fl_Workspace     *workspace;
     Ca_Effect        *bus_pump;
     Fl_EventType      quit_event;
     Fl_EventType      log_event;
@@ -132,22 +135,38 @@ static void on_worker_exit(uint32_t worker_index, void *user_data)
 static void on_main_window_close(Ca_Window *window, void *user_data)
 {
     Fl_Editor *editor = user_data;
+    /* The workspace saves and closes its floating windows while the main window still exists. */
+    fl_workspace_destroy(editor->workspace);
+    editor->workspace = NULL;
     ca_instance_destroy_other_windows(editor->instance, window);
     editor->window = NULL;
 }
 
 /*
- * Build the initial UI tree for the main window.
+ * Build the main window's UI tree: the app root hosting the dock workspace.
  *
- * window  Main editor window that receives the root container.
+ * editor   Owning editor with a live main window.
+ * Returns  false when the workspace cannot be created or mounted.
  */
-static void build_ui(Ca_Window *window)
+static bool build_ui(Fl_Editor *editor)
 {
-    ca_ui_begin(window, &(Ca_DivDesc){
+    char config[FL_PATH_MAX], layout[FL_PATH_MAX];
+    const bool persist = fl_paths_user_dir(FL_PATH_CONFIG, config, sizeof(config)) &&
+                         fl_fs_join(layout, sizeof(layout), config, "workspace.json");
+    if (!persist) FL_LOG_WARN(LOG_TAG, "config directory unavailable; workspace layout will not persist");
+
+    editor->workspace = fl_workspace_create(&(Fl_WorkspaceDesc){
+        .window = editor->window, .bus = editor->bus, .layout_path = persist ? layout : NULL,
+    });
+    if (!editor->workspace) return false;
+
+    ca_ui_begin(editor->window, &(Ca_DivDesc){
         .direction = CA_VERTICAL,
         .style     = FL_CLASS_APP_ROOT,
     });
+    const bool mounted = fl_workspace_mount(editor->workspace);
     ca_ui_end();
+    return mounted;
 }
 
 /*
@@ -270,7 +289,10 @@ static bool start_ui(Fl_Editor *editor)
         return false;
     }
     ca_window_maximize(editor->window);
-    build_ui(editor->window);
+    if (!build_ui(editor)) {
+        FL_LOG_ERROR(LOG_TAG, "failed to build the workspace");
+        return false;
+    }
 
     editor->bus_pump = ca_frame_effect(editor->instance, pump_bus, editor);
     if (!editor->bus_pump) {
@@ -318,6 +340,8 @@ void fl_editor_destroy(Fl_Editor *editor)
     if (editor->log_bridge.id) fl_log_remove_sink(editor->log_bridge);
     editor->log_bridge = (Fl_LogSink){0};
 
+    fl_workspace_destroy(editor->workspace);
+    editor->workspace = NULL;
     ca_effect_destroy(editor->bus_pump);
     editor->bus_pump = NULL;
     fl_atomic_store_u32(&editor->ui_ready, 0u);

@@ -36,9 +36,56 @@ bool fl_fs_join(char *out, size_t cap, const char *dir, const char *name)
     return true;
 }
 
+static bool flush_to_disk(FILE *file);
+
+bool fl_fs_write_atomic(const char *path, const void *data, size_t size)
+{
+    if (!path || (size && !data)) return false;
+    const size_t len = strlen(path);
+    char *temp = malloc(len + 8u);
+    if (!temp) return false;
+    memcpy(temp, path, len);
+    memcpy(temp + len, ".tmp", 5u);
+
+    FILE *file = fl_fs_fopen(temp, "wb");
+    bool ok = file != NULL;
+    if (ok && size) ok = fwrite(data, 1, size, file) == size;
+    if (ok) ok = fflush(file) == 0 && flush_to_disk(file);
+    if (file && fclose(file) != 0) ok = false;
+    if (ok) ok = fl_fs_rename(temp, path);
+    if (!ok) fl_fs_remove(temp);
+    free(temp);
+    return ok;
+}
+
+char *fl_fs_read_file(const char *path, size_t max_size, size_t *out_size)
+{
+    if (out_size) *out_size = 0;
+    const int64_t size = fl_fs_file_size(path);
+    if (size < 0 || (uint64_t)size > (uint64_t)max_size || (uint64_t)size >= SIZE_MAX) return NULL;
+    FILE *file = fl_fs_fopen(path, "rb");
+    if (!file) return NULL;
+    char *buffer = malloc((size_t)size + 1u);
+    size_t read = buffer ? fread(buffer, 1, (size_t)size, file) : 0;
+    fclose(file);
+    if (!buffer || read != (size_t)size) {
+        free(buffer);
+        return NULL;
+    }
+    buffer[read] = '\0';
+    if (out_size) *out_size = read;
+    return buffer;
+}
+
 #if defined(_WIN32)
 
+#include <io.h>
 #include <windows.h>
+
+static bool flush_to_disk(FILE *file)
+{
+    return _commit(_fileno(file)) == 0;
+}
 
 /* Convert UTF-8 to a heap-allocated wide string; caller frees. */
 static wchar_t *widen(const char *utf8)
@@ -144,6 +191,11 @@ int64_t fl_fs_file_size(const char *path)
 #include <errno.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+static bool flush_to_disk(FILE *file)
+{
+    return fsync(fileno(file)) == 0;
+}
 
 static bool directory_exists(const char *path)
 {
