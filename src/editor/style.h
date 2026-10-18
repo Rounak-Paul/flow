@@ -17,46 +17,67 @@
  */
 
 /* =====================================================================
-   1. THEME TOKENS — "Flow Dark"
+   1. THEME TOKENS — "Flow Glass"
    ===================================================================== */
 
-#define FL_THEME_NAME "Flow Dark"
+#define FL_THEME_NAME "Flow Glass"
 
-/* Surfaces, from deepest to most raised. */
-#define FL_COLOR_BG_VOID        "#08090c"
-#define FL_COLOR_BG_BASE        "#0e1014"
-#define FL_COLOR_BG_ELEVATED    "#14171c"
-#define FL_COLOR_BG_SURFACE     "#1b1f26"
-#define FL_COLOR_BG_OVERLAY     "#252a33"
-#define FL_COLOR_SEPARATOR      "#1f232b"
+/* Surfaces behind and beneath the glass. */
+#define FL_COLOR_BG_VOID        "#070a14"
+#define FL_COLOR_BG_BASE        "#0c1120"
+#define FL_COLOR_BG_ELEVATED    "#121829"
+#define FL_COLOR_BG_SURFACE     "#1a2135"
+#define FL_COLOR_BG_OVERLAY     "#242c44"
+#define FL_COLOR_SEPARATOR      "#1c2338"
+
+/* OLED-black backdrop shared by the title bar and every window root. */
+#define FL_COLOR_BACKDROP       "#000000"
+
+/* Backdrop fill shared by every window root. */
+#define FL_STYLE_BACKDROP "background: " FL_COLOR_BACKDROP ";"
+
+/* Glass materials: translucent fills, hairline rims and soft depth. */
+#define FL_COLOR_GLASS_TOP      "rgba(255, 255, 255, 0.028)"
+#define FL_COLOR_GLASS_BOTTOM   "rgba(255, 255, 255, 0.012)"
+#define FL_COLOR_GLASS_BAR      "rgba(255, 255, 255, 0.012)"
+#define FL_COLOR_GLASS_BORDER   "rgba(255, 255, 255, 0.075)"
+#define FL_COLOR_GLASS_RIM      "rgba(255, 255, 255, 0.12)"
+#define FL_COLOR_GLASS_SHADOW   "rgba(0, 0, 0, 0.42)"
+#define FL_COLOR_FIELD          "rgba(0, 0, 0, 0.34)"
+#define FL_COLOR_FIELD_HOVER    "rgba(0, 0, 0, 0.44)"
+#define FL_COLOR_CONTROL        "rgba(255, 255, 255, 0.035)"
+#define FL_COLOR_CONTROL_HOVER  "rgba(255, 255, 255, 0.07)"
+#define FL_COLOR_CONTROL_PRESS  "rgba(255, 255, 255, 0.02)"
+#define FL_COLOR_TAB_ACTIVE     "rgba(255, 255, 255, 0.05)"
 
 /* Text, from most to least prominent. */
-#define FL_COLOR_TEXT_BRIGHT    "#e6e9ee"
-#define FL_COLOR_TEXT_MEDIUM    "#b4bcc8"
-#define FL_COLOR_TEXT_MUTED     "#8a94a3"
-#define FL_COLOR_TEXT_DIM       "#5a6372"
+#define FL_COLOR_TEXT_BRIGHT    "#eef2fa"
+#define FL_COLOR_TEXT_MEDIUM    "#bcc5d8"
+#define FL_COLOR_TEXT_MUTED     "#8e99b0"
+#define FL_COLOR_TEXT_DIM       "#5f6b85"
 
 /* Accent and interaction states. */
-#define FL_COLOR_ACCENT         "#5b9cff"
-#define FL_COLOR_ACCENT_HOVER   "#7ab0ff"
-#define FL_COLOR_ON_ACCENT      "#06080d"
-#define FL_COLOR_HOVER          "rgba(255, 255, 255, 0.05)"
-#define FL_COLOR_PRESSED        "rgba(255, 255, 255, 0.09)"
-#define FL_COLOR_SELECTION      "rgba(91, 156, 255, 0.26)"
+#define FL_COLOR_ACCENT         "#6aa6ff"
+#define FL_COLOR_ACCENT_HOVER   "#8bbcff"
+#define FL_COLOR_ON_ACCENT      "#06101f"
+#define FL_COLOR_ACCENT_GLOW    "rgba(106, 166, 255, 0.30)"
+#define FL_COLOR_HOVER          "rgba(255, 255, 255, 0.025)"
+#define FL_COLOR_PRESSED        "rgba(255, 255, 255, 0.04)"
+#define FL_COLOR_SELECTION      "rgba(106, 166, 255, 0.11)"
 
 /* Status. */
 #define FL_COLOR_SUCCESS        "#4cc38a"
 #define FL_COLOR_WARNING        "#e8b04a"
 #define FL_COLOR_DANGER         "#f0707a"
 #define FL_COLOR_ON_DANGER      "#0b0b0d"
-#define FL_COLOR_DANGER_HOVER   "rgba(240, 112, 122, 0.20)"
+#define FL_COLOR_DANGER_HOVER   "rgba(240, 112, 122, 0.22)"
 
 /* Overlays and floating surfaces. */
-#define FL_COLOR_SCRIM          "rgba(4, 5, 8, 0.80)"
-#define FL_COLOR_FLOATING       "#161a20"
-#define FL_COLOR_SCROLL_TRACK   "rgba(8, 9, 12, 0.30)"
-#define FL_COLOR_SCROLL_THUMB   "rgba(138, 148, 163, 0.35)"
-#define FL_COLOR_SCROLL_ACTIVE  "rgba(160, 172, 190, 0.55)"
+#define FL_COLOR_SCRIM          "rgba(4, 6, 14, 0.55)"
+#define FL_COLOR_FLOATING       "rgba(30, 38, 62, 0.62)"
+#define FL_COLOR_SCROLL_TRACK   "rgba(0, 0, 0, 0.12)"
+#define FL_COLOR_SCROLL_THUMB   "rgba(190, 205, 235, 0.22)"
+#define FL_COLOR_SCROLL_ACTIVE  "rgba(210, 222, 245, 0.50)"
 
 /* Spacing scale. */
 #define FL_SPACE_XS             "2px"
@@ -66,9 +87,15 @@
 #define FL_SPACE_XL             "16px"
 
 /* Corner radii. */
-#define FL_RADIUS_SM            "3px"
-#define FL_RADIUS_MD            "5px"
-#define FL_RADIUS_LG            "8px"
+#define FL_RADIUS_SM            "6px"
+#define FL_RADIUS_MD            "9px"
+#define FL_RADIUS_LG            "14px"
+#define FL_RADIUS_PILL          "999px"
+
+/* Blur strengths (logical pixels) and the gutter between floating panels. */
+#define FL_BLUR_PANEL           "28px"
+#define FL_BLUR_FLOAT           "40px"
+#define FL_PANEL_GAP            "5px"
 
 /* Type scale (logical pixels; causality applies the UI scale). */
 #define FL_FONT_XS              "10px"
@@ -78,8 +105,8 @@
 #define FL_FONT_XL              "16px"
 
 /* Chrome metrics. */
-#define FL_TITLEBAR_HEIGHT      "30px"
-#define FL_TAB_BAR_HEIGHT       "30px"
+#define FL_TITLEBAR_HEIGHT      "34px"
+#define FL_TAB_BAR_HEIGHT       "36px"
 #define FL_SCROLLBAR_WIDTH      "8px"
 
 /* =====================================================================
@@ -146,82 +173,104 @@
     "  scrollbar-thumb-active-color: " FL_COLOR_SCROLL_ACTIVE ";"                \
     "}"
 
-/* Causality system chrome: title bar, popups, menus, tooltips, overlays. */
+/* Causality system chrome: title bar, popups, menus, tooltips, overlays, dock. */
 #define FL_STYLE_CSS_SYSTEM                                                      \
     ".ca-titlebar {"                                                             \
-    "  height: " FL_TITLEBAR_HEIGHT "; background: " FL_COLOR_BG_VOID ";"        \
+    "  height: " FL_TITLEBAR_HEIGHT "; background: " FL_COLOR_BACKDROP "; border: 0px;" \
     "}"                                                                          \
     ".ca-titlebar-menu { height: 100%; align-items: center; background: transparent; }" \
     ".ca-titlebar-menu-item {"                                                   \
-    "  height: 100%; padding: 0px " FL_SPACE_MD "; color: " FL_COLOR_TEXT_MEDIUM ";" \
-    "  background: transparent; border-radius: 0px; font-size: " FL_FONT_SM ";"  \
+    "  height: 24px; padding: 0px " FL_SPACE_LG "; color: " FL_COLOR_TEXT_MEDIUM ";" \
+    "  background: transparent; border-radius: " FL_RADIUS_PILL "; font-size: " FL_FONT_SM ";" \
     "}"                                                                          \
     ".ca-titlebar-menu-item:hover {"                                             \
-    "  background: " FL_COLOR_HOVER "; color: " FL_COLOR_TEXT_BRIGHT ";"         \
+    "  background: " FL_COLOR_CONTROL "; color: " FL_COLOR_TEXT_BRIGHT ";"       \
     "}"                                                                          \
     ".ca-titlebar-drag { height: 100%; background: transparent; }"               \
     ".ca-titlebar-title { color: " FL_COLOR_TEXT_MUTED "; font-size: " FL_FONT_SM "; }" \
     ".ca-titlebar-controls { height: 100%; gap: " FL_SPACE_SM "; align-items: center; }" \
     ".ca-titlebar-control {"                                                     \
-    "  width: 28px; height: 22px; color: " FL_COLOR_TEXT_MEDIUM ";"              \
-    "  background: transparent; border-radius: " FL_RADIUS_SM "; font-size: " FL_FONT_XS ";" \
+    "  width: 30px; height: 22px; color: " FL_COLOR_TEXT_MEDIUM ";"              \
+    "  background: transparent; border-radius: " FL_RADIUS_PILL "; font-size: " FL_FONT_XS ";" \
     "}"                                                                          \
-    ".ca-titlebar-control:hover { background: " FL_COLOR_HOVER "; }"             \
+    ".ca-titlebar-control:hover { background: " FL_COLOR_CONTROL "; }"           \
     ".ca-titlebar-close { color: " FL_COLOR_DANGER "; }"                         \
     ".ca-titlebar-close:hover { background: " FL_COLOR_DANGER_HOVER "; }"        \
     ".ca-popup-root {"                                                           \
     "  width: 100%; height: 100%; padding: " FL_SPACE_XL ";"                     \
     "  background: " FL_COLOR_SCRIM "; align-items: stretch; justify-content: center;" \
+    "  backdrop-filter: blur(" FL_BLUR_PANEL ");"                                \
     "}"                                                                          \
     ".ca-popup-card {"                                                           \
     "  padding: " FL_SPACE_XL "; gap: " FL_SPACE_LG "; background: " FL_COLOR_FLOATING ";" \
-    "  border-radius: " FL_RADIUS_LG ";"                                         \
+    "  border: 1px solid " FL_COLOR_GLASS_RIM "; border-radius: " FL_RADIUS_LG ";" \
+    "  backdrop-filter: blur(" FL_BLUR_FLOAT ");"                                \
+    "  box-shadow: 0px 24px 60px " FL_COLOR_GLASS_SHADOW ";"                     \
     "}"                                                                          \
     ".ca-popup-title { color: " FL_COLOR_TEXT_BRIGHT "; font-size: " FL_FONT_LG "; }" \
     ".ca-popup-message { color: " FL_COLOR_TEXT_MEDIUM "; font-size: " FL_FONT_MD "; text-wrap: wrap; }" \
     ".ca-popup-actions { gap: " FL_SPACE_MD "; justify-content: flex-end; }"     \
     ".ca-popup-btn {"                                                            \
-    "  padding: " FL_SPACE_SM " " FL_SPACE_LG "; color: " FL_COLOR_TEXT_BRIGHT ";" \
-    "  background: " FL_COLOR_BG_OVERLAY "; border-radius: " FL_RADIUS_MD ";"    \
+    "  padding: " FL_SPACE_SM " " FL_SPACE_XL "; color: " FL_COLOR_TEXT_BRIGHT ";" \
+    "  background: " FL_COLOR_CONTROL "; border: 1px solid " FL_COLOR_GLASS_BORDER ";" \
+    "  border-radius: " FL_RADIUS_PILL ";"                                       \
     "}"                                                                          \
-    ".ca-popup-btn:hover { background: " FL_COLOR_SELECTION "; }"                \
+    ".ca-popup-btn:hover { background: " FL_COLOR_CONTROL_HOVER "; }"            \
     ".ca-select-popup, .ca-tooltip, .ca-context-menu, .ca-menubar-popup {"       \
     "  background: " FL_COLOR_FLOATING "; color: " FL_COLOR_TEXT_BRIGHT ";"      \
-    "  border-radius: " FL_RADIUS_MD ";"                                         \
+    "  border: 1px solid " FL_COLOR_GLASS_RIM "; border-radius: " FL_RADIUS_MD ";" \
+    "  backdrop-filter: blur(" FL_BLUR_FLOAT ");"                                \
+    "  box-shadow: 0px 14px 40px " FL_COLOR_GLASS_SHADOW ";"                     \
     "}"                                                                          \
-    ".ca-overlay-hover { background: " FL_COLOR_HOVER "; border-radius: " FL_RADIUS_SM "; }" \
-    ".ca-overlay-selected { background: " FL_COLOR_SELECTION "; color: " FL_COLOR_TEXT_BRIGHT "; }" \
-    ".ca-dock-host, .ca-dock-group { background: " FL_COLOR_BG_BASE "; }"          \
-    ".ca-dock-group.ca-dock-empty { background: " FL_COLOR_BG_VOID "; }"         \
+    ".ca-overlay-hover { background: " FL_COLOR_CONTROL "; border-radius: " FL_RADIUS_SM "; }" \
+    ".ca-overlay-selected { background: " FL_COLOR_SELECTION "; color: " FL_COLOR_TEXT_BRIGHT "; border-radius: " FL_RADIUS_SM "; }" \
+    ".ca-dock-host {"                                                            \
+    "  padding: " FL_PANEL_GAP "; background: transparent;"                      \
+    "}"                                                                          \
+    ".ca-dock-group {"                                                           \
+    "  margin: " FL_PANEL_GAP "; border-radius: " FL_RADIUS_LG ";"               \
+    "  background: linear-gradient(to bottom, " FL_COLOR_GLASS_TOP ", " FL_COLOR_GLASS_BOTTOM ");" \
+    "  border: 1px solid " FL_COLOR_GLASS_BORDER ";"                             \
+    "}"                                                                          \
+    ".ca-dock-group.ca-dock-empty { background: " FL_COLOR_FIELD "; }" \
+    ".ca-dock-content { background: transparent; }"                              \
     ".ca-dock-tabs {"                                                            \
-    "  height: " FL_TAB_BAR_HEIGHT "; gap: " FL_SPACE_XS ";"                     \
-    "  padding: " FL_SPACE_SM " " FL_SPACE_SM " 0px " FL_SPACE_SM ";"            \
-    "  background: " FL_COLOR_BG_ELEVATED "; font-size: " FL_FONT_SM ";"         \
+    "  height: " FL_TAB_BAR_HEIGHT "; gap: " FL_SPACE_SM ";"                     \
+    "  padding: " FL_SPACE_SM " " FL_SPACE_MD ";"                                \
+    "  background: " FL_COLOR_GLASS_BAR "; font-size: " FL_FONT_SM ";"           \
+    "  border-bottom: 1px solid " FL_COLOR_GLASS_BORDER ";"                      \
     "}"                                                                          \
     ".ca-dock-tab {"                                                             \
-    "  padding: 0px " FL_SPACE_LG "; color: " FL_COLOR_TEXT_DIM ";"              \
-    "  border-top-left-radius: " FL_RADIUS_MD "; border-top-right-radius: " FL_RADIUS_MD ";" \
+    "  padding: 0px " FL_SPACE_LG "; color: " FL_COLOR_TEXT_MUTED ";"            \
+    "  border-radius: " FL_RADIUS_PILL ";"                                       \
     "}"                                                                          \
     ".ca-dock-tab:hover { color: " FL_COLOR_TEXT_BRIGHT "; background: " FL_COLOR_HOVER "; }" \
     ".ca-dock-tab.active, .ca-dock-tab.active:hover {"                           \
-    "  color: " FL_COLOR_TEXT_BRIGHT "; background: " FL_COLOR_BG_BASE ";"       \
+    "  color: " FL_COLOR_TEXT_BRIGHT "; background: " FL_COLOR_TAB_ACTIVE ";"     \
+    "  border: 1px solid " FL_COLOR_GLASS_BORDER ";"                             \
     "}"                                                                          \
-    ".ca-dock-target { background: " FL_COLOR_FLOATING "; border-radius: " FL_RADIUS_LG "; }" \
+    ".ca-dock-target {"                                                          \
+    "  background: " FL_COLOR_FLOATING "; border: 1px solid " FL_COLOR_GLASS_BORDER ";" \
+    "  border-radius: " FL_RADIUS_LG "; backdrop-filter: blur(" FL_BLUR_FLOAT ");" \
+    "}"                                                                          \
     ".ca-dock-target.hot { border: 1px solid " FL_COLOR_ACCENT "; }"             \
-    ".ca-dock-target-glyph.hot, .ca-dock-preview { background: " FL_COLOR_ACCENT "; }" \
-    ".ca-dock-preview { border-radius: " FL_RADIUS_LG "; }"
+    ".ca-dock-target-glyph.hot { background: " FL_COLOR_ACCENT "; }"             \
+    ".ca-dock-preview {"                                                         \
+    "  background: " FL_COLOR_SELECTION "; border: 1px solid " FL_COLOR_ACCENT ";" \
+    "  border-radius: " FL_RADIUS_LG ";"                                         \
+    "}"
 
 /* Flow components. */
 #define FL_STYLE_CSS_COMPONENTS                                                  \
     "." FL_CLASS_APP_ROOT " {"                                                   \
     "  width: 100%; height: 100%; padding: 0px; gap: 0px;"                       \
-    "  background: " FL_COLOR_BG_BASE "; color: " FL_COLOR_TEXT_MEDIUM ";"       \
-    "  font-size: " FL_FONT_MD ";"                                               \
+    "  " FL_STYLE_BACKDROP \
+    "  color: " FL_COLOR_TEXT_MEDIUM "; font-size: " FL_FONT_MD ";"                                            \
     "}"                                                                          \
-    "." FL_CLASS_SCENE " { width: 100%; height: 100%; background: " FL_COLOR_BG_VOID "; }" \
+    "." FL_CLASS_SCENE " { width: 100%; height: 100%; background: transparent; }" \
     "." FL_CLASS_CONSOLE " {"                                                    \
     "  width: 100%; height: 100%; padding: " FL_SPACE_SM " " FL_SPACE_MD ";"     \
-    "  gap: " FL_SPACE_XS "; overflow-y: auto; background: " FL_COLOR_BG_BASE ";" \
+    "  gap: " FL_SPACE_XS "; overflow-y: auto; background: transparent;" \
     "  font-size: " FL_FONT_SM ";"                                               \
     "}"                                                                          \
     "." FL_CLASS_CONSOLE_LINE " { width: 100%; color: " FL_COLOR_TEXT_MEDIUM "; }" \
@@ -241,8 +290,8 @@
 #define FL_STYLE_LAUNCHER_W 760
 #define FL_STYLE_LAUNCHER_H 580
 #define FL_STYLE_SCENE_RECT_RGBA {91,156,255,255}
-#define FL_STYLE_VIEW_CLEAR {0.002428f,0.002732f,0.003677f,1.0f}
-#define FL_STYLE_ARTBOARD_CLEAR {0.006995f,0.008568f,0.011612f,1.0f}
+#define FL_STYLE_VIEW_CLEAR {0.0030f,0.0048f,0.0130f,1.0f}
+#define FL_STYLE_ARTBOARD_CLEAR {0.0075f,0.0105f,0.0210f,1.0f}
 #define FL_CLASS_TOOLBAR "fl-toolbar"
 #define FL_CLASS_HEADING "fl-heading"
 #define FL_CLASS_LABEL "fl-label"
@@ -269,24 +318,25 @@
     ".fl-heading { color: " FL_COLOR_TEXT_BRIGHT "; font-size: " FL_FONT_MD "; }" \
     ".fl-label { color: " FL_COLOR_TEXT_MEDIUM "; }" \
     ".fl-muted { color: " FL_COLOR_TEXT_DIM "; font-size: " FL_FONT_SM "; }" \
-    ".fl-action { padding: 5px 10px; background: " FL_COLOR_BG_OVERLAY "; border-radius: " FL_RADIUS_SM "; color: " FL_COLOR_TEXT_BRIGHT "; flex-shrink: 0; }" \
-    ".fl-action:hover, .fl-recent:hover { background: " FL_COLOR_SELECTION "; }" \
-    ".fl-scene-strip { width: 100%; height: 104px; flex-shrink: 0; padding: 8px; gap: 8px; overflow-x: auto; background: " FL_COLOR_BG_ELEVATED "; }" \
+    ".fl-action { padding: 5px 14px; background: " FL_COLOR_CONTROL "; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: " FL_RADIUS_PILL "; color: " FL_COLOR_TEXT_BRIGHT "; flex-shrink: 0; }" \
+    ".fl-action:hover { background: " FL_COLOR_CONTROL_HOVER "; }" \
+    ".fl-recent:hover { background: " FL_COLOR_CONTROL_HOVER "; }" \
+    ".fl-scene-strip { width: 100%; height: 104px; flex-shrink: 0; padding: 8px; gap: 8px; overflow-x: auto; background: " FL_COLOR_GLASS_BAR "; }" \
     ".fl-scene-drag { flex-shrink: 0; cursor: grab; }" \
-    ".fl-scene-card { width: 164px; height: 82px; flex-shrink: 0; overflow: hidden; padding: 12px; gap: 12px; background: " FL_COLOR_BG_SURFACE "; border: 1px solid " FL_COLOR_SEPARATOR "; border-radius: " FL_RADIUS_MD "; }" \
-    ".fl-scene-card.selected { border-color: " FL_COLOR_ACCENT "; background: " FL_COLOR_SELECTION "; }" \
-    ".fl-hierarchy { width: 100%; height: 100%; overflow-y: auto; gap: 4px; padding: 8px 0px; background: " FL_COLOR_BG_BASE "; }" \
-    ".fl-entity { width: 100%; height: 28px; flex-shrink: 0; overflow: hidden; padding: 4px 8px; background: transparent; gap: 0px; }" \
+    ".fl-scene-card { width: 164px; height: 82px; flex-shrink: 0; overflow: hidden; padding: 12px; gap: 12px; background: " FL_COLOR_CONTROL "; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: " FL_RADIUS_LG "; }" \
+    ".fl-scene-card.selected { border-color: " FL_COLOR_ACCENT "; background: " FL_COLOR_SELECTION "; glow-radius: 12px; glow-color: " FL_COLOR_ACCENT_GLOW "; }" \
+    ".fl-hierarchy { width: 100%; height: 100%; overflow-y: auto; gap: 2px; padding: 8px; background: transparent; }" \
+    ".fl-entity { width: 100%; height: 28px; flex-shrink: 0; overflow: hidden; padding: 4px 8px; background: transparent; gap: 0px; border-radius: " FL_RADIUS_SM "; }" \
     ".fl-entity:hover { background: " FL_COLOR_HOVER "; }" \
     ".fl-entity.selected { background: " FL_COLOR_SELECTION "; }" \
     ".fl-view { width: 100%; height: 100%; gap: 0px; overflow: hidden; }" \
     ".fl-view-title { height: 30px; padding: 8px; flex-shrink: 0; color: " FL_COLOR_TEXT_MUTED "; }" \
     ".fl-viewport { width: 100%; flex-grow: 1; min-height: 0px; }" \
-    ".fl-form { width: 100%; height: 100%; padding: 16px; gap: 12px; background: " FL_COLOR_BG_BASE "; }" \
-    ".fl-input { width: 100%; height: 32px; padding: 6px 8px; flex-shrink: 0; background: " FL_COLOR_BG_SURFACE "; color: " FL_COLOR_TEXT_BRIGHT "; border-radius: " FL_RADIUS_SM "; }" \
-    ".fl-launcher { width: 100%; height: 100%; padding: 28px; gap: 12px; overflow-y: auto; background: " FL_COLOR_BG_BASE "; }" \
-    ".fl-launcher-title { font-size: 28px; color: " FL_COLOR_TEXT_BRIGHT "; }" \
-    ".fl-recent { width: 100%; height: 36px; padding: 8px; flex-shrink: 0; justify-content: flex-start; color: " FL_COLOR_TEXT_MEDIUM "; background: " FL_COLOR_BG_ELEVATED "; }"
+    ".fl-form { width: 100%; height: 100%; padding: 16px; gap: 12px; " FL_STYLE_BACKDROP " }" \
+    ".fl-input { width: 100%; height: 32px; padding: 6px 10px; flex-shrink: 0; background: " FL_COLOR_FIELD "; color: " FL_COLOR_TEXT_BRIGHT "; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: " FL_RADIUS_MD "; }" \
+    ".fl-launcher { width: 100%; height: 100%; padding: 28px; gap: 12px; overflow-y: auto; " FL_STYLE_BACKDROP " }" \
+    ".fl-launcher-title { font-size: 32px; color: " FL_COLOR_TEXT_BRIGHT "; }" \
+    ".fl-recent { width: 100%; height: 36px; padding: 8px 14px; flex-shrink: 0; justify-content: flex-start; color: " FL_COLOR_TEXT_MEDIUM "; background: " FL_COLOR_CONTROL "; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: " FL_RADIUS_MD "; }"
 
 /* Scene authoring panels and viewport handles. */
 #define FL_STYLE_WIDGETS_W 210.0f
@@ -311,15 +361,15 @@
 #define FL_STYLE_CSS_AUTHORING \
     ".fl-entity-row { width: 100%; height: 28px; flex-shrink: 0; }" \
     ".fl-stage { width: 100%; flex-grow: 1; min-height: 0px; overflow: hidden; }" \
-    ".fl-library, .fl-inspector { width: 100%; height: 100%; padding: 10px; gap: 10px; overflow-y: auto; background: " FL_COLOR_BG_BASE "; }" \
+    ".fl-library, .fl-inspector { width: 100%; height: 100%; padding: 10px; gap: 10px; overflow-y: auto; background: transparent; }" \
     ".fl-widget-wrap { width: 90px; height: 72px; flex-shrink: 0; }" \
-    ".fl-widget-card { width: 100%; height: 100%; padding: 8px 4px; gap: 6px; align-items: center; justify-content: center; background: " FL_COLOR_BG_SURFACE "; border: 1px solid " FL_COLOR_SEPARATOR "; border-radius: " FL_RADIUS_MD "; }" \
+    ".fl-widget-card { width: 100%; height: 100%; padding: 8px 4px; gap: 6px; align-items: center; justify-content: center; background: " FL_COLOR_FIELD "; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: " FL_RADIUS_LG "; }" \
     ".fl-widget-icon { font-size: 22px; color: " FL_COLOR_TEXT_MEDIUM "; }" \
-    ".fl-widget-card:hover { border-color: " FL_COLOR_ACCENT "; background: " FL_COLOR_SELECTION "; }" \
+    ".fl-widget-card:hover { border-color: " FL_COLOR_ACCENT "; background: " FL_COLOR_SELECTION "; glow-radius: 10px; glow-color: " FL_COLOR_ACCENT_GLOW "; }" \
     ".fl-property-row { width: 100%; height: 30px; flex-shrink: 0; gap: 8px; align-items: center; }" \
     ".fl-property-label { width: 76px; flex-shrink: 0; font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MUTED "; }" \
     ".fl-property-label.keyed { color: " FL_COLOR_ACCENT "; }" \
-    ".fl-property-input { flex-grow: 1; min-width: 0px; height: 28px; padding: 4px 6px; background: " FL_COLOR_BG_SURFACE "; color: " FL_COLOR_TEXT_BRIGHT "; border-radius: " FL_RADIUS_SM "; }"
+    ".fl-property-input { flex-grow: 1; min-width: 0px; height: 28px; padding: 4px 8px; background: " FL_COLOR_FIELD "; color: " FL_COLOR_TEXT_BRIGHT "; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: " FL_RADIUS_SM "; }"
 
 /* Assets panel, image placeholders and the Inspector font picker. */
 #define FL_STYLE_ASSETS_W 240.0f
@@ -352,22 +402,22 @@
 #define FL_CLASS_WARNING "fl-warning"
 #define FL_CLASS_PROPERTY_SELECT "fl-property-select"
 #define FL_STYLE_CSS_ASSETS \
-    ".fl-assets { width: 100%; height: 100%; padding: 8px; gap: 8px; overflow-y: auto; background: " FL_COLOR_BG_BASE "; }" \
+    ".fl-assets { width: 100%; height: 100%; padding: 8px; gap: 8px; overflow-y: auto; background: transparent; }" \
     ".fl-asset-grid { width: 100%; flex-wrap: wrap; gap: 6px; flex-shrink: 0; }" \
     ".fl-asset-tile { width: 90px; height: 86px; flex-shrink: 0; }" \
-    ".fl-play { position: absolute; left: 8px; top: 38px; width: 22px; height: 22px; z-index: 1; font-size: " FL_FONT_XS "; border-radius: 11px; background: " FL_COLOR_BG_OVERLAY "; color: " FL_COLOR_TEXT_BRIGHT "; }" \
-    ".fl-play:hover, .fl-play.active { background: " FL_COLOR_ACCENT "; color: " FL_COLOR_ON_ACCENT "; }" \
+    ".fl-play { position: absolute; left: 8px; top: 38px; width: 22px; height: 22px; z-index: 1; font-size: " FL_FONT_XS "; border-radius: 11px; background: " FL_COLOR_CONTROL "; color: " FL_COLOR_TEXT_BRIGHT "; }" \
+    ".fl-play:hover, .fl-play.active { background: " FL_COLOR_ACCENT "; color: " FL_COLOR_ON_ACCENT "; glow-radius: 8px; glow-color: " FL_COLOR_ACCENT_GLOW "; }" \
     ".fl-asset-card { width: 100%; height: 100%; padding: 4px; gap: 4px; align-items: center; background: transparent; border-radius: " FL_RADIUS_MD "; }" \
     ".fl-asset-card:hover, .fl-font-row:hover, .fl-chip:hover { background: " FL_COLOR_HOVER "; }" \
     ".fl-asset-card.selected, .fl-font-row.selected, .fl-chip.selected { background: " FL_COLOR_SELECTION "; }" \
-    ".fl-asset-preview { width: 82px; height: 56px; flex-shrink: 0; align-items: center; justify-content: center; overflow: hidden; background: " FL_COLOR_BG_SURFACE "; border-radius: " FL_RADIUS_SM "; }" \
+    ".fl-asset-preview { width: 82px; height: 56px; flex-shrink: 0; align-items: center; justify-content: center; overflow: hidden; background: " FL_COLOR_FIELD "; border-radius: " FL_RADIUS_SM "; }" \
     ".fl-asset-icon { font-size: 26px; color: " FL_COLOR_TEXT_DIM "; }" \
     ".fl-asset-name { width: 100%; height: 16px; overflow: hidden; white-space: nowrap; text-align: center; font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MEDIUM "; }" \
     ".fl-chips { width: 100%; height: 28px; gap: 2px; flex-shrink: 0; }" \
     ".fl-chip { width: 32px; height: 26px; flex-shrink: 0; border-radius: " FL_RADIUS_SM "; background: transparent; color: " FL_COLOR_TEXT_MUTED "; }" \
     ".fl-empty { width: 100%; padding: 28px 8px; gap: 8px; align-items: center; flex-shrink: 0; }" \
     ".fl-empty-icon { font-size: 30px; color: " FL_COLOR_TEXT_DIM "; }" \
-    ".fl-font-list { width: 100%; height: 180px; flex-shrink: 0; overflow-y: auto; gap: 0px; background: " FL_COLOR_BG_SURFACE "; border-radius: " FL_RADIUS_SM "; }" \
+    ".fl-font-list { width: 100%; height: 180px; flex-shrink: 0; overflow-y: auto; gap: 0px; background: " FL_COLOR_FIELD "; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: " FL_RADIUS_MD "; }" \
     ".fl-font-row { width: 100%; height: 24px; flex-shrink: 0; padding: 4px 8px; gap: 8px; justify-content: space-between; background: transparent; }" \
     ".fl-warning { color: " FL_COLOR_WARNING "; font-size: " FL_FONT_SM "; text-wrap: wrap; }" \
     ".fl-property-select { flex-grow: 1; min-width: 0px; height: 28px; }"
@@ -384,10 +434,10 @@
 #define FL_CLASS_FILE_FOOTER "fl-file-footer"
 #define FL_CLASS_FILE_SUMMARY "fl-file-summary"
 #define FL_STYLE_CSS_FILE_BROWSER \
-    ".fl-file-browser { width: 100%; height: 100%; padding: 8px; gap: 6px; background: " FL_COLOR_BG_BASE "; }" \
-    ".fl-icon-action { width: 28px; height: 28px; flex-shrink: 0; background: " FL_COLOR_BG_OVERLAY "; border-radius: " FL_RADIUS_SM "; color: " FL_COLOR_TEXT_BRIGHT "; }" \
-    ".fl-icon-action:hover { background: " FL_COLOR_SELECTION "; }" \
-    ".fl-file-list { width: 100%; flex-grow: 1; min-height: 0px; overflow-y: auto; gap: 0px; background: " FL_COLOR_BG_SURFACE "; border-radius: " FL_RADIUS_SM "; }" \
+    ".fl-file-browser { width: 100%; height: 100%; padding: 12px; gap: 8px; " FL_STYLE_BACKDROP " }" \
+    ".fl-icon-action { width: 28px; height: 28px; flex-shrink: 0; background: " FL_COLOR_CONTROL "; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: " FL_RADIUS_PILL "; color: " FL_COLOR_TEXT_BRIGHT "; }" \
+    ".fl-icon-action:hover { background: " FL_COLOR_CONTROL_HOVER "; }" \
+    ".fl-file-list { width: 100%; flex-grow: 1; min-height: 0px; overflow-y: auto; gap: 0px; background: " FL_COLOR_FIELD "; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: " FL_RADIUS_MD "; }" \
     ".fl-file-row { width: 100%; height: 26px; flex-shrink: 0; padding: 4px 10px; gap: 8px; justify-content: space-between; background: transparent; }" \
     ".fl-file-row:hover { background: " FL_COLOR_HOVER "; }" \
     ".fl-file-row.selected { background: " FL_COLOR_SELECTION "; }" \
@@ -449,8 +499,8 @@
 #define FL_CLASS_TL_CLIP_SELECTED "fl-tl-clip selected"
 #define FL_CLASS_TL_PLAYHEAD "fl-tl-playhead"
 #define FL_STYLE_CSS_TIMELINE \
-    ".fl-timeline { width: 100%; height: 100%; gap: 0px; overflow: hidden; background: " FL_COLOR_BG_BASE "; }" \
-    ".fl-tl-selection { width: 100%; padding: 4px 10px; gap: 8px; align-items: center; flex-shrink: 0; background: " FL_COLOR_BG_ELEVATED "; }" \
+    ".fl-timeline { width: 100%; height: 100%; gap: 0px; overflow: hidden; background: transparent; }" \
+    ".fl-tl-selection { width: 100%; padding: 4px 10px; gap: 8px; align-items: center; flex-shrink: 0; background: " FL_COLOR_GLASS_BAR "; }" \
     ".fl-tl-select { width: 130px; flex-shrink: 0; }" \
     ".fl-tl-track-name { flex-grow: 1; min-width: 0px; overflow: hidden; white-space: nowrap; font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MEDIUM "; }" \
     ".fl-tl-track-action { width: 22px; height: 22px; padding: 0px; flex-shrink: 0; font-size: " FL_FONT_SM "; }" \
@@ -458,7 +508,7 @@
     ".fl-tl-spacer { flex-grow: 1; height: 1px; }" \
     ".fl-tl-scroll { width: 100%; flex-grow: 1; min-height: 0px; overflow: auto; gap: 0px; }" \
     ".fl-tl-body { width: 100%; flex-grow: 1; min-height: 0px; overflow: hidden; gap: 0px; }" \
-    ".fl-tl-labels { width: 240px; flex-shrink: 0; gap: 0px; background: " FL_COLOR_BG_ELEVATED "; }" \
+    ".fl-tl-labels { width: 240px; flex-shrink: 0; gap: 0px; background: " FL_COLOR_GLASS_BAR "; }" \
     ".fl-tl-label-viewport { width: 100%; flex-grow: 1; min-height: 0px; overflow: hidden; }" \
     ".fl-tl-label-content, .fl-tl-key-content { flex-shrink: 0; gap: 0px; }" \
     ".fl-tl-ruler-label { width: 100%; height: 22px; flex-shrink: 0; }" \
@@ -468,13 +518,13 @@
     ".fl-tl-lanes { flex-grow: 1; min-width: 0px; min-height: 0px; overflow: hidden; gap: 0px; }" \
     ".fl-tl-header { width: 100%; height: 48px; flex-shrink: 0; overflow: hidden; }" \
     ".fl-tl-content { flex-shrink: 0; gap: 0px; }" \
-    ".fl-tl-ruler { height: 22px; flex-shrink: 0; background: " FL_COLOR_BG_ELEVATED "; }" \
-    ".fl-tl-tick { height: 22px; padding: 4px 0px 0px 3px; border-left: 1px solid " FL_COLOR_SEPARATOR "; }" \
+    ".fl-tl-ruler { height: 22px; flex-shrink: 0; background: " FL_COLOR_GLASS_BAR "; }" \
+    ".fl-tl-tick { height: 22px; padding: 4px 0px 0px 3px; border-left: 1px solid " FL_COLOR_GLASS_BORDER "; }" \
     ".fl-tl-tick-text { font-size: " FL_FONT_XS "; color: " FL_COLOR_TEXT_DIM "; white-space: nowrap; }" \
-    ".fl-tl-row { height: 26px; flex-shrink: 0; border-bottom: 1px solid " FL_COLOR_SEPARATOR "; }" \
-    ".fl-tl-beat, .fl-tl-clip { padding: 0px 8px; align-items: center; overflow: hidden; border-radius: " FL_RADIUS_SM "; background: " FL_COLOR_BG_SURFACE "; border: 1px solid " FL_COLOR_SEPARATOR "; }" \
-    ".fl-tl-clip { background: " FL_COLOR_BG_OVERLAY "; }" \
-    ".fl-tl-beat.selected, .fl-tl-clip.selected { border-color: " FL_COLOR_ACCENT "; background: " FL_COLOR_SELECTION "; }" \
+    ".fl-tl-row { height: 26px; flex-shrink: 0; border-bottom: 1px solid " FL_COLOR_GLASS_BORDER "; }" \
+    ".fl-tl-beat, .fl-tl-clip { padding: 0px 8px; align-items: center; overflow: hidden; border-radius: " FL_RADIUS_SM "; background: " FL_COLOR_CONTROL "; border: 1px solid " FL_COLOR_GLASS_BORDER "; }" \
+    ".fl-tl-clip { background: " FL_COLOR_CONTROL "; }" \
+    ".fl-tl-beat.selected, .fl-tl-clip.selected { border-color: " FL_COLOR_ACCENT "; background: " FL_COLOR_SELECTION "; glow-radius: 8px; glow-color: " FL_COLOR_ACCENT_GLOW "; }" \
     ".fl-tl-beat-text { font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MEDIUM "; white-space: nowrap; }" \
     ".fl-tl-beat { cursor: grab; }" \
     ".fl-tl-beat:active { cursor: grabbing; }" \
@@ -482,8 +532,8 @@
     ".fl-tl-edge { z-index: 2; cursor: ew-resize; align-items: center; justify-content: center; background: transparent; }" \
     ".fl-tl-edge-mark { width: 2px; height: 16px; background: " FL_COLOR_TEXT_DIM "; }" \
     ".fl-tl-edge:hover { background: " FL_COLOR_ACCENT "; }" \
-    ".fl-tl-span { background: " FL_COLOR_SEPARATOR "; }" \
+    ".fl-tl-span { background: " FL_COLOR_GLASS_BORDER "; }" \
     ".fl-tl-key { align-items: center; justify-content: center; }" \
     ".fl-tl-key-text { font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MUTED "; }" \
     ".fl-tl-key-text.selected { color: " FL_COLOR_ACCENT "; }" \
-    ".fl-tl-playhead { background: " FL_COLOR_ACCENT "; z-index: 2; }"
+    ".fl-tl-playhead { background: " FL_COLOR_ACCENT "; z-index: 2; glow-radius: 6px; glow-color: " FL_COLOR_ACCENT_GLOW "; }"
