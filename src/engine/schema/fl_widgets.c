@@ -77,7 +77,7 @@ Fl_Appearance fl_widget_appearance(const Fl_Entity *e)
 bool fl_widget_component_valid(const Fl_Component *c)
 {
     if (!c || !c->type || !c->version || (c->size && !c->data)) return false;
-    if (c->type <= FL_COMPONENT_SCRIPT && c->version != (c->type == FL_COMPONENT_ANIMATION || c->type == FL_COMPONENT_SCRIPT ? 2u : 1u)) return false;
+    if (c->type <= FL_COMPONENT_SCRIPT && c->version != (c->type == FL_COMPONENT_ANIMATION ? FL_ANIMATION_VERSION : c->type == FL_COMPONENT_SCRIPT ? FL_SCRIPT_VERSION : 1u)) return false;
     switch (c->type) {
     case FL_COMPONENT_ANIMATION: return c->size == sizeof(Fl_Animation) && fl_animation_valid((const Fl_Animation *)c->data);
     case FL_COMPONENT_SCRIPT: {Fl_Script script; return fl_script_decode(c, &script);}

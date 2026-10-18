@@ -109,64 +109,6 @@ static void check_beat_splitting(Fl_Project *p)
     CHECK(s->revision == revision);
 }
 
-/* Recover malformed old timing without dropping keys, then verify idempotent persistence. */
-static void check_key_ownership_repair(const char *root)
-{
-    char directory[FL_PATH_MAX], manifest[FL_PATH_MAX];
-    CHECK(fl_fs_join(directory, sizeof(directory), root, "repair"));
-    CHECK(fl_fs_mkdir_p(directory) && fl_fs_join(manifest, sizeof(manifest), directory, "project.flow"));
-    fl_fs_remove(manifest);
-    Fl_Project *p = fl_project_create(directory, "Repair", NULL); CHECK(p); if (!p) return;
-    Fl_Id scene = fl_project_scene_at(p, 0)->id, first = fl_project_scene_at(p, 0)->beats[0].id, second, entity;
-    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_BEAT_ADD, .scene = scene, .name = "Second", .position = 1,
-        .beat_duration = 3 * SECOND}, &second));
-    CHECK(fl_widget_create(p, scene, 0, FL_WIDGET_RECTANGLE, 0, 0, &entity));
-    Fl_Id keys[3];
-    CHECK(key(p, scene, entity, FL_PROP_X, (Fl_TimeAnchor){FL_ANCHOR_BEAT, first, false, SECOND}, 10, FL_EASE_IN, &keys[0]));
-    CHECK(key(p, scene, entity, FL_PROP_Y, (Fl_TimeAnchor){FL_ANCHOR_BEAT, second, false, SECOND}, 20, FL_EASE_OUT, &keys[1]));
-    CHECK(key(p, scene, entity, FL_PROP_WIDTH, (Fl_TimeAnchor){FL_ANCHOR_BEAT, second, true, -SECOND}, 30, FL_EASE_HOLD, &keys[2]));
-    const Fl_Scene *s = fl_project_scene(p, scene);
-    ((Fl_Keyframe *)fl_scene_key(s, keys[0], NULL))->at.offset = 6 * SECOND;
-    ((Fl_Keyframe *)fl_scene_key(s, keys[1], NULL))->at = (Fl_TimeAnchor){FL_ANCHOR_ABSOLUTE, 0, false, 9 * SECOND};
-    uint64_t revision = s->revision;
-    CHECK(fl_project_save(p)); fl_project_destroy(p);
-    p = fl_project_open(directory, NULL); CHECK(p); if (!p) return;
-    s = fl_project_scene(p, scene);
-    CHECK(s->revision == revision + 1 && fl_scene_length(s) == 9 * SECOND);
-    const Fl_Tick expected[] = {6 * SECOND, 9 * SECOND, 7 * SECOND};
-    for (size_t i = 0; i < 3; ++i) {
-        const Fl_Keyframe *k = fl_scene_key(s, keys[i], NULL); CHECK(k);
-        CHECK(k->at.beat == second && fl_anchor_resolve(s, &k->at) == expected[i] && k->value[0] == (double)(i + 1) * 10);
-    }
-    CHECK(!key(p, scene, entity, FL_PROP_X, (Fl_TimeAnchor){FL_ANCHOR_BEAT, first, false, 6 * SECOND}, 3, FL_EASE_LINEAR, NULL));
-    CHECK(!key(p, scene, entity, FL_PROP_X, (Fl_TimeAnchor){FL_ANCHOR_ABSOLUTE, 0, false, 10 * SECOND}, 3, FL_EASE_LINEAR, NULL));
-    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_BEAT_UPDATE, .scene = scene, .beat = second,
-        .name = "Second", .beat_duration = 2 * SECOND}, NULL));
-    CHECK(fl_anchor_resolve(s, &fl_scene_key(s, keys[0], NULL)->at) == 5 * SECOND + SECOND / 2);
-    CHECK(fl_anchor_resolve(s, &fl_scene_key(s, keys[1], NULL)->at) == 7 * SECOND);
-    Fl_SceneState evaluated = {0};
-    CHECK(fl_scene_state_update(&evaluated, s, 6 * SECOND));
-    const Fl_Entity *record = fl_scene_entity(s, entity);
-    Fl_Transform transform = evaluated.entities[record - s->entities].transform;
-    unsigned char bytes[56]; fl_transform_encode(&transform, bytes);
-    Fl_Component component = {FL_COMPONENT_TRANSFORM, 1, 56, bytes};
-    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ENTITY_CONFIGURE, .scene = scene, .entity = entity,
-        .name = record->name, .visible = true, .components = &component, .component_count = 1, .keyed = true, .tick = 6 * SECOND}, NULL));
-    CHECK(fl_scene_track(s, entity, FL_PROP_X)->key_count == 1 && fl_scene_track(s, entity, FL_PROP_Y)->key_count == 1);
-    transform.x += 1; fl_transform_encode(&transform, bytes);
-    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ENTITY_CONFIGURE, .scene = scene, .entity = entity,
-        .name = fl_scene_entity(s, entity)->name, .visible = true, .components = &component, .component_count = 1,
-        .keyed = true, .tick = 6 * SECOND}, NULL));
-    CHECK(fl_scene_track(s, entity, FL_PROP_X)->key_count == 2 && fl_scene_track(s, entity, FL_PROP_Y)->key_count == 1);
-    fl_scene_state_clear(&evaluated);
-    CHECK(fl_project_save(p)); revision = s->revision; fl_project_destroy(p);
-    p = fl_project_open(directory, NULL); CHECK(p); if (!p) return;
-    s = fl_project_scene(p, scene); CHECK(s->revision == revision && fl_scene_track_count(s) == 3);
-    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_BEAT_REMOVE, .scene = scene, .beat = second}, NULL));
-    CHECK(fl_scene_track_count(s) == 0);
-    fl_project_destroy(p);
-}
-
 int main(int argc, char **argv)
 {
     CHECK(argc == 2); if (argc != 2) return 1;
@@ -301,6 +243,5 @@ int main(int argc, char **argv)
         CHECK(s->beats[0].duration == 8 * SECOND && fl_scene_track_at(s, 0)->keys[0].at.offset == 2 * SECOND);
         fl_project_destroy(p);
     }
-    check_key_ownership_repair(argv[1]);
     return FLOW_TEST_RESULT("fl_timeline_tests");
 }

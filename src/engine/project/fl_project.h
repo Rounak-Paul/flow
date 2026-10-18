@@ -75,10 +75,7 @@ typedef enum Fl_OpKind {
     FL_OP_ASSET_ADD, FL_OP_ASSET_REMOVE, FL_OP_ASSET_RENAME,
     FL_OP_BEAT_ADD, FL_OP_BEAT_REMOVE, FL_OP_BEAT_UPDATE, FL_OP_BEAT_MOVE,
     FL_OP_KEY_SET, FL_OP_KEY_REMOVE, FL_OP_TRACK_REMOVE,
-    FL_OP_CLIP_ADD, FL_OP_CLIP_UPDATE, FL_OP_CLIP_REMOVE, FL_OP_BEAT_SPLIT, FL_OP_SCENE_ASPECT, FL_OP_SCENE_CAMERA,
-    FL_OP_ANIMATION_STATE_SET, FL_OP_ANIMATION_STATE_REMOVE, FL_OP_ANIMATION_ENTRY,
-    FL_OP_ANIMATION_PARAMETER_SET, FL_OP_ANIMATION_PARAMETER_REMOVE,
-    FL_OP_ANIMATION_TRANSITION_SET, FL_OP_ANIMATION_TRANSITION_REMOVE
+    FL_OP_CLIP_ADD, FL_OP_CLIP_UPDATE, FL_OP_CLIP_REMOVE, FL_OP_BEAT_SPLIT, FL_OP_SCENE_ASPECT, FL_OP_SCENE_CAMERA
 } Fl_OpKind;
 /* One local transform replacement in an atomic selection gesture. */
 typedef struct Fl_TransformEdit { Fl_Id entity; Fl_Transform transform; } Fl_TransformEdit;
@@ -107,10 +104,6 @@ typedef struct Fl_Op {
        Keys stay within scene/beat bounds; absolute inputs attach to their containing beat.
        remove (key); track remove (track).
        Clips: add/update (clip_record; update targets clip), remove (clip). */
-    Fl_Id animation_state, animation_parameter, animation_transition;
-    const Fl_AnimationState *animation_state_record;
-    const Fl_AnimationParameter *animation_parameter_record;
-    const Fl_AnimationTransition *animation_transition_record;
     Fl_Id beat, key, track, clip;
     uint64_t beat_duration;
     bool auto_advance;
@@ -129,8 +122,7 @@ typedef struct Fl_ProjectChange { Fl_Project *project; Fl_OpKind kind; Fl_Id sce
 
 /* Create a new project directory exclusively; existing project files are never replaced. */
 Fl_Project *fl_project_create(const char *directory, const char *name, Fl_EventBus *bus);
-/* Open and validate a binary project with its exclusive process lock. Old orphaned key timing
-   is repaired in memory and marked dirty; the final beat extends to preserve existing key times. */
+/* Open and validate a binary project of the current format with its exclusive process lock. */
 Fl_Project *fl_project_open(const char *directory, Fl_EventBus *bus);
 /* Free the project and release the lock. Does not implicitly save. NULL is safe. */
 void fl_project_destroy(Fl_Project *project);

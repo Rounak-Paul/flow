@@ -390,25 +390,6 @@ bool fl_project_apply(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
     if (op->keyed && (op->kind == FL_OP_TRANSFORMS || op->kind == FL_OP_ENTITY_CONFIGURE) &&
         (!s || op->tick < 0 || op->tick > fl_scene_length(s))) return false;
     if (s && s->revision == UINT64_MAX && op->kind != FL_OP_SCENE_REMOVE && op->kind != FL_OP_SCENE_MOVE) return false;
-    if ((op->kind>=FL_OP_ANIMATION_STATE_SET&&op->kind<=FL_OP_ANIMATION_TRANSITION_REMOVE)||
-        (op->animation_state&&(op->kind==FL_OP_KEY_SET||op->kind==FL_OP_KEY_REMOVE||op->kind==FL_OP_TRACK_REMOVE))) {
-        if (!e) return false;
-        const Fl_Animation *current=fl_entity_animation(e);
-        Fl_Animation *draft=current ? fl_animation_clone(current) : calloc(1,sizeof(*draft));
-        if (!draft) return false;
-        uint64_t next=p->next_id;
-        if (!fl_animation_apply(draft,op,&next,&created)||!fl_animation_valid(draft)) {fl_animation_destroy(draft);return false;}
-        Fl_Component *component=(Fl_Component *)fl_entity_component(e,FL_COMPONENT_ANIMATION);
-        if (!component) {
-            if (e->component_count>=SIZE_MAX/sizeof(*component)-1) {fl_animation_destroy(draft);return false;}
-            Fl_Component *components=realloc((void *)e->components,(e->component_count+1)*sizeof(*components));
-            if (!components) {fl_animation_destroy(draft);return false;}
-            e->components=components;component=&components[e->component_count++];*component=(Fl_Component){0};
-        }
-        fl_component_clear(component);*component=(Fl_Component){FL_COMPONENT_ANIMATION,2,sizeof(*draft),(unsigned char *)draft};
-        p->next_id=next;
-        goto applied;
-    }
     switch (op->kind) {
     case FL_OP_SCENE_ADD: {
         if (!op->name || !op->name[0] || p->next_id >= UINT64_MAX - 1 || p->count >= SIZE_MAX / sizeof(*s) - 1) return false;
@@ -675,7 +656,6 @@ bool fl_project_apply(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
     }
     default: return false;
     }
-applied:
     if (s) ++s->revision;
     p->dirty = true;
     if (out_id) *out_id = created;
@@ -784,6 +764,7 @@ static bool load_scene(Fl_Project *p, Fl_Scene *s)
 {
     char path[FL_PATH_MAX]; Fl_Binary b; uint64_t version;
     if (!project_path(p, s->id, s->revision, path) || !fl_binary_load(&b, path, "FLSCENE\0", SCENE_VERSION, &version)) return false;
+    if (version != SCENE_VERSION) {free(b.data); return false;}
     uint64_t id = fl_binary_get_u64(&b), revision = fl_binary_get_u64(&b);
     s->name = fl_binary_get_string(&b);
     s->width = fl_binary_get_u64(&b); s->height = fl_binary_get_u64(&b); s->duration = fl_binary_get_u64(&b);
@@ -807,28 +788,12 @@ static bool load_scene(Fl_Project *p, Fl_Scene *s)
             if (!fl_component_read(c, &b)) {b.failed = true; break;}
             if (c->type == FL_COMPONENT_ANIMATION) {
                 Fl_Animation *animation = (Fl_Animation *)c->data;
-                for (size_t k=0;k<animation->timeline.track_count;++k) animation->timeline.tracks[k].entity=e->id;
-                for (size_t state=0;state<animation->state_count;++state) for (size_t k=0;k<animation->states[state].track_count;++k) animation->states[state].tracks[k].entity=e->id;
-                if (version < 5) b.failed = true;
+                for (size_t k=0;k<animation->track_count;++k) animation->tracks[k].entity=e->id;
             }
             if (!fl_widget_component_valid(c)) b.failed = true;
             for (size_t k = 0; k < j; ++k) if (components[k].type == c->type) b.failed = true;
         }
-        if (!b.failed && !fl_entity_component(e, FL_COMPONENT_TRANSFORM)) {
-            if (version >= 5) b.failed = true;
-            else {
-                unsigned char bytes[56];
-                Fl_Transform t = {.width = 320, .height = 180, .scale_x = 1, .scale_y = 1};
-                fl_transform_encode(&t, bytes);
-                Fl_Component base = {FL_COMPONENT_TRANSFORM, 1, 56, bytes}, *merged = NULL;
-                size_t count = 0;
-                if (!merge_components(e, &base, 1, &merged, &count)) b.failed = true;
-                else {
-                    for (size_t k = 0; k < e->component_count; ++k) fl_component_clear((Fl_Component *)&e->components[k]);
-                    free((void *)e->components); e->components = merged; e->component_count = count;
-                }
-            }
-        }
+        if (!b.failed && !fl_entity_component(e, FL_COMPONENT_TRANSFORM)) b.failed = true;
         for (size_t j = 0; !b.failed && j < e->component_count; ++j) if (e->components[j].type == FL_COMPONENT_TRANSFORM) {
             Fl_Component *all = (Fl_Component *)e->components, transform = all[j];
             memmove(all + 1, all, j * sizeof(*all)); all[0] = transform; break;
@@ -836,13 +801,13 @@ static bool load_scene(Fl_Project *p, Fl_Scene *s)
     }
     if (!b.failed && !reserve_identity(s, s->entity_count)) b.failed = true;
     if (!b.failed) rebuild_identity(s);
-    if (!b.failed && version >= 2 && !fl_timeline_load(s, &b, version < 5)) b.failed = true;
-    if (!b.failed && version >= 3) {
+    if (!b.failed && !fl_timeline_load(s, &b)) b.failed = true;
+    if (!b.failed) {
         s->aspect_width = fl_binary_get_u64(&b); s->aspect_height = fl_binary_get_u64(&b);
         if (s->aspect_width > 65536 || s->aspect_height > 65536 ||
             (!s->aspect_width != !s->aspect_height)) b.failed = true;
     }
-    if (!b.failed && version >= 4) {
+    if (!b.failed) {
         uint64_t bits = fl_binary_get_u64(&b); memcpy(&s->camera_x, &bits, sizeof(bits));
         bits = fl_binary_get_u64(&b); memcpy(&s->camera_y, &bits, sizeof(bits));
         if (!isfinite(s->camera_x) || !isfinite(s->camera_y)) b.failed = true;
@@ -850,17 +815,13 @@ static bool load_scene(Fl_Project *p, Fl_Scene *s)
     bool ok = !b.failed && b.cursor == b.size && id == s->id && revision == s->revision &&
               s->name && s->name[0] && s->width && s->width <= 65536 && s->height && s->height <= 65536 &&
               s->duration && s->duration <= INT64_MAX;
-    if (ok && version < 6) {
-        if (s->revision == UINT64_MAX) ok = false;
-        else {++s->revision; p->dirty = true;}
-    }
     free(b.data); return ok;
 }
 
 /* Decode asset records in strictly ascending id order with unique content hashes. */
-static void load_assets(Fl_Project *p, Fl_Binary *b, uint64_t version)
+static void load_assets(Fl_Project *p, Fl_Binary *b)
 {
-    p->asset_count = read_count(b, sizeof(Fl_Asset), version >= 3 ? 112 : 88);
+    p->asset_count = read_count(b, sizeof(Fl_Asset), 112);
     p->assets = p->asset_count ? calloc(p->asset_count, sizeof(*p->assets)) : NULL;
     if (p->asset_count && !p->assets) { p->asset_count = 0; b->failed = true; return; }
     for (size_t i = 0; !b->failed && i < p->asset_count; ++i) {
@@ -869,8 +830,8 @@ static void load_assets(Fl_Project *p, Fl_Binary *b, uint64_t version)
         uint64_t kind = fl_binary_get_u64(b);
         fl_binary_read(b, a->hash, 32); a->extension = fl_binary_get_string(b);
         a->size = fl_binary_get_u64(b); a->width = fl_binary_get_u64(b); a->height = fl_binary_get_u64(b);
-        uint64_t rate = 0, channels = 0;
-        if (version >= 3) { a->duration = fl_binary_get_u64(b); rate = fl_binary_get_u64(b); channels = fl_binary_get_u64(b); }
+        a->duration = fl_binary_get_u64(b);
+        uint64_t rate = fl_binary_get_u64(b), channels = fl_binary_get_u64(b);
         if (rate > 768000 || channels > 64) b->failed = true;
         a->sample_rate = (uint32_t)rate; a->channels = (uint32_t)channels;
         a->kind = kind >= FL_ASSET_IMAGE && kind <= FL_ASSET_FONT ? (Fl_AssetKind)kind : FL_ASSET_IMAGE;
@@ -996,6 +957,7 @@ Fl_Project *fl_project_open(const char *directory, Fl_EventBus *bus)
     if (!p) return NULL;
     Fl_Binary b; uint64_t version;
     if (!fl_binary_load(&b, path, "FLPROJ\0\0", MANIFEST_VERSION, &version)) { fl_project_destroy(p); return NULL; }
+    if (version != MANIFEST_VERSION) { free(b.data); fl_project_destroy(p); return NULL; }
     p->name = fl_binary_get_string(&b); p->next_id = fl_binary_get_u64(&b);
     p->count = read_count(&b, sizeof(Fl_Scene), 16);
     p->scenes = p->count ? calloc(p->count, sizeof(*p->scenes)) : NULL;
@@ -1006,15 +968,10 @@ Fl_Project *fl_project_open(const char *directory, Fl_EventBus *bus)
         s->id = fl_binary_get_u64(&b); s->revision = fl_binary_get_u64(&b); p->saved[i] = s->revision;
         if (!s->id || s->id >= p->next_id || !s->revision || !load_scene(p, s)) b.failed = true;
     }
-    if (!b.failed && version >= 2) load_assets(p, &b, version);
+    if (!b.failed) load_assets(p, &b);
     bool ok = !b.failed && b.cursor == b.size && p->name && p->name[0] && p->next_id && validate_project(p);
     free(b.data);
     if (!ok) { fl_project_destroy(p); return NULL; }
-    for (size_t i = 0; i < p->count; ++i) {
-        bool changed;
-        if (!fl_timeline_repair(&p->scenes[i], &p->next_id, &changed)) {fl_project_destroy(p); return NULL;}
-        p->dirty |= changed;
-    }
     sweep_asset_store(p);
     return p;
 }

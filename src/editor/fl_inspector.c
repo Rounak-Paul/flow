@@ -507,16 +507,9 @@ void fl_inspector_build(Ca_Dock *dock,Ca_Window *window,void *data)
     if (def&&def->has_image) image_section(p);
     const Fl_Animation *animation=fl_entity_animation(entity);
     if (animation) {
+        char summary[48];snprintf(summary,sizeof(summary),"Keyframes: %zu track%s",animation->track_count,animation->track_count==1 ? "" : "s");
         ca_text(&(Ca_TextDesc){.text="Animation",.style=FL_CLASS_HEADING});
-        char summary[96];snprintf(summary,sizeof(summary),"Timeline: %zu track%s · %zu state%s · %zu transition%s",animation->timeline.track_count,animation->timeline.track_count==1 ? "" : "s",
-            animation->state_count,animation->state_count==1 ? "" : "s",animation->transition_count,animation->transition_count==1 ? "" : "s");
-        ca_text(&(Ca_TextDesc){.text=summary,.style=FL_CLASS_MUTED,.wrap=true});
-        for (size_t state=0;state<animation->state_count;++state) {
-            const Fl_AnimationState *motion=&animation->states[state];
-            snprintf(summary,sizeof(summary),"%s%s · %.2f s%s",motion->id==animation->entry ? "Entry: " : "",motion->name,
-                (double)motion->duration/FL_TICKS_PER_SECOND,motion->loop ? " · loop" : "");
-            ca_text(&(Ca_TextDesc){.text=summary,.style=FL_CLASS_LABEL,.wrap=true});
-        }
+        ca_text(&(Ca_TextDesc){.text=summary,.style=FL_CLASS_MUTED});
     }
     script_section(p,scene);
     ca_div_begin(&(Ca_DivDesc){.direction=CA_HORIZONTAL,.style=FL_CLASS_TOOLBAR});

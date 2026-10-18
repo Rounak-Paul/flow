@@ -48,11 +48,11 @@ bool fl_component_read(Fl_Component *c, Fl_Binary *b)
     uint64_t size = fl_binary_get_u64(b);
     if (b->failed || size > SIZE_MAX || size > b->size - b->cursor) return false;
     if (c->type == FL_COMPONENT_ANIMATION) {
-        if (c->version != 1 && c->version != 2) return false;
+        if (c->version != FL_ANIMATION_VERSION) return false;
         Fl_Binary payload = {.data = b->data + b->cursor, .size = (size_t)size};
-        Fl_Animation *a = fl_animation_read(&payload, c->version);
+        Fl_Animation *a = fl_animation_read(&payload);
         if (!a || payload.failed || payload.cursor != payload.size) {fl_animation_destroy(a); return false;}
-        c->data = (unsigned char *)a; c->size = sizeof(*a); c->version = 2;
+        c->data = (unsigned char *)a; c->size = sizeof(*a);
     } else {
         unsigned char *data = size ? malloc((size_t)size) : NULL;
         if (size && !data) return false;
@@ -60,11 +60,6 @@ bool fl_component_read(Fl_Component *c, Fl_Binary *b)
         c->data = data; c->size = (size_t)size;
     }
     b->cursor += (size_t)size;
-    if (c->type==FL_COMPONENT_SCRIPT&&c->version==1) {
-        Fl_Script script;Fl_Component migrated={0};
-        if (!fl_script_decode(c,&script)||!fl_script_encode(&script,&migrated)) return false;
-        free((void *)c->data);*c=migrated;
-    }
     return true;
 }
 

@@ -22,9 +22,6 @@ bool fl_timeline_valid(const Fl_Project *project, const Fl_Scene *scene, uint64_
 /* Number of persistent ids owned by the timeline, and copy them into ids. */
 size_t fl_timeline_id_count(const Fl_Scene *scene);
 void fl_timeline_ids(const Fl_Scene *scene, Fl_Id *ids);
-/* Serialize scene beats/clips; load also migrates tracks from pre-component snapshots. */
+/* Serialize/deserialize scene beats and audio clips; entity components carry the tracks. */
 void fl_timeline_save(const Fl_Scene *scene, Fl_Binary *stream);
-bool fl_timeline_load(Fl_Scene *scene, Fl_Binary *stream, bool legacy_tracks);
-
-/* Repair old key ownership, extending the final beat to preserve key times; reports revision changes. */
-bool fl_timeline_repair(Fl_Scene *scene, uint64_t *next_id, bool *changed);
+bool fl_timeline_load(Fl_Scene *scene, Fl_Binary *stream);

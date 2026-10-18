@@ -21,18 +21,22 @@ static bool observe(const Fl_Event *event, void *data)
 static void fixture(const char *dir, Fl_Id parent, bool duplicate)
 {
     char path[FL_PATH_MAX]; Fl_Binary b = {0};
+    unsigned char transform[56]; fl_transform_encode(&(Fl_Transform){.width = 320, .height = 180, .scale_x = 1, .scale_y = 1}, transform);
     fl_binary_string(&b, "Fixture"); fl_binary_u64(&b, 9); fl_binary_u64(&b, 1);
-    fl_binary_u64(&b, 1); fl_binary_u64(&b, 1);
+    fl_binary_u64(&b, 1); fl_binary_u64(&b, 1); fl_binary_u64(&b, 0);
     CHECK(fl_fs_join(path, sizeof(path), dir, "project.flow"));
-    CHECK(fl_binary_save(&b, path, "FLPROJ\0\0", 1)); free(b.data); b = (Fl_Binary){0};
+    CHECK(fl_binary_save(&b, path, "FLPROJ\0\0", 3)); free(b.data); b = (Fl_Binary){0};
     fl_binary_u64(&b, 1); fl_binary_u64(&b, 1); fl_binary_string(&b, "Scene");
     fl_binary_u64(&b, 1920); fl_binary_u64(&b, 1080); fl_binary_u64(&b, 600000); fl_binary_u64(&b, 2);
     for (size_t i = 0; i < 2; ++i) {
         fl_binary_u64(&b, duplicate ? 2 : i + 2); fl_binary_u64(&b, i ? 2 : parent);
-        fl_binary_string(&b, "Entity"); fl_binary_u64(&b, 1); fl_binary_u64(&b, 0);
+        fl_binary_string(&b, "Entity"); fl_binary_u64(&b, 1); fl_binary_u64(&b, 1);
+        fl_binary_u64(&b, FL_COMPONENT_TRANSFORM); fl_binary_u64(&b, 1); fl_binary_u64(&b, sizeof(transform));
+        fl_binary_write(&b, transform, sizeof(transform));
     }
+    for (int field = 0; field < 6; ++field) fl_binary_u64(&b, 0);
     CHECK(fl_fs_join(path, sizeof(path), dir, "scenes/0000000000000001-0000000000000001.flscene"));
-    CHECK(fl_binary_save(&b, path, "FLSCENE\0", 1)); free(b.data);
+    CHECK(fl_binary_save(&b, path, "FLSCENE\0", 6)); free(b.data);
 }
 
 /* Exercise model ownership, mutation validation, transaction persistence and corrupt-input rejection. */

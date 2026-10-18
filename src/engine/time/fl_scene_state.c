@@ -91,9 +91,7 @@ bool fl_scene_state_update(Fl_SceneState *st, const Fl_Scene *s, Fl_Tick tick)
         scripts = NULL;
         for (size_t i = 0; i < s->entity_count; ++i) {
             Fl_Script script;
-            const Fl_Animation *animation=fl_entity_animation(&s->entities[i]);
-            if ((fl_script_decode(fl_entity_component(&s->entities[i], FL_COMPONENT_SCRIPT), &script) && script.enabled)||
-                (animation&&(animation->state_count||animation->parameter_count||animation->transition_count))) {
+            if (fl_script_decode(fl_entity_component(&s->entities[i], FL_COMPONENT_SCRIPT), &script) && script.enabled) {
                 scripts = fl_script_runtime_create(s);
                 if (!scripts) return false;
                 break;
@@ -118,11 +116,12 @@ bool fl_scene_state_update(Fl_SceneState *st, const Fl_Scene *s, Fl_Tick tick)
         v->appearance = fl_widget_appearance(e);
         v->opacity = fl_widget_opacity(e);
     }
-    for (size_t i=0;i<s->entity_count;++i) {
-        const Fl_Entity *entity=&s->entities[i];
-        const Fl_Animation *animation=fl_entity_animation(entity);
-        if (st->scripts) fl_script_runtime_evaluate(st->scripts,s,i,tick,&st->entities[i]);
-        fl_animation_player_pose(fl_script_runtime_player(st->scripts,i),animation,s,entity,tick,&st->entities[i]);
+    double value[4];
+    for (size_t i = 0; i < s->entity_count; ++i) {
+        const Fl_Animation *animation = fl_entity_animation(&s->entities[i]);
+        for (size_t t = 0; animation && t < animation->track_count; ++t)
+            if (fl_track_sample(s, &animation->tracks[t], tick, value)) fl_entity_state_apply(&st->entities[i], animation->tracks[t].property, value);
+        if (st->scripts) fl_script_runtime_evaluate(st->scripts, s, i, tick, &st->entities[i]);
     }
     st->scene = s->id; st->revision = s->revision; st->tick = tick; st->count = s->entity_count; st->valid = true;
     return true;

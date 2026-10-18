@@ -511,21 +511,16 @@ Flow has full control of rendering. `fl_render` builds passes on causality's `Vk
 
 ### 6.7 Lua entity components
 
-Lua 5.4.7 is the scripting language. Each entity always owns Transform and may own Animation and Lua Script components. Animation owns the scene Timeline state, named keyframed states, typed parameters and ordered graph transitions. Scripts control the animation player through play, parameter and trigger calls. Scripts are attached in the Inspector; their source and enabled state are persisted in the binary document.
+Lua 5.4.7 is the scripting language. Each entity always owns Transform and may own Animation (keyframe tracks) and Lua Script components. Scripts are attached in the Inspector; their source and enabled state are persisted in the binary document.
 
-- **Behavior lifecycle:** optional `on_init(self)`, required `on_update(self, dt, time)`, optional `on_destroy(self)`. Each instance retains private state. Updates use fixed 60 Hz document-time steps. Backward seeks reset and replay behavior; scene revision changes rebuild evaluated runtimes.
-- **Direct evaluation:** a script may instead define `on_evaluate(self, time)`, with a fresh environment per sample. This supports exact-time procedural motion without simulation replay.
-- **Ownership:** behaviors calculate procedural base values, then the player composes the sampled/blended animation pose relative to authored bind values. Scripts do not rewrite keyframes while playing. Invalid outputs reject evaluation atomically and report a diagnostic.
-- **Sandbox:** isolated environments, selected standard libraries, per-entity seeded randomness, stable key traversal, no filesystem/network/process/wall-clock access. Lua allocations and instruction execution are bounded. Behavior replay shares an instruction budget; long or expensive seeks can exceed it and report an error.
-- **Implementation:** Flow-owned evaluators run on the document thread and are independent of Causality. Semantic pack expansion, general engine bindings and simulation checkpoints remain future work. Detailed current API: `docs/lua-scripting.md`.
+- **Pure evaluation:** a script defines `on_evaluate(self, time)`. Each sample runs in a fresh environment against the entity's base values with keyframes applied, so a frame remains a pure function of the document and time. There is no per-frame simulation state, replay or lifecycle hook: scrubbing, presenting and export are identical by construction.
+- **Ownership:** keyframes evaluate first, then the script adjusts the result. Scripts never rewrite keyframes or authored components. Invalid outputs reject evaluation atomically and report a diagnostic.
+- **Sandbox:** isolated environments, selected standard libraries, per-entity seeded randomness, stable key traversal, no filesystem/network/process/wall-clock access. Lua allocations and instruction execution are bounded per evaluation.
+- **Implementation:** Flow-owned evaluators run on the document thread and are independent of Causality. Semantic pack expansion and simulation checkpoints remain future work. Detailed current API: `docs/lua-scripting.md`.
 
 ```lua
-function on_init(self)
-    self.speed = 120
-end
-
-function on_update(self, dt, time)
-    self.transform.x = self.transform.x + self.speed * dt
+function on_evaluate(self, time)
+    self.transform.x = self.transform.x + math.sin(time * 2) * 40
 end
 ```
 

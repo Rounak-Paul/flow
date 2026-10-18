@@ -2,6 +2,9 @@
 #include "fl_animation.h"
 
 #define FL_SCRIPT_SOURCE_LIMIT (128u * 1024u)
+/* Wire schema version, and the bytes of enabled flag preceding the source. */
+#define FL_SCRIPT_VERSION 2u
+#define FL_SCRIPT_HEADER 8u
 
 /* Borrowed source and enabled state of an entity's Lua component. */
 typedef struct Fl_Script {
@@ -10,7 +13,7 @@ typedef struct Fl_Script {
     bool enabled;
 } Fl_Script;
 
-/* Allocate a version-two script payload in out; caller releases out->data with free. */
+/* Allocate a script payload in out; caller releases out->data with free. */
 bool fl_script_encode(const Fl_Script *script, Fl_Component *out);
 /* Decode a script component into a borrowed view, rejecting malformed flags/source. */
 bool fl_script_decode(const Fl_Component *component, Fl_Script *out);

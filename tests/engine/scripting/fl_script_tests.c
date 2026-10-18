@@ -78,25 +78,15 @@ int main(int argc, char **argv)
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_KEY_SET,.scene=scene_id,.entity=box,.property=FL_PROP_Y,
         .anchor=fl_anchor_at(scene,0),.value={100}},NULL));
     const Fl_Animation *animation=fl_entity_animation(fl_scene_entity(scene,box));
-    CHECK(animation && animation->timeline.track_count==1 && animation->timeline.tracks[0].property==FL_PROP_Y);
+    CHECK(animation && animation->track_count==1 && animation->tracks[0].property==FL_PROP_Y);
     CHECK(script(project,scene_id,box,motion,true));
     CHECK(sample(&state,scene,box,SECOND)==145 && state.entities[0].transform.y==100);
     CHECK(script(project,scene_id,second,"function on_evaluate(self, time) self.transform.x = time * 10 end",true));
     CHECK(sample(&state,scene,second,SECOND)==10);
     CHECK(sample(&state,scene,box,SECOND)==145);
-    /* Attached behaviors initialize once, retain self state, and replay fixed steps on backward seeks. */
-    const char *behavior="function on_init(self) self.frames=0 end "
-        "function on_update(self,dt,time) self.frames=self.frames+1; self.transform.x=25+self.frames*2 end";
-    CHECK(script(project,scene_id,box,behavior,true));
-    CHECK(sample(&state,scene,box,0)==25);
-    CHECK(sample(&state,scene,box,SECOND)==145);
-    CHECK(sample(&state,scene,box,2*SECOND)==265);
-    CHECK(sample(&state,scene,box,SECOND/2)==85);
-    CHECK(sample(&state,scene,box,SECOND)==145);
-    CHECK(script(project,scene_id,box,"function on_init(self) self.speed=120 end function on_update(self,dt,time) self.transform.x=self.transform.x+dt*self.speed end",true));
-    CHECK(fabs(sample(&state,scene,box,SECOND)-145)<1e-9);
-    CHECK(fabs(sample(&state,scene,box,SECOND/2)-85)<1e-9);
-    failure(project,scene,box,&state,"function on_update(self,dt,time) self.transform.x=99; error('behavior failed') end","behavior failed");
+    /* Stateful per-frame hooks are not part of the evaluation contract. */
+    failure(project,scene,box,&state,"function on_update(self,dt,time) self.transform.x=99 end","on_evaluate");
+    failure(project,scene,box,&state,"function on_evaluate(self,t) self.animation:play('Run') end","nil");
     CHECK(sample(&state,scene,box,2*SECOND)==25);
     CHECK(script(project,scene_id,box,motion,true));
     CHECK(sample(&state,scene,box,SECOND)==145);
@@ -108,21 +98,21 @@ int main(int argc, char **argv)
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_CONFIGURE,.scene=scene_id,.entity=box,.name="Renamed",.visible=true,
         .components=&component,.component_count=1,.keyed=true,.tick=SECOND},NULL));
     CHECK(fl_transform_decode(fl_entity_component(fl_scene_entity(scene,box),FL_COMPONENT_TRANSFORM),&transform) && transform.x==25);
-    CHECK(fl_entity_animation(fl_scene_entity(scene,box))->timeline.tracks[0].key_count==1);
+    CHECK(fl_entity_animation(fl_scene_entity(scene,box))->tracks[0].key_count==1);
     /* Growing a copied animation during configure must remain owned by the replacement component. */
     for (unsigned k=1;k<7;++k) {
         transform.y=100+k;fl_transform_encode(&transform,bytes);
         CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_CONFIGURE,.scene=scene_id,.entity=box,.name="Renamed",.visible=true,
             .components=&component,.component_count=1,.keyed=true,.tick=(Fl_Tick)k*SECOND/2},NULL));
     }
-    CHECK(fl_entity_animation(fl_scene_entity(scene,box))->timeline.tracks[0].key_count==7);
+    CHECK(fl_entity_animation(fl_scene_entity(scene,box))->tracks[0].key_count==7);
     CHECK(fl_project_save(project));
     fl_scene_state_clear(&state); fl_project_destroy(project);
     project=fl_project_open(argv[1],NULL);CHECK(project);if (!project) return 1;
     scene=fl_project_scene(project,scene_id);
     CHECK(!fl_project_dirty(project));
     CHECK(sample(&state,scene,box,SECOND)==145);
-    CHECK(fl_entity_animation(fl_scene_entity(scene,box))->timeline.tracks[0].key_count==7);
+    CHECK(fl_entity_animation(fl_scene_entity(scene,box))->tracks[0].key_count==7);
     /* The global environment and random stream reset for each evaluation. */
     CHECK(script(project,scene_id,box,"n=(n or 0)+1; function on_evaluate(self,t) self.transform.x=n+math.random() end",true));
     double a=sample(&state,scene,box,SECOND);

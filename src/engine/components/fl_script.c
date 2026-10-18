@@ -18,22 +18,21 @@ bool fl_script_encode(const Fl_Script *script, Fl_Component *out)
 {
     if (!script || !out || !script->source || !script->source_size || script->source_size > FL_SCRIPT_SOURCE_LIMIT ||
         memchr(script->source, 0, script->source_size)) return false;
-    unsigned char *bytes = malloc(8 + script->source_size);
+    unsigned char *bytes = malloc(FL_SCRIPT_HEADER + script->source_size);
     if (!bytes) return false;
     put_u64(bytes, script->enabled);
-    memcpy(bytes + 8, script->source, script->source_size);
-    *out = (Fl_Component){FL_COMPONENT_SCRIPT, 2, 8 + script->source_size, bytes};
+    memcpy(bytes + FL_SCRIPT_HEADER, script->source, script->source_size);
+    *out = (Fl_Component){FL_COMPONENT_SCRIPT, FL_SCRIPT_VERSION, FL_SCRIPT_HEADER + script->source_size, bytes};
     return true;
 }
 
 bool fl_script_decode(const Fl_Component *c, Fl_Script *out)
 {
-    if (!c||!out||c->type!=FL_COMPONENT_SCRIPT||(c->version!=1&&c->version!=2)||!c->data) return false;
-    size_t header=c->version==1 ? 16 : 8;
-    if (c->size<=header||c->size>header+FL_SCRIPT_SOURCE_LIMIT) return false;
+    if (!c||!out||c->type!=FL_COMPONENT_SCRIPT||c->version!=FL_SCRIPT_VERSION||!c->data) return false;
+    if (c->size<=FL_SCRIPT_HEADER||c->size>FL_SCRIPT_HEADER+FL_SCRIPT_SOURCE_LIMIT) return false;
     uint64_t enabled=get_u64(c->data);
-    if (enabled>1||memchr(c->data+header,0,c->size-header)) return false;
-    *out=(Fl_Script){(const char *)c->data+header,c->size-header,enabled!=0};return true;
+    if (enabled>1||memchr(c->data+FL_SCRIPT_HEADER,0,c->size-FL_SCRIPT_HEADER)) return false;
+    *out=(Fl_Script){(const char *)c->data+FL_SCRIPT_HEADER,c->size-FL_SCRIPT_HEADER,enabled!=0};return true;
 }
 
 const char *fl_property_name(Fl_AnimProperty property)
