@@ -595,24 +595,26 @@
 #define FL_STYLE_TL_LABEL_W 240.0f
 #define FL_STYLE_TL_PAD 12.0f
 #define FL_STYLE_TL_ROW_H 26.0f
-#define FL_STYLE_TL_RULER_H 22.0f
+#define FL_STYLE_TL_LANE_H 34.0f
+#define FL_STYLE_TL_PLAYHEAD_W 6.0f
+#define FL_STYLE_TL_PLAYHEAD_INSET 3.0f
 #define FL_STYLE_TL_KEY 14.0f
 #define FL_STYLE_TL_EDGE_W 14.0f
 #define FL_STYLE_TL_SNAP 6.0
 #define FL_STYLE_TL_ZOOM 120.0
 #define FL_STYLE_TL_ZOOM_MIN 8.0
 #define FL_STYLE_TL_ZOOM_MAX 2400.0
-#define FL_STYLE_TL_LABEL_SPACING 64.0
 #define FL_STYLE_TL_BEAT_DEFAULT ((uint64_t)FL_TICKS_PER_SECOND * 3)
 #define FL_STYLE_TL_BEAT_MIN ((Fl_Tick)FL_TICKS_PER_SECOND / 30)
 #define FL_STYLE_TL_FADE ((uint64_t)FL_TICKS_PER_SECOND / 2)
 #define FL_STYLE_TIMELINE_HEIGHT 240.0f
 #define FL_CLASS_TIMELINE "fl-timeline"
-#define FL_CLASS_TL_SELECTION "fl-tl-selection"
 #define FL_CLASS_TL_SELECT "fl-tl-select"
 #define FL_CLASS_TL_TRACK_NAME "fl-tl-track-name"
 #define FL_CLASS_TL_TRACK_ACTION "fl-tl-track-action"
 #define FL_CLASS_TL_CLOCK "fl-tl-clock"
+#define FL_CLASS_TL_SNAP "fl-icon-action fl-tl-snap"
+#define FL_CLASS_TL_SNAP_OFF "fl-icon-action fl-tl-snap off"
 #define FL_CLASS_TL_SPACER "fl-tl-spacer"
 #define FL_CLASS_TL_SCROLL "fl-tl-scroll"
 #define FL_CLASS_TL_BODY "fl-tl-body"
@@ -623,17 +625,19 @@
 #define FL_CLASS_TL_LABEL "fl-tl-label"
 #define FL_CLASS_TL_LABEL_SELECTED "fl-tl-label selected"
 #define FL_CLASS_TL_LABEL_TEXT "fl-tl-label-text"
-#define FL_CLASS_TL_RULER_LABEL "fl-tl-ruler-label"
+#define FL_CLASS_TL_LANE_LABEL "fl-tl-lane-label"
+#define FL_CLASS_TL_LANE_LABEL_TEXT "fl-tl-lane-label-text"
 #define FL_CLASS_TL_LANES "fl-tl-lanes"
-#define FL_CLASS_TL_HEADER "fl-tl-header"
+#define FL_CLASS_TL_BEATLABE_SEGMENTS "fl-tl-beat-segments"
+#define FL_CLASS_TL_RIM "fl-tl-rim"
 #define FL_CLASS_TL_CONTENT "fl-tl-content"
-#define FL_CLASS_TL_RULER "fl-tl-ruler"
-#define FL_CLASS_TL_TICK "fl-tl-tick"
-#define FL_CLASS_TL_TICK_TEXT "fl-tl-tick-text"
 #define FL_CLASS_TL_ROW "fl-tl-row"
 #define FL_CLASS_TL_BEAT "fl-tl-beat"
 #define FL_CLASS_TL_BEAT_SELECTED "fl-tl-beat selected"
+#define FL_CLASS_TL_BEAT_LABEL "fl-tl-beat-label"
 #define FL_CLASS_TL_BEAT_TEXT "fl-tl-beat-text"
+#define FL_CLASS_TL_BEAT_DURATION "fl-tl-beat-duration"
+#define FL_CLASS_TL_BEAT_EMPTY "fl-tl-beat-empty"
 #define FL_CLASS_TL_EDGE "fl-tl-edge"
 #define FL_CLASS_TL_BEAT_DROP "fl-tl-beat-drop"
 #define FL_CLASS_TL_EDGE_MARK "fl-tl-edge-mark"
@@ -642,48 +646,60 @@
 #define FL_CLASS_TL_KEY_SELECTED "fl-tl-key selected"
 #define FL_CLASS_TL_KEY_TEXT "fl-tl-key-text"
 #define FL_CLASS_TL_KEY_TEXT_SELECTED "fl-tl-key-text selected"
+#define FL_CLASS_TL_KEY_DETAIL "fl-tl-key-detail"
 #define FL_CLASS_TL_CLIP "fl-tl-clip"
 #define FL_CLASS_TL_CLIP_SELECTED "fl-tl-clip selected"
 #define FL_CLASS_TL_PLAYHEAD "fl-tl-playhead"
+#define FL_CLASS_TL_PLAYHEAD_GLASS "fl-tl-playhead-glass"
 #define FL_STYLE_CSS_TIMELINE \
-    ".fl-timeline { width: 100%; height: 100%; gap: 0px; overflow: hidden; background: transparent; }" \
-    ".fl-tl-selection { width: 100%; padding: 4px 10px; gap: 8px; align-items: center; flex-shrink: 0; background: " FL_COLOR_GLASS_BAR "; }" \
+    ".fl-timeline { width: 100%; height: 100%; gap: 0px; overflow: hidden; background: transparent; padding: 0px " FL_SPACE_SM " " FL_SPACE_SM "; }" \
     ".fl-tl-select { width: 130px; flex-shrink: 0; }" \
     ".fl-tl-track-name { flex-grow: 1; min-width: 0px; overflow: hidden; white-space: nowrap; font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MEDIUM "; }" \
     ".fl-tl-track-action { width: 22px; height: 22px; padding: 0px; flex-shrink: 0; font-size: " FL_FONT_SM "; }" \
     ".fl-tl-clock { font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MEDIUM "; padding: 0px 8px; flex-shrink: 0; }" \
     ".fl-tl-spacer { flex-grow: 1; height: 1px; }" \
     ".fl-tl-scroll { width: 100%; flex-grow: 1; min-height: 0px; overflow: auto; gap: 0px; }" \
-    ".fl-tl-body { width: 100%; flex-grow: 1; min-height: 0px; overflow: hidden; gap: 0px; }" \
-    ".fl-tl-labels { width: 240px; flex-shrink: 0; gap: 0px; background: " FL_COLOR_GLASS_BAR "; }" \
+    ".fl-tl-body { position: relative; width: 100%; flex-grow: 1; min-height: 0px; overflow: hidden; gap: 0px; padding: 0px; border-radius: " FL_RADIUS_CARD_GUTTER "; background: linear-gradient(to bottom, " FL_COLOR_TAB_GUTTER_TOP ", " FL_COLOR_TAB_GUTTER_BOTTOM "); }" \
+    ".fl-tl-labels { width: 240px; flex-shrink: 0; gap: 0px; }" \
     ".fl-tl-label-viewport { width: 100%; flex-grow: 1; min-height: 0px; overflow: hidden; }" \
     ".fl-tl-label-content, .fl-tl-key-content { flex-shrink: 0; gap: 0px; }" \
-    ".fl-tl-ruler-label { width: 100%; height: 22px; flex-shrink: 0; }" \
+    ".fl-tl-lane-label { width: 100%; height: 34px; flex-shrink: 0; padding: 0px 10px; align-items: center; }" \
+    ".fl-tl-lane-label-text { font-size: " FL_FONT_XS "; color: " FL_COLOR_TEXT_DIM "; white-space: nowrap; }" \
     ".fl-tl-label { width: 100%; height: 26px; flex-shrink: 0; padding: 0px 10px; align-items: center; overflow: hidden; }" \
     ".fl-tl-label.selected { background: " FL_COLOR_SELECTION "; }" \
     ".fl-tl-label-text { font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MEDIUM "; white-space: nowrap; }" \
     ".fl-tl-lanes { flex-grow: 1; min-width: 0px; min-height: 0px; overflow: hidden; gap: 0px; }" \
-    ".fl-tl-header { width: 100%; height: 48px; flex-shrink: 0; overflow: hidden; }" \
+    ".fl-tl-beat-segments { width: 100%; height: 34px; flex-shrink: 0; overflow: hidden; gap: 0px; }" \
+    ".fl-tl-rim { left: 0px; top: 0px; width: 100%; height: 100%; z-index: 6; pointer-events: none; background: transparent; border-radius: " FL_RADIUS_CARD_GUTTER "; box-shadow: inset 0px 3px 8px " FL_COLOR_TAB_GUTTER_SHADE "; border: 1px solid " FL_COLOR_TAB_GUTTER_EDGE "; border-top-color: " FL_COLOR_TAB_GUTTER_EDGE "; border-bottom-color: " FL_COLOR_TAB_GUTTER_LIP "; }" \
     ".fl-tl-content { flex-shrink: 0; gap: 0px; }" \
-    ".fl-tl-ruler { height: 22px; flex-shrink: 0; background: " FL_COLOR_GLASS_BAR "; }" \
-    ".fl-tl-tick { height: 22px; padding: 4px 0px 0px 3px; border-left: 1px solid " FL_COLOR_GLASS_BORDER "; }" \
-    ".fl-tl-tick-text { font-size: " FL_FONT_XS "; color: " FL_COLOR_TEXT_DIM "; white-space: nowrap; }" \
     ".fl-tl-row { height: 26px; flex-shrink: 0; border-bottom: 1px solid " FL_COLOR_GLASS_BORDER "; }" \
-    ".fl-tl-beat, .fl-tl-clip { padding: 0px 8px; align-items: center; overflow: hidden; border-radius: " FL_RADIUS_SM "; background: " FL_COLOR_CONTROL "; border: 1px solid " FL_COLOR_GLASS_BORDER "; }" \
-    ".fl-tl-clip { background: " FL_COLOR_CONTROL "; }" \
-    ".fl-tl-beat.selected, .fl-tl-clip.selected { border-color: " FL_COLOR_ACCENT "; background: " FL_COLOR_SELECTION "; glow-radius: 8px; glow-color: " FL_COLOR_ACCENT_GLOW "; }" \
-    ".fl-tl-beat-text { font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MEDIUM "; white-space: nowrap; }" \
+    ".fl-tl-beat-empty { height: 34px; padding: 0px 10px; align-items: center; }" \
+    ".fl-tl-beat { padding: 0px; align-items: center; overflow: hidden; border-right: 1px solid " FL_COLOR_GLASS_BORDER "; background: " FL_COLOR_CONTROL "; }" \
     ".fl-tl-beat { cursor: grab; }" \
     ".fl-tl-beat:active { cursor: grabbing; }" \
-    ".fl-tl-beat-drop { background: " FL_COLOR_ACCENT "; z-index: 3; }" \
+    ".fl-tl-beat-label { left: 0px; top: 0px; width: 100%; height: 100%; z-index: 1; padding: 0px 8px; gap: 6px; align-items: center; justify-content: space-between; background: transparent; pointer-events: none; }" \
+    ".fl-tl-beat:hover { background: " FL_COLOR_CONTROL_HOVER "; }" \
+    ".fl-tl-beat.selected { background: " FL_COLOR_SELECTION "; }" \
+    ".fl-tl-beat-text { font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MEDIUM "; white-space: nowrap; overflow: hidden; }" \
+    ".fl-tl-beat-duration { font-size: " FL_FONT_XS "; color: " FL_COLOR_TEXT_DIM "; white-space: nowrap; flex-shrink: 0; }"
+#define FL_STYLE_CSS_TIMELINE_BEATS \
+    ".fl-tl-clip { padding: 0px 8px; align-items: center; overflow: hidden; justify-content: flex-start; gap: 6px; border-radius: " FL_RADIUS_SM "; background: " FL_COLOR_CONTROL "; border: 1px solid " FL_COLOR_GLASS_BORDER "; }" \
+    ".fl-tl-clip.selected { border-color: " FL_COLOR_ACCENT "; background: " FL_COLOR_SELECTION "; glow-radius: 8px; glow-color: " FL_COLOR_ACCENT_GLOW "; }" \
+    ".fl-tl-beat-text { font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MEDIUM "; white-space: nowrap; overflow: hidden; }" \
+    ".fl-tl-beat-duration { font-size: " FL_FONT_XS "; color: " FL_COLOR_TEXT_DIM "; white-space: nowrap; flex-shrink: 0; }" \
+    ".fl-tl-beat-drop { background: " FL_COLOR_ACCENT "; z-index: 5; }" \
     ".fl-tl-edge { z-index: 2; cursor: ew-resize; align-items: center; justify-content: center; background: transparent; }" \
-    ".fl-tl-edge-mark { width: 2px; height: 16px; background: " FL_COLOR_TEXT_DIM "; }" \
+    ".fl-tl-edge-mark { width: 2px; height: 20px; background: " FL_COLOR_TEXT_DIM "; }" \
     ".fl-tl-edge:hover { background: " FL_COLOR_ACCENT "; }" \
     ".fl-tl-span { background: " FL_COLOR_GLASS_BORDER "; }" \
     ".fl-tl-key { align-items: center; justify-content: center; }" \
     ".fl-tl-key-text { font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MUTED "; }" \
     ".fl-tl-key-text.selected { color: " FL_COLOR_ACCENT "; }" \
-    ".fl-tl-playhead { background: " FL_COLOR_ACCENT "; z-index: 2; glow-radius: 6px; glow-color: " FL_COLOR_ACCENT_GLOW "; }"
+    ".fl-tl-key-detail { font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MEDIUM "; white-space: nowrap; flex-shrink: 0; }" \
+    ".fl-tl-playhead { z-index: 5; cursor: ew-resize; }" \
+    ".fl-tl-playhead-glass { left: 0px; top: 0px; width: 100%; height: 100%; border-radius: " FL_RADIUS_PILL "; background: linear-gradient(to bottom, " FL_COLOR_CARD_GLASS_TOP ", " FL_COLOR_CARD_GLASS_BOTTOM "); border: 1px solid " FL_COLOR_TAB_PILL_RIM "; border-top-color: " FL_COLOR_TAB_PILL_SPECULAR "; border-bottom-color: " FL_COLOR_TAB_PILL_UNDER "; }" \
+    ".fl-tl-snap { color: " FL_COLOR_ACCENT "; }" \
+    ".fl-tl-snap.off { color: " FL_COLOR_TEXT_DIM "; }"
 
 /* Motion: hover and selection fades shared by interactive controls. */
 #define FL_STYLE_CSS_MOTION \
