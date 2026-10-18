@@ -3,6 +3,7 @@
 #include "core/fl_log.h"
 #include "fl_scene_preview.h"
 #include "fl_scene_thumbnails.h"
+#include <ca_icons.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,6 +30,8 @@ struct Fl_ScenePanel {
     Ca_Window *rename_window;
     Ca_TextInput *rename_input;
     Fl_Id rename_scene, rename_entity;
+    Fl_Id *collapsed;
+    size_t collapsed_count, collapsed_capacity;
 };
 
 /* Invalidate the panel after a model event, retaining only ids still in the document. */
@@ -104,16 +107,6 @@ static void add_entity(Fl_ScenePanel *p, Fl_Id scene, Fl_Id parent, bool rectang
     Fl_Id id;
     if (fl_widget_create(p->project,scene,parent,rectangle ? FL_WIDGET_RECTANGLE : FL_WIDGET_GROUP,0,0,&id))
         fl_scene_edit_select(p->edit,scene,id,false);
-}
-
-/* Insert an entity at the active scene root. */
-static void add_group(Ca_Button *button, void *data)
-{
-    (void)button; Fl_ScenePanel *p = data; add_entity(p, fl_scene_edit_scene(p->edit), 0, false);
-}
-static void add_rectangle(Ca_Button *button, void *data)
-{
-    (void)button; Fl_ScenePanel *p = data; add_entity(p, fl_scene_edit_scene(p->edit), 0, true);
 }
 
 /* Release borrowed rename handles when its separate utility window closes. */
@@ -284,7 +277,205 @@ void fl_scene_panel_destroy(Fl_ScenePanel *p)
     ca_effect_destroy(p->keys);
     fl_scene_preview_destroy(p->preview);
     fl_scene_thumbnails_destroy(p->thumbnails);
-    free(p->rows); free(p);
+    free(p->collapsed); free(p->rows); free(p);
+}
+
+/* Position of an entity in the collapsed set, or the set's size when it is expanded. */
+static size_t collapsed_index(const Fl_ScenePanel *p, Fl_Id id)
+{
+    size_t i = 0;
+    while (i < p->collapsed_count && p->collapsed[i] != id) ++i;
+    return i;
+}
+
+/* Flip an entity between collapsed and expanded; false when the set cannot grow. */
+static bool toggle_collapsed(Fl_ScenePanel *p, Fl_Id id)
+{
+    size_t at = collapsed_index(p, id);
+    if (at < p->collapsed_count) {
+        p->collapsed[at] = p->collapsed[--p->collapsed_count];
+        return true;
+    }
+    if (p->collapsed_count == p->collapsed_capacity) {
+        size_t capacity = p->collapsed_capacity ? p->collapsed_capacity * 2 : 16;
+        if (capacity > SIZE_MAX / sizeof(*p->collapsed)) return false;
+        Fl_Id *grown = realloc(p->collapsed, capacity * sizeof(*grown));
+        if (!grown) return false;
+        p->collapsed = grown; p->collapsed_capacity = capacity;
+    }
+    p->collapsed[p->collapsed_count++] = id;
+    return true;
+}
+
+/* Forget collapsed entities that left the scene, and expand the ancestors of the primary selection so it stays visible. */
+static void sync_collapsed(Fl_ScenePanel *p, const Fl_Scene *s)
+{
+    for (size_t i = 0; i < p->collapsed_count; ) {
+        if (fl_scene_entity(s, p->collapsed[i])) ++i;
+        else p->collapsed[i] = p->collapsed[--p->collapsed_count];
+    }
+    const Fl_Entity *e = fl_scene_entity(s, fl_scene_edit_primary(p->edit));
+    for (size_t hops = 0; e && e->parent && hops <= s->entity_count; ++hops) {
+        size_t at = collapsed_index(p, e->parent);
+        if (at < p->collapsed_count) p->collapsed[at] = p->collapsed[--p->collapsed_count];
+        e = fl_scene_entity(s, e->parent);
+    }
+}
+
+/* Expand or collapse a hierarchy row's children. */
+static void toggle_expand(Ca_Button *button, void *data)
+{
+    (void)button; Fl_Row row = *(Fl_Row *)data;
+    if (toggle_collapsed(row.panel, row.entity) && row.panel->dock) ca_dock_invalidate_panel(row.panel->dock, "scene");
+}
+
+/* True when `descendant` lies below `ancestor`. */
+static bool is_below(const Fl_Scene *s, const Fl_Entity *descendant, Fl_Id ancestor)
+{
+    for (size_t hops = 0; descendant && descendant->parent && hops <= s->entity_count; ++hops) {
+        if (descendant->parent == ancestor) return true;
+        descendant = fl_scene_entity(s, descendant->parent);
+    }
+    return false;
+}
+
+/* Eye button: hide a shown entity, show a hidden one, and reveal everything under a mixed group. */
+static void toggle_visibility(Ca_Button *button, void *data)
+{
+    (void)button; Fl_Row row = *(Fl_Row *)data; Fl_ScenePanel *p = row.panel;
+    const Fl_Scene *s = fl_project_scene(p->project, row.scene);
+    const Fl_Entity *e = fl_scene_entity(s, row.entity);
+    if (!e) return;
+    bool mixed = false;
+    for (size_t i = 0; e->visible && i < s->entity_count && !mixed; ++i)
+        mixed = !s->entities[i].visible && is_below(s, &s->entities[i], e->id);
+    if (!mixed) {
+        apply(p, (Fl_Op){.kind = FL_OP_ENTITY_VISIBLE, .scene = row.scene, .entity = row.entity, .visible = !e->visible}, NULL);
+        return;
+    }
+    for (size_t i = 0; i < s->entity_count; ++i) {
+        const Fl_Entity *below = &s->entities[i];
+        if (!below->visible && is_below(s, below, e->id))
+            apply(p, (Fl_Op){.kind = FL_OP_ENTITY_VISIBLE, .scene = row.scene, .entity = below->id, .visible = true}, NULL);
+    }
+}
+
+/* Icon naming an entity's primitive. */
+static const char *kind_icon(const Fl_Entity *e, bool open)
+{
+    const Fl_WidgetDef *def = fl_widget_for_entity(e);
+    switch (def ? def->kind : FL_WIDGET_GROUP) {
+    case FL_WIDGET_RECTANGLE: return CA_ICON_NF_FA_SQUARE;
+    case FL_WIDGET_ELLIPSE: return CA_ICON_NF_FA_CIRCLE;
+    case FL_WIDGET_TEXT: return CA_ICON_NF_FA_FONT;
+    case FL_WIDGET_IMAGE: return CA_ICON_NF_FA_IMAGE;
+    case FL_WIDGET_LINE: case FL_WIDGET_ARROW: return CA_ICON_NF_FA_ARROW_RIGHT;
+    default: return open ? CA_ICON_NF_FA_FOLDER_OPEN : CA_ICON_NF_FA_FOLDER;
+    }
+}
+
+#define LINK_NONE SIZE_MAX
+#define ENTITY_HIDDEN_ABOVE 1u   /* the entity or an ancestor is hidden */
+#define ENTITY_HIDDEN_BELOW 2u   /* some descendant is hidden */
+
+/* Emit the guide cells left of a row: a continuing line for every ancestor with later siblings, then this row's elbow. */
+static void emit_guides(size_t depth, const size_t *chain, const size_t *next, size_t self)
+{
+    for (size_t level = 1; level < depth; ++level) {
+        ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_TREE_GUIDE, .no_hover = true});
+        if (next[chain[level]] != LINK_NONE) {
+            ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_TREE_LINE, .no_hover = true}); ca_div_end();
+        }
+        ca_div_end();
+    }
+    if (!depth) return;
+    ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_TREE_GUIDE, .no_hover = true});
+    ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_TREE_ELBOW_TOP, .no_hover = true}); ca_div_end();
+    if (next[self] != LINK_NONE) {
+        ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_TREE_ELBOW_BOTTOM, .no_hover = true}); ca_div_end();
+    }
+    ca_div_end();
+}
+
+/* Build the entity tree of a scene: guide lines, disclosure chevrons, kind icons and per-row visibility buttons. */
+static void build_hierarchy(Fl_ScenePanel *p, const Fl_Scene *s)
+{
+    const size_t n = s ? s->entity_count : 0;
+    if (!n) {
+        ca_text(&(Ca_TextDesc){.text = s ? "Add an entity to begin." : "Create a scene to begin.", .style = FL_CLASS_MUTED});
+        return;
+    }
+    sync_collapsed(p, s);
+    size_t *links = n <= SIZE_MAX / sizeof(size_t) / 6 ? malloc((n * 6 + 1) * sizeof(size_t)) : NULL;
+    unsigned char *flags = calloc(n, 1);
+    if (!links || !flags) { free(links); free(flags); return; }
+    size_t *first = links, *next = links + n, *parent = links + n * 2, *order = links + n * 3,
+           *depth = links + n * 4, *chain = links + n * 5;
+    for (size_t i = 0; i < n; ++i) first[i] = next[i] = parent[i] = LINK_NONE;
+    size_t first_root = LINK_NONE;
+    for (size_t i = n; i > 0; ) {
+        --i; const Fl_Entity *above = fl_scene_entity(s, s->entities[i].parent);
+        parent[i] = above ? (size_t)(above - s->entities) : LINK_NONE;
+        size_t *head = above ? &first[parent[i]] : &first_root;
+        next[i] = *head; *head = i;
+    }
+    size_t count = 0, level = 0;
+    for (size_t i = first_root; i != LINK_NONE; ) {
+        order[count++] = i; depth[i] = level;
+        if (first[i] != LINK_NONE) { chain[level++] = i; i = first[i]; }
+        else {
+            while (next[i] == LINK_NONE && level) i = chain[--level];
+            i = next[i];
+        }
+    }
+    for (size_t k = 0; k < count; ++k) {
+        const size_t i = order[k];
+        if (!s->entities[i].visible || (parent[i] != LINK_NONE && (flags[parent[i]] & ENTITY_HIDDEN_ABOVE)))
+            flags[i] |= ENTITY_HIDDEN_ABOVE;
+    }
+    for (size_t k = count; k > 0; ) {
+        const size_t i = order[--k];
+        if (parent[i] != LINK_NONE && (!s->entities[i].visible || (flags[i] & ENTITY_HIDDEN_BELOW)))
+            flags[parent[i]] |= ENTITY_HIDDEN_BELOW;
+    }
+    size_t skip_below = LINK_NONE;
+    for (size_t k = 0; k < count; ++k) {
+        const size_t i = order[k], d = depth[i];
+        if (skip_below != LINK_NONE) {
+            if (d > skip_below) continue;
+            skip_below = LINK_NONE;
+        }
+        chain[d] = i;
+        const Fl_Entity *e = &s->entities[i];
+        const bool branch = first[i] != LINK_NONE, collapsed = branch && collapsed_index(p, e->id) < p->collapsed_count;
+        Fl_Row *row = &p->rows[p->row_count++]; *row = (Fl_Row){.panel=p,.scene=s->id,.entity=e->id};
+        char id[48]; snprintf(id, sizeof(id), "entity-%llu", (unsigned long long)e->id);
+        row->bounds = ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_ENTITY_ROW, .id = id});
+        ca_btn_begin(&(Ca_BtnDesc){.on_click = select_row, .click_data = row, .id = id,
+            .style = fl_scene_edit_contains(p->edit, e->id) ? FL_CLASS_TREE_ROW_SELECTED : FL_CLASS_TREE_ROW});
+        emit_guides(d, chain, next, i);
+        if (branch) {
+            char key[56]; snprintf(key, sizeof(key), "%s-open", id);
+            ca_btn_begin(&(Ca_BtnDesc){.text = collapsed ? CA_ICON_NF_FA_CHEVRON_RIGHT : CA_ICON_NF_FA_CHEVRON_DOWN,
+                .on_click = toggle_expand, .click_data = row, .id = key, .style = FL_CLASS_TREE_CHEVRON});
+            ca_btn_end();
+        } else {
+            ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_TREE_LEAF, .no_hover = true}); ca_div_end();
+        }
+        ca_text(&(Ca_TextDesc){.text = kind_icon(e, branch && !collapsed), .style = FL_CLASS_TREE_ICON});
+        ca_text(&(Ca_TextDesc){.text = e->name, .style = (flags[i] & ENTITY_HIDDEN_ABOVE) ? FL_CLASS_TREE_NAME_MUTED : FL_CLASS_TREE_NAME});
+        const char *eye_style = !e->visible ? FL_CLASS_TREE_EYE_HIDDEN : (flags[i] & ENTITY_HIDDEN_BELOW) ? FL_CLASS_TREE_EYE_MIXED : FL_CLASS_TREE_EYE;
+        char key[56]; snprintf(key, sizeof(key), "%s-eye", id);
+        ca_btn_begin(&(Ca_BtnDesc){.text = e->visible ? CA_ICON_NF_FA_EYE : CA_ICON_NF_FA_EYE_SLASH,
+            .on_click = toggle_visibility, .click_data = row, .id = key, .style = eye_style});
+        ca_btn_end();
+        ca_btn_end();
+        const char *items[] = {"Rename", "Add child group", "Add child rectangle", "Toggle visibility", "Move to root", "Move up", "Move down", "Delete subtree", "Parent to selected"};
+        ca_context_menu(&(Ca_CtxMenuDesc){.items = items, .item_count = 9, .on_select = entity_menu, .select_data = row});
+        ca_div_end();
+        if (collapsed) skip_below = d;
+    }
+    free(links); free(flags);
 }
 
 void fl_scene_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
@@ -335,49 +526,9 @@ void fl_scene_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
     ca_split_begin(&(Ca_SplitDesc){.direction = CA_HORIZONTAL, .ratio = .23f,
         .fixed_pane = CA_SPLIT_FIXED_FIRST, .fixed_size = FL_STYLE_HIERARCHY_W, .id = "scene-body"});
     p->hierarchy=ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_HIERARCHY});
-    ca_text(&(Ca_TextDesc){.text = "Hierarchy", .style = FL_CLASS_HEADING});
-    ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_TOOLBAR});
-    ca_btn_begin(&(Ca_BtnDesc){.text = "+ Group", .on_click = add_group, .click_data = p, .disabled = !s, .style = FL_CLASS_ACTION}); ca_btn_end();
-    ca_btn_begin(&(Ca_BtnDesc){.text = "+ Rectangle", .on_click = add_rectangle, .click_data = p, .disabled = !s, .style = FL_CLASS_ACTION}); ca_btn_end();
-    ca_div_end();
-    /* Build child/sibling adjacency once, then walk it without recursion. */
-    size_t *links = entities < SIZE_MAX / sizeof(size_t) / 3 ? malloc((entities * 3 + 1) * sizeof(size_t)) : NULL;
-    size_t first_root = SIZE_MAX;
-    if (links) {
-        size_t *first = links, *next = links + entities, *parents = links + entities * 2;
-        for (size_t i = 0; i < entities; ++i) first[i] = next[i] = SIZE_MAX;
-        for (size_t i = entities; i > 0; ) {
-            --i; const Fl_Entity *parent = fl_scene_entity(s, s->entities[i].parent);
-            size_t *head = parent ? &first[parent - s->entities] : &first_root;
-            next[i] = *head; *head = i;
-        }
-        size_t i = first_root, depth = 0;
-        while (i != SIZE_MAX) {
-            const Fl_Entity *e = &s->entities[i];
-            Fl_Row *row = &p->rows[p->row_count++]; *row = (Fl_Row){.panel=p,.scene=s->id,.entity=e->id};
-            char id[48]; snprintf(id, sizeof(id), "entity-%llu", (unsigned long long)e->id);
-            row->bounds=ca_div_begin(&(Ca_DivDesc){.direction=CA_VERTICAL,.style=FL_CLASS_ENTITY_ROW,.id=id});
-            ca_btn_begin(&(Ca_BtnDesc){.on_click = select_row, .click_data = row, .id = id,
-                .style = fl_scene_edit_contains(p->edit,e->id) ? FL_CLASS_ENTITY_SELECTED : FL_CLASS_ENTITY});
-            if (depth) ca_spacer(&(Ca_SpacerDesc){.width = (float)depth * FL_STYLE_TREE_INDENT});
-            ca_text(&(Ca_TextDesc){.text = e->name, .style = e->visible ? FL_CLASS_LABEL : FL_CLASS_MUTED});
-            ca_btn_end();
-            const char *items[] = {"Rename", "Add child group", "Add child rectangle", "Toggle visibility", "Move to root", "Move up", "Move down", "Delete subtree", "Parent to selected"};
-            ca_context_menu(&(Ca_CtxMenuDesc){.items = items, .item_count = 9, .on_select = entity_menu, .select_data = row});
-            ca_div_end();
-            if (first[i] != SIZE_MAX) { parents[depth++] = i; i = first[i]; }
-            else {
-                while (next[i] == SIZE_MAX && depth) i = parents[--depth];
-                i = next[i];
-            }
-        }
-        free(links);
-    }
-    if (!entities) ca_text(&(Ca_TextDesc){.text = s ? "Add an entity to begin." : "Create a scene to begin.", .style = FL_CLASS_MUTED});
+    build_hierarchy(p, s);
     ca_div_end();
     ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_VIEW});
-    char title[160]; snprintf(title, sizeof(title), "Viewport   %s", s ? s->name : "No scene");
-    ca_text(&(Ca_TextDesc){.text = title, .style = FL_CLASS_VIEW_TITLE});
     ca_div_begin(&(Ca_DivDesc){.direction=CA_VERTICAL,.id="scene-stage",.style=FL_CLASS_STAGE,
         .on_drag_start=stage_start,.on_drag=stage_move,.on_drag_end=stage_end,.drag_data=p});
     p->viewport = ca_viewport(&(Ca_ViewportDesc){.on_render = fl_scene_preview_render, .render_data = p->preview, .id = "scene-viewport", .style = FL_CLASS_VIEWPORT});
