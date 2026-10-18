@@ -118,6 +118,84 @@ static cJSON *tool_get_scene(Fl_Agent *a, const cJSON *args, cJSON **error)
     return s ? agent_scene_json(p, s, sources) : NULL;
 }
 
+/* Resolve a `script` argument given as an id or an exact name; NULL when it names nothing. */
+static const Fl_ScriptSource *script_arg(const Fl_Scene *s, const cJSON *item)
+{
+    if (cJSON_IsString(item)) return fl_scene_script_named(s, item->valuestring);
+    return cJSON_IsNumber(item) ? fl_scene_script(s, (Fl_Id)item->valuedouble) : NULL;
+}
+
+static cJSON *tool_get_script(Fl_Agent *a, const cJSON *args, cJSON **error)
+{
+    static const char *const keys[] = {"scene", "script", NULL};
+    Fl_Fail fail; Fl_Project *p;
+    if (!agent_only_keys(args, &fail, "get_script", keys)) {*error = fl_fail_json(&fail); return NULL;}
+    const Fl_Scene *s = scene_arg(a, args, &p, &fail, error);
+    if (!s) return NULL;
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(args, "script");
+    cJSON *out = cJSON_CreateObject();
+    if (!out) return NULL;
+    cJSON_AddNumberToObject(out, "scene", (double)s->id);
+    if (item) {
+        const Fl_ScriptSource *script = script_arg(s, item);
+        if (!script) {cJSON_Delete(out); fl_fail(&fail, "not_found", "get_script: the scene has no script %s", cJSON_IsString(item) ? item->valuestring : "with that id"); *error = fl_fail_json(&fail); return NULL;}
+        cJSON_AddItemToObject(out, "script", agent_script_json(s, script, true));
+        return out;
+    }
+    cJSON *list = cJSON_AddArrayToObject(out, "scripts");
+    for (size_t i = 0; list && i < s->script_count; ++i) cJSON_AddItemToArray(list, agent_script_json(s, &s->scripts[i], false));
+    return out;
+}
+
+static cJSON *tool_set_script(Fl_Agent *a, const cJSON *args, cJSON **error)
+{
+    static const char *const keys[] = {"scene", "script", "name", "source", "edits", "attach", "enabled", NULL};
+    Fl_Fail fail; Fl_Project *p;
+    if (!agent_only_keys(args, &fail, "set_script", keys)) {*error = fl_fail_json(&fail); return NULL;}
+    const Fl_Scene *s = scene_arg(a, args, &p, &fail, error);
+    if (!s) return NULL;
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(args, "script"), *name = cJSON_GetObjectItemCaseSensitive(args, "name"),
+                *source = cJSON_GetObjectItemCaseSensitive(args, "source"), *edits = cJSON_GetObjectItemCaseSensitive(args, "edits"),
+                *attach = cJSON_GetObjectItemCaseSensitive(args, "attach"), *enabled = cJSON_GetObjectItemCaseSensitive(args, "enabled");
+    const Fl_ScriptSource *script = script_arg(s, item);
+    if (item && !script && !(cJSON_IsString(item) && source)) {
+        fl_fail(&fail, "not_found", "set_script: the scene has no script %s", cJSON_IsString(item) ? item->valuestring : "with that id"); *error = fl_fail_json(&fail); return NULL;
+    }
+    cJSON *ops = cJSON_CreateArray(), *write = cJSON_CreateObject(), *request = cJSON_CreateObject();
+    cJSON *target = NULL;
+    if (!ops || !write || !request) goto memory;
+    if (script) {
+        cJSON_AddStringToObject(write, "op", "script.update"); cJSON_AddNumberToObject(write, "script", (double)script->id);
+        if (name) cJSON_AddItemToObject(write, "name", cJSON_Duplicate(name, 1));
+        if (source) cJSON_AddItemToObject(write, "source", cJSON_Duplicate(source, 1));
+        if (edits) cJSON_AddItemToObject(write, "edits", cJSON_Duplicate(edits, 1));
+    } else {
+        cJSON_AddStringToObject(write, "op", "script.create"); cJSON_AddNumberToObject(write, "scene", (double)s->id);
+        cJSON_AddStringToObject(write, "as", "$script");
+        cJSON_AddItemToObject(write, "name", cJSON_Duplicate(name ? name : item, 1));
+        if (source) cJSON_AddItemToObject(write, "source", cJSON_Duplicate(source, 1));
+    }
+    cJSON_AddItemToArray(ops, write);
+    for (const cJSON *entity = cJSON_IsArray(attach) ? attach->child : NULL; entity; entity = entity->next) {
+        cJSON *op = cJSON_CreateObject();
+        if (!op) goto memory;
+        cJSON_AddStringToObject(op, "op", "script.attach");
+        cJSON_AddItemToObject(op, "entity", cJSON_Duplicate(entity, 1));
+        if (script) cJSON_AddNumberToObject(op, "script", (double)script->id); else cJSON_AddStringToObject(op, "script", "$script");
+        if (enabled) cJSON_AddItemToObject(op, "enabled", cJSON_Duplicate(enabled, 1));
+        cJSON_AddItemToArray(ops, op);
+    }
+    cJSON_AddItemToObject(request, "ops", ops); ops = NULL;
+    cJSON_AddStringToObject(request, "label", "Edit script");
+    target = agent_tool_apply_ops(a, request, error);
+    cJSON_Delete(request);
+    return target;
+memory:
+    cJSON_Delete(ops); cJSON_Delete(write); cJSON_Delete(request);
+    fl_fail(&fail, "internal", "out of memory"); *error = fl_fail_json(&fail);
+    return NULL;
+}
+
 static cJSON *tool_evaluate_scene(Fl_Agent *a, const cJSON *args, cJSON **error)
 {
     static const char *const keys[] = {"scene", "time", NULL};
@@ -318,12 +396,23 @@ static const ToolDef TOOLS[] = {
      "Entities are listed in draw order (later draws on top).",
      "{\"type\":\"object\",\"properties\":{\"scene\":{\"type\":\"integer\"},\"include_scripts\":{\"type\":\"boolean\",\"description\":\"Include Lua source text\"}},\"required\":[\"scene\"],\"additionalProperties\":false}",
      true, tool_get_scene},
+    {"get_script", "Read the scene's script repository. Without script it lists every script (id, name, size, entities running it); "
+     "with script (an id or the exact name) it returns the Lua source too.",
+     "{\"type\":\"object\",\"properties\":{\"scene\":{\"type\":\"integer\"},\"script\":{\"type\":[\"integer\",\"string\"]}},\"required\":[\"scene\"],\"additionalProperties\":false}",
+     true, tool_get_script},
+    {"set_script", "Create or edit a repository script in one undoable step. script is an id or exact name: if it exists it is updated, "
+     "if it is a new name (with source) it is created. Give source to replace the text, or edits [{old,new}] to patch it (each old must match exactly once). "
+     "name renames. attach lists entity ids that should run it (enabled defaults to true). The result reports syntax_error when the Lua does not compile.",
+     "{\"type\":\"object\",\"properties\":{\"scene\":{\"type\":\"integer\"},\"script\":{\"type\":[\"integer\",\"string\"]},\"name\":{\"type\":\"string\"},\"source\":{\"type\":\"string\"},"
+     "\"edits\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"old\":{\"type\":\"string\"},\"new\":{\"type\":\"string\"}},\"required\":[\"old\",\"new\"]}},"
+     "\"attach\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"}},\"enabled\":{\"type\":\"boolean\"}},\"required\":[\"scene\"],\"additionalProperties\":false}",
+     false, tool_set_script},
     {"evaluate_scene", "Evaluate every entity of a scene at a time (seconds): resolved position, size, colours and opacity after keyframes and Lua scripts, plus script errors.",
      "{\"type\":\"object\",\"properties\":{\"scene\":{\"type\":\"integer\"},\"time\":{\"type\":\"number\",\"description\":\"Seconds from scene start; default 0\"}},\"required\":[\"scene\"],\"additionalProperties\":false}",
      true, tool_evaluate_scene},
     {"apply_ops", "Apply a batch of document operations atomically (all succeed or none do) as one undoable changeset. "
      "Operations: scene.add/remove/rename/move/set, entity.create/set/remove/reparent/reorder, key.set/remove, track.remove, beat.add/update/remove/move/split, "
-     "clip.add/update/remove, script.set/remove. Name created objects with \"as\":\"$name\" and reuse \"$name\" as an id later in the batch. "
+     "clip.add/update/remove, script.create/update/remove/attach/detach. Name created objects with \"as\":\"$name\" and reuse \"$name\" as an id later in the batch. "
      "Pass expect:{\"<scene id>\": revision} to refuse the batch if a scene changed since you read it. Full field lists are in get_reference.",
      "{\"type\":\"object\",\"properties\":{\"ops\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"object\",\"properties\":{\"op\":{\"type\":\"string\"},\"as\":{\"type\":\"string\"}},\"required\":[\"op\"]}},"
      "\"label\":{\"type\":\"string\",\"description\":\"Short name shown for undo\"},\"expect\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"integer\"}},\"dry_run\":{\"type\":\"boolean\"}},\"required\":[\"ops\"],\"additionalProperties\":false}",

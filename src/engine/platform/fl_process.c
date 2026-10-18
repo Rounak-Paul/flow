@@ -69,6 +69,21 @@ bool fl_command_run(const char *command)
     return pclose(pipe) == 0;
 }
 
+bool fl_open_path(const char *path)
+{
+    char command[4096] = "";
+#if defined(_WIN32)
+    bool built = fl_command_append(command, sizeof(command), "cmd") && fl_command_append(command, sizeof(command), "/c") &&
+                 fl_command_append(command, sizeof(command), "start") && fl_command_append(command, sizeof(command), "") &&
+                 fl_command_append(command, sizeof(command), path);
+#elif defined(__APPLE__)
+    bool built = fl_command_append(command, sizeof(command), "open") && fl_command_append(command, sizeof(command), path);
+#else
+    bool built = fl_command_append(command, sizeof(command), "xdg-open") && fl_command_append(command, sizeof(command), path);
+#endif
+    return built && fl_command_run(command);
+}
+
 FILE *fl_command_open_writer(const char *command)
 {
 #if defined(_WIN32)

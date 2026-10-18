@@ -1,5 +1,6 @@
 #include "fl_project.h"
 #include "fl_timeline_internal.h"
+#include "fl_scripts_internal.h"
 #include "components/fl_component.h"
 #include "components/fl_animation.h"
 #include "components/fl_script.h"
@@ -23,7 +24,7 @@
 #endif
 
 #define MANIFEST_VERSION 3
-#define SCENE_VERSION 7
+#define SCENE_VERSION 8
 
 struct Fl_EntityIndex { Fl_Id id; size_t position; };
 
@@ -72,6 +73,7 @@ static void free_scene(Fl_Scene *scene)
     for (size_t i = 0; i < scene->entity_count; ++i) free_entity((Fl_Entity *)&scene->entities[i]);
     free((void *)scene->entities); free((void *)scene->identity_index); free((void *)scene->name);
     fl_timeline_free(scene);
+    fl_scripts_free(scene);
 }
 
 /* Release one asset record's owned strings. */
@@ -248,8 +250,9 @@ bool fl_project_asset_path(const Fl_Project *p, const Fl_Asset *a, char *out, si
 }
 
 /* Require every asset reference in components to name an existing asset of the required kind. */
-static bool references_valid(const Fl_Project *p, const Fl_Component *components, size_t count)
+static bool references_valid(const Fl_Project *p, const Fl_Scene *s, const Fl_Component *components, size_t count)
 {
+    if (!fl_scripts_references_valid(s, components, count)) return false;
     for (size_t i = 0; components && i < count; ++i) {
         Fl_Id id; Fl_AssetKind kind;
         if (!fl_component_asset_reference(&components[i], &id, &kind)) continue;
@@ -439,7 +442,7 @@ bool fl_project_apply(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
     }
     case FL_OP_ENTITY_ADD: {
         if (!s || !op->name || !op->name[0] || (op->parent && !fl_scene_entity(s, op->parent)) ||
-            !references_valid(p, op->components, op->component_count) ||
+            !references_valid(p, s, op->components, op->component_count) ||
             p->next_id == UINT64_MAX || s->entity_count >= SIZE_MAX / sizeof(*e) - 1) return false;
         char *name = copy_string(op->name);
         unsigned char bytes[56];
@@ -508,7 +511,7 @@ bool fl_project_apply(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
         if (!e) return false;
         e->visible = op->visible; break;
     case FL_OP_COMPONENT_SET: {
-        if (!e || !fl_widget_component_valid(&op->component) || !references_valid(p, &op->component, 1)) return false;
+        if (!e || !fl_widget_component_valid(&op->component) || !references_valid(p, s, &op->component, 1)) return false;
         if (op->component.type == FL_COMPONENT_ANIMATION) return false;
         if (op->component.type == FL_COMPONENT_SCRIPT) {
             Fl_Script script;
@@ -529,7 +532,7 @@ bool fl_project_apply(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
         if (!fl_entity_remove_component(e, op->component.type)) return false;
         break;
     case FL_OP_ENTITY_CONFIGURE: {
-        if (!e || !op->name || !op->name[0] || !references_valid(p, op->components, op->component_count) ||
+        if (!e || !op->name || !op->name[0] || !references_valid(p, s, op->components, op->component_count) ||
             op->component_count > 64) return false;
         Fl_Component keyed[64];
         unsigned char transform_bytes[56], appearance_bytes[24], opacity_bytes[8];
@@ -636,6 +639,9 @@ bool fl_project_apply(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
     case FL_OP_CLIP_ADD: case FL_OP_CLIP_UPDATE: case FL_OP_CLIP_REMOVE:
         if (!fl_timeline_apply(p, s, op, &p->next_id, &created)) return false;
         break;
+    case FL_OP_SCRIPT_SET: case FL_OP_SCRIPT_REMOVE:
+        if (!s || !fl_scripts_apply(s, op, &p->next_id, &created)) return false;
+        break;
     case FL_OP_SCENE_CAMERA:
         if (!s || !isfinite(op->camera_x) || !isfinite(op->camera_y)) return false;
         if (s->camera_x == op->camera_x && s->camera_y == op->camera_y) return true;
@@ -690,6 +696,7 @@ static void encode_scene(const Fl_Scene *s, Fl_Binary *b)
     const double camera[2] = {s->camera_x, s->camera_y};
     for (size_t i = 0; i < 2; ++i) { uint64_t bits; memcpy(&bits, &camera[i], sizeof(bits)); fl_binary_u64(b, bits); }
     for (size_t i = 0; i < 4; ++i) fl_binary_u64(b, s->background[i]);
+    fl_scripts_save(s, b);
 }
 
 /* Encode one independently replaceable scene document. */
@@ -922,6 +929,7 @@ static bool decode_scene(Fl_Project *p, Fl_Scene *s, const Fl_Binary *input)
         s->background[i] = (unsigned char)channel;
     }
     if (s->background[3] != 255) b.failed = true;
+    if (!b.failed && !fl_scripts_load(s, &b)) b.failed = true;
     bool ok = !b.failed && b.cursor == b.size && id == s->id && revision == s->revision &&
               s->name && s->name[0] && s->width && s->width <= 65536 && s->height && s->height <= 65536 &&
               s->duration && s->duration <= INT64_MAX;
@@ -1030,8 +1038,9 @@ static bool validate_project(const Fl_Project *p)
     for (size_t i = 0; i < p->count; ++i) {
         size_t timeline = fl_timeline_id_count(&p->scenes[i]);
         if (p->scenes[i].entity_count > SIZE_MAX - count || timeline > SIZE_MAX - count - p->scenes[i].entity_count) return false;
-        count += p->scenes[i].entity_count + timeline;
-        if (!fl_timeline_valid(p, &p->scenes[i], p->next_id)) return false;
+        if (p->scenes[i].script_count > SIZE_MAX - count - p->scenes[i].entity_count - timeline) return false;
+        count += p->scenes[i].entity_count + timeline + p->scenes[i].script_count;
+        if (!fl_timeline_valid(p, &p->scenes[i], p->next_id) || !fl_scripts_valid(&p->scenes[i], p->next_id)) return false;
     }
     if (count > SIZE_MAX / sizeof(Fl_Id)) return false;
     Fl_Id *ids = count ? malloc(count * sizeof(*ids)) : NULL;
@@ -1041,11 +1050,12 @@ static bool validate_project(const Fl_Project *p)
     for (size_t i = 0; i < p->count; ++i) {
         const Fl_Scene *s = &p->scenes[i]; ids[n++] = s->id;
         fl_timeline_ids(s, ids + n); n += fl_timeline_id_count(s);
+        fl_scripts_ids(s, ids + n); n += s->script_count;
         unsigned char *state = s->entity_count ? calloc(s->entity_count, 1) : NULL;
         if (s->entity_count && !state) { free(ids); return false; }
         for (size_t j = 0; j < s->entity_count; ++j) {
             const Fl_Entity *e = &s->entities[j]; ids[n++] = e->id;
-            if (!references_valid(p, e->components, e->component_count) || !fl_entity_component(e, FL_COMPONENT_TRANSFORM)) { free(state); free(ids); return false; }
+            if (!references_valid(p, s, e->components, e->component_count) || !fl_entity_component(e, FL_COMPONENT_TRANSFORM)) { free(state); free(ids); return false; }
             const Fl_Entity *current = e;
             while (current && !state[current - s->entities]) {
                 state[current - s->entities] = 1;

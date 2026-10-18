@@ -57,6 +57,10 @@ bool agent_ease_from_name(const char *name, Fl_Ease *ease);
 const Fl_Scene *agent_scene_of_entity(const Fl_Project *project, Fl_Id entity);
 const Fl_Scene *agent_scene_of_beat(const Fl_Project *project, Fl_Id beat);
 const Fl_Scene *agent_scene_of_clip(const Fl_Project *project, Fl_Id clip);
+/* Scene whose repository holds script, or NULL. */
+const Fl_Scene *agent_scene_of_script(const Fl_Project *project, Fl_Id script);
+/* One repository entry: id, name, bytes, the entities running it and, with source, its text. NULL on allocation failure. */
+cJSON *agent_script_json(const Fl_Scene *scene, const Fl_ScriptSource *script, bool with_source);
 const Fl_Scene *agent_scene_of_key(const Fl_Project *project, Fl_Id key, const Fl_Track **track);
 
 /* JSON views of the document. */

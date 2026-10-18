@@ -5,6 +5,7 @@
 #include "fl_scene_panel.h"
 #include "fl_widget_library.h"
 #include "fl_inspector.h"
+#include "fl_script_panel.h"
 #include "fl_playback.h"
 #include "fl_timeline_panel.h"
 #include "style.h"
@@ -22,6 +23,7 @@
 #define SAVE_SETTLE_NS      750000000ull
 #define SCENE_PANEL_ID      "scene"
 #define ASSETS_PANEL_ID     "assets"
+#define SCRIPTS_PANEL_ID    "scripts"
 #define TIMELINE_PANEL_ID   "timeline"
 
 struct Fl_Workspace {
@@ -35,6 +37,8 @@ struct Fl_Workspace {
     Fl_Inspector *inspector;
     Fl_AssetImporter *importer;
     Fl_AssetPanel *assets;
+    Fl_ScriptSync *script_sync;
+    Fl_ScriptPanel *scripts;
     Fl_AudioPlayer *player;
     Fl_Playback *playback;
     Fl_TimelinePanel *timeline;
@@ -74,6 +78,7 @@ static void seed_default_layout(Ca_DockLayout *layout, void *user_data)
     ca_dock_layout_dock_root(layout,CA_DOCK_MAIN_WINDOW,widgets,CA_DOCK_ZONE_LEFT,.16f);
     ca_dock_layout_set_split_size(layout,ca_dock_layout_window_root(layout,CA_DOCK_MAIN_WINDOW),FL_STYLE_WIDGETS_W);
     ca_dock_layout_add_tab(layout,ca_dock_layout_group_of(layout,widgets),ca_dock_layout_find(layout,ASSETS_PANEL_ID),-1);
+    ca_dock_layout_add_tab(layout,ca_dock_layout_group_of(layout,widgets),ca_dock_layout_find(layout,SCRIPTS_PANEL_ID),-1);
     ca_dock_layout_dock_root(layout,CA_DOCK_MAIN_WINDOW,inspector,CA_DOCK_ZONE_RIGHT,.22f);
     ca_dock_layout_set_split_size(layout,ca_dock_layout_window_root(layout,CA_DOCK_MAIN_WINDOW),FL_STYLE_INSPECTOR_W);
 }
@@ -156,9 +161,9 @@ static void migrate_authoring_layout(Fl_Workspace *workspace)
 {
     if (!workspace->saved_layout) return;
     Ca_DockLayout *layout=ca_dock_layout_create();if (!layout) return;
-    const char *ids[]={"scene","console","widgets","inspector",ASSETS_PANEL_ID,TIMELINE_PANEL_ID};
+    const char *ids[]={"scene","console","widgets","inspector",ASSETS_PANEL_ID,TIMELINE_PANEL_ID,SCRIPTS_PANEL_ID};
     bool valid=true;
-    for (size_t i=0;i<6;++i) valid &= ca_dock_layout_register(layout,ids[i])!=CA_DOCK_NONE;
+    for (size_t i=0;i<7;++i) valid &= ca_dock_layout_register(layout,ids[i])!=CA_DOCK_NONE;
     bool changed=false;
     if (valid&&ca_dock_layout_load(layout,workspace->saved_layout)) {
         int timeline=ca_dock_layout_find(layout,TIMELINE_PANEL_ID);
@@ -177,6 +182,9 @@ static void migrate_authoring_layout(Fl_Workspace *workspace)
                 changed=true;
             }
         }
+        const int scripts=ca_dock_layout_find(layout,SCRIPTS_PANEL_ID),library=ca_dock_layout_group_of(layout,ca_dock_layout_find(layout,"widgets"));
+        if (ca_dock_layout_group_of(layout,scripts)==CA_DOCK_NONE&&ca_dock_layout_home_of(layout,scripts)==CA_DOCK_NONE&&library!=CA_DOCK_NONE&&
+            ca_dock_layout_add_tab(layout,library,scripts,-1)) changed=true;
         if (changed) {
             size_t size=ca_dock_layout_save(layout,NULL,0);char *text=size ? malloc(size+1) : NULL;
             if (text&&ca_dock_layout_save(layout,text,size+1)==size) {free(workspace->saved_layout);workspace->saved_layout=text;}
@@ -206,7 +214,10 @@ static bool create_dock(Fl_Workspace *workspace, Ca_Window *window)
     const bool assets=widgets&&ca_dock_register_panel(workspace->dock,&(Ca_DockPanelDesc){
         .id=ASSETS_PANEL_ID,.title="Assets",.dock_beside="widgets",.build=fl_asset_panel_build,
         .teardown=fl_asset_panel_teardown,.user_data=workspace->assets});
-    const bool inspector=assets&&ca_dock_register_panel(workspace->dock,&(Ca_DockPanelDesc){
+    const bool script_panel=assets&&ca_dock_register_panel(workspace->dock,&(Ca_DockPanelDesc){
+        .id="scripts",.title="Scripts",.dock_beside=ASSETS_PANEL_ID,.build=fl_script_panel_build,
+        .teardown=fl_script_panel_teardown,.user_data=workspace->scripts});
+    const bool inspector=script_panel&&ca_dock_register_panel(workspace->dock,&(Ca_DockPanelDesc){
         .id="inspector",.title="Inspector",.dock_beside=SCENE_PANEL_ID,.build=fl_inspector_build,
         .teardown=fl_inspector_teardown,.user_data=workspace->inspector});
     const bool timeline = inspector && ca_dock_register_panel(workspace->dock, &(Ca_DockPanelDesc){
@@ -273,8 +284,10 @@ Fl_Workspace *fl_workspace_create(const Fl_WorkspaceDesc *desc)
     workspace->timeline=workspace->playback ? fl_timeline_panel_create(workspace->edit,workspace->playback,desc->bus) : NULL;
     workspace->assets=workspace->player&&workspace->timeline ? fl_asset_panel_create(workspace->edit,workspace->scene,workspace->importer,desc->jobs,
                                                                 workspace->player,workspace->timeline,desc->bus) : NULL;
+    workspace->script_sync=fl_script_sync_create(desc->project,desc->bus,workspace->instance);
+    workspace->scripts=workspace->script_sync&&workspace->edit ? fl_script_panel_create(workspace->edit,workspace->script_sync,desc->bus) : NULL;
     workspace->inspector=workspace->playback ? fl_inspector_create(workspace->edit,desc->fonts,workspace->playback,desc->bus) : NULL;
-    if (!workspace->edit||!workspace->importer||!workspace->scene||!workspace->widgets||!workspace->assets||
+    if (!workspace->edit||!workspace->importer||!workspace->scene||!workspace->widgets||!workspace->assets||!workspace->scripts||
         !workspace->inspector||!create_dock(workspace, desc->window)) {
         FL_LOG_ERROR(LOG_TAG, "failed to create the dock");
         fl_workspace_destroy(workspace);
@@ -330,6 +343,8 @@ void fl_workspace_destroy(Fl_Workspace *workspace)
     ca_dock_destroy(workspace->dock);
     fl_widget_library_destroy(workspace->widgets);
     fl_asset_panel_destroy(workspace->assets);
+    fl_script_panel_destroy(workspace->scripts);
+    fl_script_sync_destroy(workspace->script_sync);
     fl_audio_player_destroy(workspace->player);
     fl_timeline_panel_destroy(workspace->timeline);
     fl_inspector_destroy(workspace->inspector);

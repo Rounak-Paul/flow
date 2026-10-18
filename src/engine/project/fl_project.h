@@ -52,6 +52,14 @@ typedef struct Fl_AudioClip {
 /* Scene backdrop colour (sRGB RGBA8) of newly created scenes. */
 #define FL_SCENE_BACKGROUND_DEFAULT {25, 31, 47, 255}
 
+/* Reusable Lua source stored in a scene. Entities run it through their Script component, which names it by id. */
+typedef struct Fl_ScriptSource {
+    Fl_Id id;
+    const char *name;       /* unique within the scene */
+    const char *source;
+    size_t source_size;
+} Fl_ScriptSource;
+
 typedef struct Fl_Scene {
     Fl_Id id;
     const char *name;
@@ -69,6 +77,8 @@ typedef struct Fl_Scene {
     size_t beat_count;
     const Fl_AudioClip *clips;
     size_t clip_count;
+    const Fl_ScriptSource *scripts;     /* script repository, in creation order */
+    size_t script_count;
 } Fl_Scene;
 
 typedef enum Fl_OpKind {
@@ -80,6 +90,7 @@ typedef enum Fl_OpKind {
     FL_OP_BEAT_ADD, FL_OP_BEAT_REMOVE, FL_OP_BEAT_UPDATE, FL_OP_BEAT_MOVE,
     FL_OP_KEY_SET, FL_OP_KEY_REMOVE, FL_OP_TRACK_REMOVE,
     FL_OP_CLIP_ADD, FL_OP_CLIP_UPDATE, FL_OP_CLIP_REMOVE, FL_OP_BEAT_SPLIT, FL_OP_SCENE_ASPECT, FL_OP_SCENE_CAMERA, FL_OP_SCENE_BACKGROUND,
+    FL_OP_SCRIPT_SET, FL_OP_SCRIPT_REMOVE,
     FL_OP_RESTORE /* notification kind only: scenes were replaced by fl_project_restore; never a valid operation */
 } Fl_OpKind;
 /* One local transform replacement in an atomic selection gesture. */
@@ -100,6 +111,11 @@ typedef struct Fl_Op {
     size_t component_count;
     const Fl_TransformEdit *transforms; /* FL_OP_TRANSFORMS only */
     size_t transform_count;
+    /* Scripts. SET creates when script is zero (name and source required) or updates script (NULL name or source keeps
+       the current one); REMOVE deletes script and detaches it from every entity that runs it. */
+    Fl_Id script;
+    const char *source;
+    size_t source_size;
     Fl_Id asset;                        /* asset remove/rename target */
     const Fl_Asset *asset_record;       /* FL_OP_ASSET_ADD: copied record; its id is ignored */
     /* Timeline. Beats: add (position, name, duration, auto_advance),
@@ -163,6 +179,11 @@ const Fl_Scene *fl_project_scene_at(const Fl_Project *project, size_t index);
 const Fl_Scene *fl_project_scene(const Fl_Project *project, Fl_Id id);
 /* Borrow entity from scene by stable id, or NULL. Valid until mutation. */
 const Fl_Entity *fl_scene_entity(const Fl_Scene *scene, Fl_Id id);
+/* Borrow a scene script by id or by exact name, or NULL. Valid until the next mutation. */
+const Fl_ScriptSource *fl_scene_script(const Fl_Scene *scene, Fl_Id id);
+const Fl_ScriptSource *fl_scene_script_named(const Fl_Scene *scene, const char *name);
+/* Number of entities in scene whose Script component runs script. */
+size_t fl_scene_script_uses(const Fl_Scene *scene, Fl_Id script);
 /* Return the number of assets in import order; zero for NULL. */
 size_t fl_project_asset_count(const Fl_Project *project);
 /* Borrow asset at index, by stable id, or by content hash; NULL when absent. Valid until mutation. */

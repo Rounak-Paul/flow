@@ -12,11 +12,17 @@
 
 #define SECOND FL_TICKS_PER_SECOND
 
-/* Replace one script through the same validated boundary used by the editor. */
+/* Store source as the entity's own repository script (created on first use) and attach it, through the validated boundary. */
 static bool script(Fl_Project *project, Fl_Id scene, Fl_Id entity, const char *source, bool enabled)
 {
+    char name[48]; snprintf(name, sizeof(name), "entity %llu", (unsigned long long)entity);
+    const Fl_ScriptSource *existing = fl_scene_script_named(fl_project_scene(project, scene), name);
+    Fl_Id id = existing ? existing->id : 0, created = 0;
+    if (!fl_project_apply(project, &(Fl_Op){.kind = FL_OP_SCRIPT_SET, .scene = scene, .script = id, .name = existing ? NULL : name,
+                          .source = source, .source_size = strlen(source)}, &created)) return false;
+    if (!id) id = created;
     Fl_Component component = {0};
-    bool ok = fl_script_encode(&(Fl_Script){source, strlen(source), enabled}, &component);
+    bool ok = fl_script_encode(&(Fl_Script){id, enabled}, &component);
     if (ok) ok = fl_project_apply(project, &(Fl_Op){.kind=FL_OP_COMPONENT_SET,.scene=scene,.entity=entity,.component=component}, NULL);
     fl_component_clear(&component);
     return ok;
@@ -38,6 +44,65 @@ static void failure(Fl_Project *project, const Fl_Scene *scene, Fl_Id entity, Fl
     CHECK(sample(state, scene, entity, SECOND) == 25);
     const char *error = fl_script_runtime_error(state->scripts, (size_t)(fl_scene_entity(scene, entity) - scene->entities));
     CHECK(strstr(error, message) != NULL);
+}
+
+/* The repository: shared scripts, unique names, atomic validation, cascading removal and persistence. Closes project. */
+static void repository(Fl_Project *project, Fl_Id scene_id, const char *directory)
+{
+    const Fl_Scene *scene = fl_project_scene(project, scene_id);
+    Fl_Id one = 0, two = 0, counter = 0, other = 0;
+    CHECK(fl_widget_create(project, scene_id, 0, FL_WIDGET_RECTANGLE, 0, 0, &one) && fl_widget_create(project, scene_id, 0, FL_WIDGET_RECTANGLE, 0, 0, &two));
+    const char *source = "function on_evaluate(self, t) self.transform.x = self.transform.x + 10 * t end";
+    CHECK(!fl_project_apply(project, &(Fl_Op){.kind = FL_OP_SCRIPT_SET, .scene = scene_id, .name = "Counter"}, &counter));
+    CHECK(!fl_project_apply(project, &(Fl_Op){.kind = FL_OP_SCRIPT_SET, .scene = scene_id, .source = source, .source_size = strlen(source)}, &counter));
+    CHECK(!fl_project_apply(project, &(Fl_Op){.kind = FL_OP_SCRIPT_SET, .scene = scene_id, .name = "", .source = source, .source_size = strlen(source)}, &counter));
+    CHECK(!fl_project_apply(project, &(Fl_Op){.kind = FL_OP_SCRIPT_SET, .scene = scene_id, .name = "Bad", .source = "a\0b", .source_size = 3}, &counter));
+    const size_t base = scene->script_count;
+    CHECK(fl_project_apply(project, &(Fl_Op){.kind = FL_OP_SCRIPT_SET, .scene = scene_id, .name = "Counter", .source = source, .source_size = strlen(source)}, &counter) && counter);
+    CHECK(!fl_project_apply(project, &(Fl_Op){.kind = FL_OP_SCRIPT_SET, .scene = scene_id, .name = "Counter", .source = source, .source_size = strlen(source)}, &other));
+    CHECK(fl_project_apply(project, &(Fl_Op){.kind = FL_OP_SCRIPT_SET, .scene = scene_id, .name = "Other", .source = "x = 1", .source_size = 5}, &other));
+    CHECK(!fl_project_apply(project, &(Fl_Op){.kind = FL_OP_SCRIPT_SET, .scene = scene_id, .script = other, .name = "Counter"}, NULL));
+    CHECK(!fl_project_apply(project, &(Fl_Op){.kind = FL_OP_SCRIPT_SET, .scene = scene_id, .script = other}, NULL));
+    CHECK(!fl_project_apply(project, &(Fl_Op){.kind = FL_OP_SCRIPT_SET, .scene = scene_id, .script = 999999, .name = "Ghost"}, NULL));
+    CHECK(scene->script_count == base + 2 && fl_scene_script_named(scene, "Counter")->id == counter);
+    Fl_Component attach = {0};
+    CHECK(fl_script_encode(&(Fl_Script){999999, true}, &attach));
+    CHECK(!fl_project_apply(project, &(Fl_Op){.kind = FL_OP_COMPONENT_SET, .scene = scene_id, .entity = one, .component = attach}, NULL));
+    fl_component_clear(&attach);
+    CHECK(fl_script_encode(&(Fl_Script){counter, true}, &attach));
+    CHECK(fl_project_apply(project, &(Fl_Op){.kind = FL_OP_COMPONENT_SET, .scene = scene_id, .entity = one, .component = attach}, NULL));
+    CHECK(fl_project_apply(project, &(Fl_Op){.kind = FL_OP_COMPONENT_SET, .scene = scene_id, .entity = two, .component = attach}, NULL));
+    fl_component_clear(&attach);
+    CHECK(fl_scene_script_uses(scene, counter) == 2 && fl_scene_script_uses(scene, other) == 0);
+    Fl_SceneState state = {0};
+    CHECK(fl_scene_state_update(&state, scene, SECOND));
+    const size_t first = (size_t)(fl_scene_entity(scene, one) - scene->entities), second_index = (size_t)(fl_scene_entity(scene, two) - scene->entities);
+    CHECK(state.entities[first].transform.x == 10 && state.entities[second_index].transform.x == 10);
+    const char *faster = "function on_evaluate(self, t) self.transform.x = 100 * t end";
+    CHECK(fl_project_apply(project, &(Fl_Op){.kind = FL_OP_SCRIPT_SET, .scene = scene_id, .script = counter, .source = faster, .source_size = strlen(faster)}, NULL));
+    CHECK(fl_scene_state_update(&state, scene, SECOND));
+    CHECK(state.entities[first].transform.x == 100 && state.entities[second_index].transform.x == 100);
+    CHECK(fl_project_apply(project, &(Fl_Op){.kind = FL_OP_SCRIPT_SET, .scene = scene_id, .script = counter, .name = "Ramp"}, NULL));
+    CHECK(fl_scene_script_named(scene, "Ramp") && !fl_scene_script_named(scene, "Counter") && fl_scene_script_uses(scene, counter) == 2);
+    CHECK(fl_project_save(project));
+    fl_project_destroy(project);
+    project = fl_project_open(directory, NULL);
+    CHECK(project);
+    if (!project) return;
+    scene = fl_project_scene(project, scene_id);
+    const Fl_ScriptSource *ramp = fl_scene_script_named(scene, "Ramp");
+    CHECK(ramp && ramp->id == counter && !strcmp(ramp->source, faster) && ramp->source_size == strlen(faster) && fl_scene_script_uses(scene, counter) == 2);
+    CHECK(fl_project_apply(project, &(Fl_Op){.kind = FL_OP_SCRIPT_REMOVE, .scene = scene_id, .script = counter}, NULL));
+    CHECK(!fl_scene_script(scene, counter) && fl_scene_script_uses(scene, counter) == 0 && !fl_entity_component(fl_scene_entity(scene, one), FL_COMPONENT_SCRIPT));
+    CHECK(!fl_project_apply(project, &(Fl_Op){.kind = FL_OP_SCRIPT_REMOVE, .scene = scene_id, .script = counter}, NULL));
+    Fl_Snapshot *snapshot = fl_project_snapshot(project);
+    CHECK(snapshot && fl_project_apply(project, &(Fl_Op){.kind = FL_OP_SCRIPT_REMOVE, .scene = scene_id, .script = other}, NULL));
+    CHECK(fl_project_restore(project, snapshot));
+    scene = fl_project_scene(project, scene_id);
+    CHECK(fl_scene_script(scene, other) != NULL);
+    fl_snapshot_destroy(snapshot);
+    fl_scene_state_clear(&state);
+    fl_project_destroy(project);
 }
 
 /* Exercise real Lua execution, component ownership, conflict rejection and persistence. */
@@ -159,11 +224,13 @@ int main(int argc, char **argv)
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_COMPONENT_REMOVE,.scene=scene_id,.entity=box,.component={.type=FL_COMPONENT_SCRIPT}},NULL));
     CHECK(sample(&state,scene,box,SECOND)==25);
     Fl_Component invalid={0};
-    CHECK(!fl_script_encode(&(Fl_Script){.source="",.enabled=true},&invalid));
-    CHECK(!fl_script_encode(&(Fl_Script){.source="a\0b",.source_size=3,.enabled=true},&invalid));
+    CHECK(!fl_script_encode(&(Fl_Script){.script=0,.enabled=true},&invalid));
+    CHECK(!fl_script_source_valid("",0) && !fl_script_source_valid("a\0b",3) && fl_script_source_valid("x",1));
+    CHECK(!fl_script_name_valid("") && !fl_script_name_valid("a\nb") && fl_script_name_valid("Counter"));
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_REMOVE,.scene=scene_id,.entity=box},NULL));
     CHECK(scene->entity_count==0 && fl_scene_track_count(scene)==0);
     CHECK(fl_project_save(project));
-    fl_scene_state_clear(&state);fl_project_destroy(project);
+    fl_scene_state_clear(&state);
+    repository(project, scene_id, argv[1]);
     return FLOW_TEST_RESULT("fl_script_tests");
 }

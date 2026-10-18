@@ -15,6 +15,9 @@ bool fl_command_append(char *command, size_t capacity, const char *arg);
 /* Run a command line to completion; true when it exits with status zero. */
 bool fl_command_run(const char *command);
 
+/* Open a file with the operating system's default application, without waiting for it. False when it could not be started. */
+bool fl_open_path(const char *path);
+
 /* Start a command whose standard input is written by the caller; close with fl_command_close. NULL on failure. */
 FILE *fl_command_open_writer(const char *command);
 /* Close a writer and report whether the command exited with status zero. */

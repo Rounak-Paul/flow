@@ -218,6 +218,18 @@ int64_t fl_fs_file_size(const char *path)
     return (int64_t)(((uint64_t)data.nFileSizeHigh << 32) | data.nFileSizeLow);
 }
 
+bool fl_fs_modified_ns(const char *path, int64_t *out)
+{
+    wchar_t *wide = widen(path);
+    if (!wide || !out) {free(wide); return false;}
+    WIN32_FILE_ATTRIBUTE_DATA data;
+    BOOL ok = GetFileAttributesExW(wide, GetFileExInfoStandard, &data);
+    free(wide);
+    if (!ok || (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) return false;
+    *out = (int64_t)((((uint64_t)data.ftLastWriteTime.dwHighDateTime << 32) | data.ftLastWriteTime.dwLowDateTime) * 100u);
+    return true;
+}
+
 #else
 
 #include <dirent.h>
@@ -306,6 +318,19 @@ int64_t fl_fs_file_size(const char *path)
     struct stat st;
     if (!path || stat(path, &st) != 0 || !S_ISREG(st.st_mode)) return -1;
     return (int64_t)st.st_size;
+}
+
+bool fl_fs_modified_ns(const char *path, int64_t *out)
+{
+    struct stat st;
+    if (!path || !out || stat(path, &st) != 0 || !S_ISREG(st.st_mode)) return false;
+#if defined(__APPLE__)
+    const long nanoseconds = st.st_mtimespec.tv_nsec;
+#else
+    const long nanoseconds = st.st_mtim.tv_nsec;
+#endif
+    *out = (int64_t)st.st_mtime * 1000000000 + nanoseconds;
+    return true;
 }
 
 #endif

@@ -126,7 +126,9 @@ int main(int argc, char **argv)
     /* Lua scripts apply to the frame. */
     const char *source = "function on_evaluate(self, t) self.transform.x = 1500 end";
     Fl_Component script = {0};
-    CHECK(fl_script_encode(&(Fl_Script){source, strlen(source), true}, &script));
+    Fl_Id script_id = 0;
+    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_SCRIPT_SET, .scene = scene_id, .name = "Jump", .source = source, .source_size = strlen(source)}, &script_id));
+    CHECK(fl_script_encode(&(Fl_Script){script_id, true}, &script));
     CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_COMPONENT_SET, .scene = scene_id, .entity = box, .component = script}, NULL));
     free((void *)script.data);
     scene = fl_project_scene(p, scene_id);

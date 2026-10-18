@@ -82,14 +82,15 @@ static void test_authoring(Fl_Agent *agent, Fl_Id scene)
         "{\"op\":\"entity.create\",\"scene\":%llu,\"kind\":\"text\",\"parent\":\"$box\",\"as\":\"$t\",\"props\":{\"name\":\"Title\",\"text\":\"Hello\",\"font_size\":64}},"
         "{\"op\":\"key.set\",\"entity\":\"$box\",\"property\":\"x\",\"at\":0,\"value\":100},"
         "{\"op\":\"key.set\",\"entity\":\"$box\",\"property\":\"x\",\"at\":2,\"value\":600,\"ease\":\"in_out\"},"
-        "{\"op\":\"script.set\",\"entity\":\"$t\",\"source\":\"function on_evaluate(self, time) self.transform.y = self.transform.y + 10 end\"}"
-        "]}", (unsigned long long)scene, (unsigned long long)scene);
+        "{\"op\":\"script.create\",\"scene\":%llu,\"name\":\"Drift\",\"source\":\"function on_evaluate(self, time) self.transform.y = self.transform.y + 10 end\",\"as\":\"$s\"},"
+        "{\"op\":\"script.attach\",\"entity\":\"$t\",\"script\":\"$s\"}"
+        "]}", (unsigned long long)scene, (unsigned long long)scene, (unsigned long long)scene);
     cJSON *args = json(request);
     result = fl_agent_call(agent, "apply_ops", args, &error);
     cJSON_Delete(args);
     CHECK(result && !error);
     if (!result) {char *text = error ? cJSON_Print(error) : NULL; if (text) fprintf(stderr, "%s\n", text); free(text); return;}
-    CHECK(number(result, "applied") == 5 && number(result, "undo_available") == 1);
+    CHECK(number(result, "applied") == 6 && number(result, "undo_available") == 1);
     cJSON_Delete(result);
     CHECK(entity_count(scene) == 2);
 
@@ -106,7 +107,10 @@ static void test_authoring(Fl_Agent *agent, Fl_Id scene)
     CHECK(cJSON_GetArraySize(tracks) == 1 && cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(tracks->child, "keys")) == 2);
     CHECK(number(title, "parent") == number(box, "id") && !strcmp(cJSON_GetObjectItemCaseSensitive(title, "text")->valuestring, "Hello"));
     const cJSON *script = cJSON_GetObjectItemCaseSensitive(title, "script");
-    CHECK(script && cJSON_GetObjectItemCaseSensitive(script, "source"));
+    CHECK(script && !strcmp(cJSON_GetObjectItemCaseSensitive(script, "name")->valuestring, "Drift") && number(script, "id") > 0);
+    const cJSON *repository = cJSON_GetObjectItemCaseSensitive(result, "scripts");
+    CHECK(cJSON_GetArraySize(repository) == 1 && cJSON_GetObjectItemCaseSensitive(repository->child, "source") &&
+          cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(repository->child, "used_by")) == 1);
     double revision = number(result, "revision"), box_id = number(box, "id");
     cJSON_Delete(result);
 
@@ -235,6 +239,78 @@ static void test_look(Fl_Agent *agent, Fl_Id scene)
 }
 
 /* Scene-list changes undo as whole changesets and the restored project saves and reopens. */
+/* The script tools: upsert by name, patch with edits, share across entities, report syntax errors, and undo as one step. */
+static void test_scripts(Fl_Agent *agent, Fl_Id scene)
+{
+    cJSON *error = NULL, *result;
+    char request[1024];
+    snprintf(request, sizeof(request), "{\"ops\":[{\"op\":\"entity.create\",\"scene\":%llu,\"kind\":\"rectangle\",\"as\":\"$a\"},"
+             "{\"op\":\"entity.create\",\"scene\":%llu,\"kind\":\"rectangle\",\"as\":\"$b\"}]}", (unsigned long long)scene, (unsigned long long)scene);
+    result = call(agent, "apply_ops", request, &error);
+    CHECK(result != NULL);
+    const cJSON *ids = result ? cJSON_GetObjectItemCaseSensitive(result, "results") : NULL;
+    const double first = ids ? number(ids->child, "id") : 0, second = ids ? number(ids->child->next, "id") : 0;
+    cJSON_Delete(result);
+
+    snprintf(request, sizeof(request), "{\"scene\":%llu,\"script\":\"Wobble\",\"source\":\"function on_evaluate(self, t) self.transform.x = 10 * t end\",\"attach\":[%.0f,%.0f]}",
+             (unsigned long long)scene, first, second);
+    result = call(agent, "set_script", request, &error);
+    CHECK(result && !error);
+    cJSON_Delete(result);
+    snprintf(request, sizeof(request), "{\"scene\":%llu,\"script\":\"Wobble\"}", (unsigned long long)scene);
+    result = call(agent, "get_script", request, &error);
+    const cJSON *script = result ? cJSON_GetObjectItemCaseSensitive(result, "script") : NULL;
+    CHECK(script && cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(script, "used_by")) == 2 &&
+          strstr(cJSON_GetObjectItemCaseSensitive(script, "source")->valuestring, "10 * t"));
+    const double id = script ? number(script, "id") : 0;
+    cJSON_Delete(result);
+
+    snprintf(request, sizeof(request), "{\"scene\":%llu,\"script\":%.0f,\"edits\":[{\"old\":\"10 * t\",\"new\":\"25 * t\"}]}", (unsigned long long)scene, id);
+    result = call(agent, "set_script", request, &error);
+    CHECK(result && !error);
+    cJSON_Delete(result);
+    snprintf(request, sizeof(request), "{\"scene\":%llu,\"time\":2}", (unsigned long long)scene);
+    result = call(agent, "evaluate_scene", request, &error);
+    const cJSON *list = result ? cJSON_GetObjectItemCaseSensitive(result, "entities") : NULL, *item;
+    size_t checked = 0;
+    cJSON_ArrayForEach(item, list) if (number(item, "id") == first || number(item, "id") == second) {CHECK(number(item, "x") == 50); ++checked;}
+    CHECK(checked == 2);
+    cJSON_Delete(result);
+
+    snprintf(request, sizeof(request), "{\"scene\":%llu,\"script\":%.0f,\"edits\":[{\"old\":\"missing\",\"new\":\"x\"}]}", (unsigned long long)scene, id);
+    result = call(agent, "set_script", request, &error);
+    CHECK(!result && error && error_code(error, "invalid_argument"));
+    cJSON_Delete(error); error = NULL;
+    snprintf(request, sizeof(request), "{\"scene\":%llu,\"script\":%.0f,\"edits\":[{\"old\":\"t\",\"new\":\"x\"}]}", (unsigned long long)scene, id);
+    result = call(agent, "set_script", request, &error);
+    CHECK(!result && error);
+    cJSON_Delete(error); error = NULL;
+
+    snprintf(request, sizeof(request), "{\"scene\":%llu,\"script\":\"Wobble\",\"source\":\"function on_evaluate(\"}", (unsigned long long)scene);
+    result = call(agent, "set_script", request, &error);
+    const cJSON *results = result ? cJSON_GetObjectItemCaseSensitive(result, "results") : NULL;
+    CHECK(results && cJSON_GetObjectItemCaseSensitive(results->child, "syntax_error"));
+    cJSON_Delete(result);
+
+    snprintf(request, sizeof(request), "{\"scene\":%llu,\"script\":\"Nope\"}", (unsigned long long)scene);
+    result = call(agent, "set_script", request, &error);
+    CHECK(!result && error && error_code(error, "not_found"));
+    cJSON_Delete(error); error = NULL;
+    snprintf(request, sizeof(request), "{\"scene\":%llu}", (unsigned long long)scene);
+    result = call(agent, "get_script", request, &error);
+    const cJSON *scripts = result ? cJSON_GetObjectItemCaseSensitive(result, "scripts") : NULL;
+    CHECK(scripts && cJSON_GetArraySize(scripts) == 2 && !cJSON_GetObjectItemCaseSensitive(scripts->child, "source"));
+    cJSON_Delete(result);
+
+    snprintf(request, sizeof(request), "{\"ops\":[{\"op\":\"script.remove\",\"script\":%.0f}]}", id);
+    result = call(agent, "apply_ops", request, &error);
+    CHECK(result && !fl_scene_script(fl_project_scene(g_project, scene), (Fl_Id)id) && fl_scene_script_uses(fl_project_scene(g_project, scene), (Fl_Id)id) == 0);
+    cJSON_Delete(result);
+    result = call(agent, "undo", "{}", &error);
+    CHECK(result && fl_scene_script(fl_project_scene(g_project, scene), (Fl_Id)id) && fl_scene_script_uses(fl_project_scene(g_project, scene), (Fl_Id)id) == 2);
+    cJSON_Delete(result);
+}
+
 static void test_scene_history(Fl_Agent *agent, const char *directory)
 {
     cJSON *error = NULL, *result;
@@ -473,6 +549,7 @@ int main(int argc, char **argv)
     Fl_Id scene = fl_project_scene_at(g_project, 0)->id;
     test_authoring(agent, scene);
     test_look(agent, scene);
+    test_scripts(agent, scene);
     test_scene_history(agent, directory);
     test_protocol(agent);
     Fl_Agent *http_agent = fl_agent_create(&(Fl_AgentHost){host_project, fake_render, NULL});

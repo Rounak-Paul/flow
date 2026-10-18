@@ -51,6 +51,14 @@ bool fl_fs_exists(const char *path);
 int64_t fl_fs_file_size(const char *path);
 
 /*
+ * Last modification time of a regular file, in nanoseconds on an arbitrary fixed epoch: only comparisons between
+ * readings of the same file are meaningful.
+ *
+ * Returns  true and writes *out, or false when the file is missing or unreadable.
+ */
+bool fl_fs_modified_ns(const char *path, int64_t *out);
+
+/*
  * Replace a file's contents atomically: write a sibling temporary file,
  * flush it to stable storage, then rename it over the destination. Readers
  * see either the old or the new contents, never a partial write.

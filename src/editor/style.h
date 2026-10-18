@@ -457,7 +457,7 @@
     ".fl-tree-eye.hidden { color: " FL_COLOR_TEXT_DIM "; }"
 
 /* Scene authoring panels and viewport handles. */
-#define FL_STYLE_WIDGETS_W 210.0f
+#define FL_STYLE_WIDGETS_W 280.0f
 #define FL_STYLE_INSPECTOR_W 280.0f
 #define FL_STYLE_WIDGET_DRAG_THRESHOLD 4.0f
 #define FL_STYLE_ROTATE_OFFSET 28.0
@@ -560,6 +560,26 @@
 #define FL_CLASS_FILE_ROW_SELECTED "fl-file-row selected"
 #define FL_CLASS_FILE_FOOTER "fl-file-footer"
 #define FL_CLASS_FILE_SUMMARY "fl-file-summary"
+#define FL_CLASS_SCRIPTS "fl-scripts"
+#define FL_CLASS_SCRIPT_LIST "fl-script-list"
+#define FL_CLASS_SCRIPT_ROW "fl-script-row"
+#define FL_CLASS_SCRIPT_ROW_SELECTED "fl-script-row selected"
+#define FL_CLASS_SCRIPT_ICON "fl-script-icon"
+#define FL_CLASS_SCRIPT_NAME "fl-script-name"
+#define FL_CLASS_SCRIPT_ACTIONS "fl-script-actions"
+#define FL_CLASS_SCRIPT_CODE "fl-script-code"
+#define FL_CLASS_SCRIPT_SOURCE "fl-script-source"
+#define FL_STYLE_CSS_SCRIPTS \
+    ".fl-scripts { width: 100%; height: 100%; padding: 8px; gap: 8px; overflow-y: auto; background: transparent; }" \
+    ".fl-script-list { width: 100%; gap: 2px; flex-shrink: 0; }" \
+    ".fl-script-row { width: 100%; height: 28px; flex-shrink: 0; padding: 0px 8px; gap: 8px; align-items: center; background: transparent; border-radius: " FL_RADIUS_SM "; }" \
+    ".fl-script-row:hover { background: " FL_COLOR_HOVER "; }" \
+    ".fl-script-row.selected { background: " FL_COLOR_SELECTION "; }" \
+    ".fl-script-icon { font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MUTED "; flex-shrink: 0; }" \
+    ".fl-script-name { flex-grow: 1; min-width: 0px; overflow: hidden; white-space: nowrap; color: " FL_COLOR_TEXT_MEDIUM "; }" \
+    ".fl-script-actions { width: 100%; flex-wrap: wrap; gap: 6px; flex-shrink: 0; }" \
+    ".fl-script-code { width: 100%; padding: 8px; flex-shrink: 0; background: " FL_COLOR_FIELD "; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: " FL_RADIUS_MD "; }" \
+    ".fl-script-source { width: 100%; color: " FL_COLOR_TEXT_MEDIUM "; font-size: " FL_FONT_SM "; }"
 #define FL_STYLE_CSS_FILE_BROWSER \
     ".fl-file-browser { width: 100%; height: 100%; padding: 12px; gap: 8px; " FL_STYLE_BACKDROP " }" \
     ".fl-icon-action { width: 28px; height: 28px; flex-shrink: 0; background: " FL_COLOR_CONTROL "; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: " FL_RADIUS_PILL "; color: " FL_COLOR_TEXT_BRIGHT "; }" \
@@ -669,4 +689,4 @@
 #define FL_STYLE_CSS_MOTION \
     ".ca-titlebar-menu-item, .ca-titlebar-control, .ca-popup-btn, .ca-dock-tab, .fl-action, .fl-icon-action, " \
     ".fl-recent, .fl-tree-row, .fl-widget-card, .fl-asset-card, .fl-font-row, .fl-chip, .fl-file-row, " \
-    ".fl-scene-card { transition: " FL_MOTION_FADE ", " FL_MOTION_FADE_BORDER "; }"
+    ".fl-scene-card, .fl-script-row { transition: " FL_MOTION_FADE ", " FL_MOTION_FADE_BORDER "; }"

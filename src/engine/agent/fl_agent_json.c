@@ -218,6 +218,29 @@ const Fl_Scene *agent_scene_of_clip(const Fl_Project *p, Fl_Id id)
     }
     return NULL;
 }
+const Fl_Scene *agent_scene_of_script(const Fl_Project *p, Fl_Id id)
+{
+    for (size_t i = 0; i < fl_project_scene_count(p); ++i) {
+        const Fl_Scene *s = fl_project_scene_at(p, i);
+        if (fl_scene_script(s, id)) return s;
+    }
+    return NULL;
+}
+cJSON *agent_script_json(const Fl_Scene *s, const Fl_ScriptSource *script, bool with_source)
+{
+    cJSON *o = cJSON_CreateObject();
+    if (!o) return NULL;
+    cJSON_AddNumberToObject(o, "id", (double)script->id);
+    cJSON_AddStringToObject(o, "name", script->name);
+    cJSON_AddNumberToObject(o, "bytes", (double)script->source_size);
+    cJSON *users = cJSON_AddArrayToObject(o, "used_by");
+    Fl_Script attached;
+    for (size_t i = 0; users && i < s->entity_count; ++i)
+        if (fl_script_decode(fl_entity_component(&s->entities[i], FL_COMPONENT_SCRIPT), &attached) && attached.script == script->id)
+            cJSON_AddItemToArray(users, cJSON_CreateNumber((double)s->entities[i].id));
+    if (with_source) cJSON_AddStringToObject(o, "source", script->source);
+    return o;
+}
 const Fl_Scene *agent_scene_of_key(const Fl_Project *p, Fl_Id id, const Fl_Track **track)
 {
     for (size_t i = 0; i < fl_project_scene_count(p); ++i) {
@@ -306,7 +329,7 @@ static cJSON *track_json(const Fl_Scene *s, const Fl_Track *t)
     return o;
 }
 
-static cJSON *entity_json(const Fl_Scene *s, const Fl_Entity *e, bool with_source)
+static cJSON *entity_json(const Fl_Scene *s, const Fl_Entity *e)
 {
     const Fl_WidgetDef *def = fl_widget_for_entity(e);
     cJSON *o = cJSON_CreateObject();
@@ -365,15 +388,13 @@ static cJSON *entity_json(const Fl_Scene *s, const Fl_Entity *e, bool with_sourc
         if (def && def->has_text) cJSON_AddStringToObject(o, "align", style.align == FL_ALIGN_CENTER ? "center" : style.align == FL_ALIGN_RIGHT ? "right" : "left");
     }
     Fl_Script script;
-    if (fl_script_decode(fl_entity_component(e, FL_COMPONENT_SCRIPT), &script)) {
+    const Fl_ScriptSource *source = fl_script_decode(fl_entity_component(e, FL_COMPONENT_SCRIPT), &script) ? fl_scene_script(s, script.script) : NULL;
+    if (source) {
         cJSON *item = cJSON_AddObjectToObject(o, "script");
         if (item) {
+            cJSON_AddNumberToObject(item, "id", (double)source->id);
+            cJSON_AddStringToObject(item, "name", source->name);
             cJSON_AddBoolToObject(item, "enabled", script.enabled);
-            cJSON_AddNumberToObject(item, "bytes", (double)script.source_size);
-            if (with_source) {
-                char *source = malloc(script.source_size + 1);
-                if (source) {memcpy(source, script.source, script.source_size); source[script.source_size] = 0; cJSON_AddStringToObject(item, "source", source); free(source);}
-            }
         }
     }
     const Fl_Animation *animation = fl_entity_animation(e);
@@ -423,7 +444,9 @@ cJSON *agent_scene_json(const Fl_Project *p, const Fl_Scene *s, bool with_source
         cJSON_AddNumberToObject(item, "fade_out", agent_ticks_to_seconds((int64_t)c->fade_out));
         cJSON_AddItemToArray(clips, item);
     }
+    cJSON *scripts = cJSON_AddArrayToObject(o, "scripts");
+    for (size_t i = 0; scripts && i < s->script_count; ++i) cJSON_AddItemToArray(scripts, agent_script_json(s, &s->scripts[i], with_sources));
     cJSON *entities = cJSON_AddArrayToObject(o, "entity_list");
-    for (size_t i = 0; entities && i < s->entity_count; ++i) cJSON_AddItemToArray(entities, entity_json(s, &s->entities[i], with_sources));
+    for (size_t i = 0; entities && i < s->entity_count; ++i) cJSON_AddItemToArray(entities, entity_json(s, &s->entities[i]));
     return o;
 }

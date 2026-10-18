@@ -13,5 +13,7 @@ void fl_script_runtime_destroy(Fl_ScriptRuntime *runtime);
 /* Run the entity's on_evaluate(self, seconds) over state at tick. Errors preserve state and retain diagnostics. */
 bool fl_script_runtime_evaluate(Fl_ScriptRuntime *runtime, const Fl_Scene *scene, size_t entity,
                                 Fl_Tick tick, Fl_EntityState *state);
+/* Compile source without running it. False with the Lua diagnostic (chunk name "script") in error on a syntax error. */
+bool fl_script_check(const char *source, size_t size, char *error, size_t error_size);
 /* Borrow the most recent diagnostic for entity, or an empty string when none. */
 const char *fl_script_runtime_error(const Fl_ScriptRuntime *runtime, size_t entity);

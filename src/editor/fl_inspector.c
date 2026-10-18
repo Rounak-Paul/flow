@@ -1,6 +1,7 @@
 #include "fl_inspector.h"
 #include "fl_file_browser.h"
 #include "components/fl_script.h"
+#include "fl_script_panel.h"
 #include "components/fl_animation.h"
 #include "components/fl_style.h"
 #include "components/fl_video_clip.h"
@@ -14,7 +15,7 @@
 #include <string.h>
 
 enum { NAME,X,Y,WIDTH,HEIGHT,ROTATION,SCALE_X,SCALE_Y,FILL,STROKE,STROKE_WIDTH,FONT_SIZE,CONTENT,FONT_FILTER,OPACITY,RADIUS,SHADOW_BLUR,SHADOW_X,SHADOW_Y,SHADOW_COLOR,GRADIENT_TO,GRADIENT_ANGLE,CROP_X,CROP_Y,CROP_W,CROP_H,
-       VIDEO_START,VIDEO_OFFSET,VIDEO_RATE,BLUR,SCRIPT_SOURCE,FIELD_COUNT };
+       VIDEO_START,VIDEO_OFFSET,VIDEO_RATE,BLUR,FIELD_COUNT };
 #define WEIGHT_OPTIONS 32
 typedef struct Fl_InspectorField { struct Fl_Inspector *owner; char *value; bool dirty; } Fl_InspectorField;
 typedef struct Fl_FontChoice { struct Fl_Inspector *owner; size_t family; uint64_t generation; } Fl_FontChoice;
@@ -25,9 +26,10 @@ struct Fl_Inspector {
     Fl_EventBus *bus;
     Ca_Dock *dock;
     Ca_Window *window;
-    Fl_FileBrowser *script_browser;
-    Fl_Id script_request_scene, script_request_entity;
-    bool script_present, script_enabled;
+    Fl_Id script;                   /* draft: repository script this entity runs, or 0 for none */
+    bool script_enabled;
+    Fl_Id *script_options;
+    size_t script_option_count;
     Ca_Label *status;
     Fl_Id scene,entity;
     uint64_t revision;
@@ -83,41 +85,21 @@ static void script_enabled(Ca_Checkbox *checkbox, void *data)
     Fl_Inspector *p = data; p->script_enabled = ca_checkbox_get(checkbox); drafted(p);
 }
 
-/* Stage a self-contained Lua source after verifying the file request's original target. */
-static void script_selected(const char *const *paths, size_t count, void *data)
+/* Stage the script chosen from the repository list; the first entry detaches. */
+static void script_chosen(Ca_Select *select, void *data)
 {
-    Fl_Inspector *p = data;
-    if (!count || p->scene != p->script_request_scene || p->entity != p->script_request_entity ||
-        fl_scene_edit_scene(p->edit) != p->scene || fl_scene_edit_primary(p->edit) != p->entity) return;
-    size_t size = 0;
-    char *source = fl_fs_read_file(paths[0], FL_SCRIPT_SOURCE_LIMIT, &size);
-    if (!source || !size || memchr(source, 0, size)) {free(source); status(p, "Could not read Lua source."); return;}
-    free(p->fields[SCRIPT_SOURCE].value); p->fields[SCRIPT_SOURCE].value = source;
-    p->script_present = true; p->script_enabled = true; drafted(p);
+    Fl_Inspector *p = data; int index = ca_select_get(select);
+    if (index < 0 || (size_t)index >= p->script_option_count) return;
+    p->script = p->script_options[index];
+    if (p->script) p->script_enabled = true;
+    drafted(p);
 }
 
-/* Pick Lua source; the document stores its bytes and never depends on the external path. */
-static void script_browse(Ca_Button *button, void *data)
+/* Show the entity's script in the Scripts panel. */
+static void script_edit(Ca_Button *button, void *data)
 {
     (void)button; Fl_Inspector *p = data;
-    if (!p->window) return;
-    if (!p->script_browser) p->script_browser = fl_file_browser_create(ca_window_instance(p->window));
-    static const char *extensions[] = {"lua"};
-    Fl_FileFilter filter = {"Lua scripts", extensions, 1};
-    p->script_request_scene = p->scene; p->script_request_entity = p->entity;
-    if (!fl_file_browser_show(p->script_browser, &(Fl_FileBrowserDesc){.mode = FL_FILE_BROWSER_OPEN_FILES,
-        .title = "Attach Lua script", .confirm_label = "Use script", .filters = &filter, .filter_count = 1,
-        .initial_path = fl_project_directory(fl_scene_edit_project(p->edit)), .on_confirm = script_selected, .user_data = p}))
-        status(p, "Could not open the script browser.");
-}
-
-/* Remove a saved script only when no Inspector draft would be discarded. */
-static void script_remove(Ca_Button *button, void *data)
-{
-    (void)button; Fl_Inspector *p = data;
-    if (p->dirty) return;
-    if (!fl_project_apply(fl_scene_edit_project(p->edit), &(Fl_Op){.kind = FL_OP_COMPONENT_REMOVE,
-        .scene = p->scene, .entity = p->entity, .component = {.type = FL_COMPONENT_SCRIPT}}, NULL)) status(p, "Could not remove script.");
+    if (p->script) fl_script_panel_request(p->bus, p->scene, p->script);
 }
 
 /* Pick a family from the filtered list; stale rows from an older font generation are ignored. */
@@ -262,16 +244,17 @@ static void apply(Ca_Button *button,void *data)
         fl_video_clip_encode(&clip,clip_bytes);components[count++]=(Fl_Component){FL_COMPONENT_VIDEO,1,FL_VIDEO_CLIP_BYTES,clip_bytes};
     }
     Fl_Component script = {0};
-    if (p->script_present) {
-        const char *source = p->fields[SCRIPT_SOURCE].value;
-        if (!fl_script_encode(&(Fl_Script){.source = source, .source_size = source ? strlen(source) : 0,
-            .enabled = p->script_enabled}, &script)) {status(p, "Invalid Lua script component."); return;}
+    const bool had_script = fl_entity_component(entity, FL_COMPONENT_SCRIPT) != NULL;
+    if (p->script) {
+        if (!fl_script_encode(&(Fl_Script){.script = p->script, .enabled = p->script_enabled}, &script)) {status(p, "Invalid Lua script component."); return;}
         components[count++] = script;
     }
     p->applying=true;
     bool ok=fl_project_apply(fl_scene_edit_project(p->edit),&(Fl_Op){.kind=FL_OP_ENTITY_CONFIGURE,.scene=p->scene,.entity=p->entity,
         .name=p->fields[NAME].value,.visible=p->visible,.components=components,.component_count=count,
         .keyed=true,.tick=fl_scene_edit_time(p->edit)},NULL);
+    if (ok&&!p->script&&had_script) ok=fl_project_apply(fl_scene_edit_project(p->edit),&(Fl_Op){.kind=FL_OP_COMPONENT_REMOVE,.scene=p->scene,
+        .entity=p->entity,.component={.type=FL_COMPONENT_SCRIPT}},NULL);
     p->applying=false;
     free((void *)script.data);
     if (!ok) {status(p,"Invalid values or insufficient memory. Changes were not applied.");return;}
@@ -348,14 +331,9 @@ static bool load(Fl_Inspector *p,const Fl_Scene *scene,const Fl_Entity *entity)
     const double clip_values[]={(double)clip.start/FL_TICKS_PER_SECOND,(double)clip.offset/FL_TICKS_PER_SECOND,clip.rate};
     for (size_t i=0;i<3;++i) {snprintf(text,sizeof(text),"%.9g",clip_values[i]);if (!field_set(&p->fields[VIDEO_START+i],text)) return false;}
     Fl_Script script;
-    p->script_present = fl_script_decode(fl_entity_component(entity, FL_COMPONENT_SCRIPT), &script);
-    p->script_enabled = p->script_present && script.enabled;
-    size_t source_size = p->script_present ? script.source_size : 0;
-    char *source = malloc(source_size + 1);
-    if (!source) return false;
-    if (source_size) memcpy(source, script.source, source_size);
-    source[source_size] = 0;
-    free(p->fields[SCRIPT_SOURCE].value); p->fields[SCRIPT_SOURCE].value = source;
+    const bool has_script=fl_script_decode(fl_entity_component(entity,FL_COMPONENT_SCRIPT),&script);
+    p->script=has_script ? script.script : 0;
+    p->script_enabled=has_script&&script.enabled;
     for (size_t i=0;i<FIELD_COUNT;++i) p->fields[i].dirty=false;
     p->visible=entity->visible;p->scene=scene->id;p->entity=entity->id;p->revision=scene->revision;p->refresh=false;return true;
 }
@@ -364,7 +342,7 @@ static void field(Fl_Inspector *p,int index,const char *label,bool numeric)
 {
     static const int animated[FIELD_COUNT]={-1,FL_PROP_X,FL_PROP_Y,FL_PROP_WIDTH,FL_PROP_HEIGHT,FL_PROP_ROTATION,FL_PROP_SCALE_X,
         FL_PROP_SCALE_Y,FL_PROP_FILL,FL_PROP_STROKE,FL_PROP_STROKE_WIDTH,FL_PROP_FONT_SIZE,-1,-1,FL_PROP_OPACITY,-1,-1,-1,-1,-1,-1,-1,
-        FL_PROP_CROP_X,FL_PROP_CROP_Y,FL_PROP_CROP_W,FL_PROP_CROP_H,-1,-1,-1,-1,-1};
+        FL_PROP_CROP_X,FL_PROP_CROP_Y,FL_PROP_CROP_W,FL_PROP_CROP_H,-1,-1,-1,-1};
     const Fl_Scene *scene=fl_project_scene(fl_scene_edit_project(p->edit),p->scene);
     bool keyed=animated[index]>=0&&fl_scene_track(scene,p->entity,(Fl_AnimProperty)animated[index]);
     char text[64];snprintf(text,sizeof(text),keyed ? "%s " CA_ICON_NF_FA_DIAMOND : "%s",label);
@@ -415,9 +393,8 @@ void fl_inspector_teardown(void *data) {Fl_Inspector *p=data;p->dock=NULL;p->sta
 void fl_inspector_destroy(Fl_Inspector *p)
 {
     if (!p) return;
-    fl_file_browser_destroy(p->script_browser);
     fl_event_unsubscribe_owner(p->bus,p);for (int i=0;i<FIELD_COUNT;++i) free(p->fields[i].value);
-    free(p->image_options);free(p);
+    free(p->image_options);free(p->script_options);free(p);
 }
 /* Describe a CSS weight with its conventional name. */
 static void weight_label(unsigned weight,const char *style,char *out,size_t capacity)
@@ -555,20 +532,32 @@ static void style_section(Fl_Inspector *p,const Fl_WidgetDef *def)
         ca_checkbox(&(Ca_CheckboxDesc){.text="Loop",.checked=p->loop,.on_change=loop_changed,.change_data=p,.id="property-loop"});
     }
 }
-/* Show script attachment, enabled state and the evaluator's current diagnostic. */
+/* Show which repository script the entity runs, whether it is enabled and the evaluator's current diagnostic. */
 static void script_section(Fl_Inspector *p, const Fl_Scene *scene)
 {
     ca_text(&(Ca_TextDesc){.text="Lua Script",.style=FL_CLASS_HEADING});
-    ca_btn_begin(&(Ca_BtnDesc){.text=p->script_present ? "Replace source…" : "Attach Lua script…",.id="inspector-script-load",
-        .style=FL_CLASS_ACTION,.on_click=script_browse,.click_data=p});ca_btn_end();
-    if (!p->script_present) return;
+    const char **options=calloc(scene->script_count+1,sizeof(*options));
+    Fl_Id *ids=calloc(scene->script_count+1,sizeof(*ids));
+    if (!options||!ids) {free(options);free(ids);return;}
+    options[0]="None";int selected=0;
+    for (size_t i=0;i<scene->script_count;++i) {
+        ids[i+1]=scene->scripts[i].id;options[i+1]=scene->scripts[i].name;
+        if (scene->scripts[i].id==p->script) selected=(int)i+1;
+    }
+    free(p->script_options);p->script_options=ids;p->script_option_count=scene->script_count+1;
+    ca_div_begin(&(Ca_DivDesc){.direction=CA_HORIZONTAL,.style=FL_CLASS_PROPERTY_ROW});
+    ca_text(&(Ca_TextDesc){.text="Script",.style=FL_CLASS_PROPERTY_LABEL});
+    ca_select(&(Ca_SelectDesc){.options=options,.option_count=(int)p->script_option_count,.selected=selected,.id="inspector-script",
+        .style=FL_CLASS_PROPERTY_SELECT,.on_change=script_chosen,.change_data=p});
+    ca_div_end();
+    free(options);
+    if (!p->script) return;
     ca_checkbox(&(Ca_CheckboxDesc){.text="Enabled",.checked=p->script_enabled,.on_change=script_enabled,.change_data=p,.id="inspector-script-enabled"});
     const Fl_SceneState *state=fl_scene_edit_state(p->edit);
     const Fl_Entity *entity=fl_scene_entity(scene,p->entity);
     const char *error=state&&entity ? fl_script_runtime_error(state->scripts,(size_t)(entity-scene->entities)) : "";
     if (*error) ca_text(&(Ca_TextDesc){.text=error,.style=FL_CLASS_WARNING,.wrap=true});
-    ca_btn_begin(&(Ca_BtnDesc){.text="Remove script",.id="inspector-script-remove",.style=FL_CLASS_ACTION,
-        .on_click=script_remove,.click_data=p,.disabled=p->dirty});ca_btn_end();
+    ca_btn_begin(&(Ca_BtnDesc){.text="Edit script",.id="inspector-script-edit",.style=FL_CLASS_ACTION,.on_click=script_edit,.click_data=p,.disabled=p->dirty});ca_btn_end();
 }
 
 void fl_inspector_build(Ca_Dock *dock,Ca_Window *window,void *data)

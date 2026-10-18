@@ -1,5 +1,6 @@
 #include "fl_agent_internal.h"
 #include "components/fl_script.h"
+#include "scripting/fl_script_runtime.h"
 #include "components/fl_style.h"
 #include "components/fl_video_clip.h"
 #include <math.h>
@@ -624,29 +625,118 @@ static bool clip_remove(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
 
 /* ---------- scripts ---------- */
 
-static bool script_set(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+/* Report a Lua syntax error in a script just written, without undoing the write. */
+static void report_syntax(cJSON *result, const char *source, size_t size)
 {
-    static const char *const keys[] = {"op", "as", "entity", "source", "enabled", NULL};
-    (void)result;
-    const Fl_Scene *s; const Fl_Entity *e; const char *source; bool enabled = true;
-    if (!agent_only_keys(op, f, "script.set", keys) || !(e = need_entity(x, op, "entity", &s, f, "script.set")) ||
-        !agent_get_string(op, "source", true, &source, f, "script.set") || !agent_get_bool(op, "enabled", &enabled, NULL, f, "script.set")) return false;
-    Fl_Component component = {0};
-    if (!fl_script_encode(&(Fl_Script){.source = source, .source_size = strlen(source), .enabled = enabled}, &component))
-        return fl_fail(f, "invalid_argument", "script.set: source must be 1..%u bytes of text without NUL", FL_SCRIPT_SOURCE_LIMIT);
-    bool ok = apply(x, &(Fl_Op){.kind = FL_OP_COMPONENT_SET, .scene = s->id, .entity = e->id, .component = component}, NULL);
-    free((void *)component.data);
-    return ok || rejected(f, "script.set", "script component");
+    char error[256];
+    if (!fl_script_check(source, size, error, sizeof(error))) cJSON_AddStringToObject(result, "syntax_error", error);
+}
+
+/* Resolve a `script` argument to its scene and repository entry. */
+static const Fl_ScriptSource *need_script(Ctx *x, const cJSON *op, const Fl_Scene **scene, Fl_Fail *f, const char *ctx)
+{
+    Fl_Id id;
+    if (!agent_get_id(op, "script", &x->refs, true, &id, f, ctx)) return NULL;
+    const Fl_Scene *s = agent_scene_of_script(x->project, id);
+    if (!s) {fl_fail(f, "not_found", "%s: no script with id %llu", ctx, (unsigned long long)id); return NULL;}
+    *scene = s;
+    return fl_scene_script(s, id);
+}
+
+static bool script_create(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[] = {"op", "as", "scene", "name", "source", NULL};
+    const Fl_Scene *s; const char *name, *source;
+    if (!agent_only_keys(op, f, "script.create", keys) || !(s = need_scene(x, op, "scene", f, "script.create")) ||
+        !agent_get_string(op, "name", true, &name, f, "script.create") || !agent_get_string(op, "source", true, &source, f, "script.create")) return false;
+    Fl_Id id = 0;
+    if (!apply(x, &(Fl_Op){.kind = FL_OP_SCRIPT_SET, .scene = s->id, .name = name, .source = source, .source_size = strlen(source)}, &id))
+        return rejected(f, "script.create", "name must be 1..64 characters and unused in the scene; source 1..131072 bytes without NUL");
+    report_id(result, id);
+    report_syntax(result, source, strlen(source));
+    return true;
+}
+
+/* Apply the {old, new} edits to text, each `old` matching exactly once; returns an owned result or NULL with f set. */
+static char *edited_source(const char *text, size_t size, const cJSON *edits, size_t *out_size, Fl_Fail *f)
+{
+    if (!cJSON_IsArray(edits) || !cJSON_GetArraySize(edits)) {fl_fail(f, "invalid_argument", "script.update: edits must be a non-empty array of {old, new}"); return NULL;}
+    char *current = malloc(size + 1);
+    if (!current) {fl_fail(f, "internal", "out of memory"); return NULL;}
+    memcpy(current, text, size); current[size] = 0;
+    size_t length = size, index = 0;
+    for (const cJSON *edit = edits->child; edit; edit = edit->next, ++index) {
+        const cJSON *from = cJSON_GetObjectItemCaseSensitive(edit, "old"), *to = cJSON_GetObjectItemCaseSensitive(edit, "new");
+        if (!cJSON_IsString(from) || !from->valuestring[0] || !cJSON_IsString(to)) {
+            fl_fail(f, "invalid_argument", "script.update: edits[%zu] needs a non-empty string old and a string new", index); free(current); return NULL;
+        }
+        const char *match = strstr(current, from->valuestring), *again = match ? strstr(match + 1, from->valuestring) : NULL;
+        if (!match || again) {
+            fl_fail(f, "invalid_argument", "script.update: edits[%zu].old %s", index, match ? "occurs more than once; include more context" : "was not found in the script"); free(current); return NULL;
+        }
+        size_t old_size = strlen(from->valuestring), new_size = strlen(to->valuestring), head = (size_t)(match - current);
+        char *next = malloc(length - old_size + new_size + 1);
+        if (!next) {fl_fail(f, "internal", "out of memory"); free(current); return NULL;}
+        memcpy(next, current, head); memcpy(next + head, to->valuestring, new_size);
+        memcpy(next + head + new_size, current + head + old_size, length - head - old_size + 1);
+        free(current); current = next; length = length - old_size + new_size;
+    }
+    *out_size = length;
+    return current;
+}
+
+static bool script_update(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[] = {"op", "as", "script", "name", "source", "edits", NULL};
+    const Fl_Scene *s; const Fl_ScriptSource *script; const char *name = NULL, *source = NULL;
+    if (!agent_only_keys(op, f, "script.update", keys) || !(script = need_script(x, op, &s, f, "script.update")) ||
+        !agent_get_string(op, "name", false, &name, f, "script.update") || !agent_get_string(op, "source", false, &source, f, "script.update")) return false;
+    const cJSON *edits = cJSON_GetObjectItemCaseSensitive(op, "edits");
+    if (source && edits) return fl_fail(f, "invalid_argument", "script.update: give source or edits, not both");
+    if (!name && !source && !edits) return fl_fail(f, "missing_field", "script.update: give name, source or edits");
+    char *patched = NULL; size_t size = source ? strlen(source) : 0;
+    if (edits && !(patched = edited_source(script->source, script->source_size, edits, &size, f))) return false;
+    const char *text = patched ? patched : source;
+    bool ok = apply(x, &(Fl_Op){.kind = FL_OP_SCRIPT_SET, .scene = s->id, .script = script->id, .name = name, .source = text, .source_size = size}, NULL);
+    if (ok && text) report_syntax(result, text, size);
+    free(patched);
+    return ok || rejected(f, "script.update", "name must be 1..64 characters and unused in the scene; source 1..131072 bytes without NUL");
 }
 
 static bool script_remove(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
 {
+    static const char *const keys[] = {"op", "as", "script", NULL};
+    (void)result;
+    const Fl_Scene *s; const Fl_ScriptSource *script;
+    if (!agent_only_keys(op, f, "script.remove", keys) || !(script = need_script(x, op, &s, f, "script.remove"))) return false;
+    return apply(x, &(Fl_Op){.kind = FL_OP_SCRIPT_REMOVE, .scene = s->id, .script = script->id}, NULL) || rejected(f, "script.remove", "script");
+}
+
+static bool script_attach(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[] = {"op", "as", "entity", "script", "enabled", NULL};
+    (void)result;
+    const Fl_Scene *s; const Fl_Entity *e; bool enabled = true;
+    if (!agent_only_keys(op, f, "script.attach", keys) || !(e = need_entity(x, op, "entity", &s, f, "script.attach")) ||
+        !agent_get_bool(op, "enabled", &enabled, NULL, f, "script.attach")) return false;
+    Fl_Id id;
+    if (!agent_get_id(op, "script", &x->refs, true, &id, f, "script.attach")) return false;
+    if (!fl_scene_script(s, id)) return fl_fail(f, "not_found", "script.attach: the scene of %s has no script with id %llu", e->name, (unsigned long long)id);
+    Fl_Component component = {0};
+    if (!fl_script_encode(&(Fl_Script){.script = id, .enabled = enabled}, &component)) return fl_fail(f, "internal", "script.attach: out of memory");
+    bool ok = apply(x, &(Fl_Op){.kind = FL_OP_COMPONENT_SET, .scene = s->id, .entity = e->id, .component = component}, NULL);
+    free((void *)component.data);
+    return ok || rejected(f, "script.attach", "script component");
+}
+
+static bool script_detach(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
     static const char *const keys[] = {"op", "as", "entity", NULL};
     (void)result;
     const Fl_Scene *s; const Fl_Entity *e;
-    if (!agent_only_keys(op, f, "script.remove", keys) || !(e = need_entity(x, op, "entity", &s, f, "script.remove"))) return false;
+    if (!agent_only_keys(op, f, "script.detach", keys) || !(e = need_entity(x, op, "entity", &s, f, "script.detach"))) return false;
     return apply(x, &(Fl_Op){.kind = FL_OP_COMPONENT_REMOVE, .scene = s->id, .entity = e->id, .component = {.type = FL_COMPONENT_SCRIPT}}, NULL) ||
-           fl_fail(f, "not_found", "script.remove: %s has no script", e->name);
+           fl_fail(f, "not_found", "script.detach: %s has no script", e->name);
 }
 
 static const struct {const char *name; OpFn run;} OPERATIONS[] = {
@@ -656,7 +746,8 @@ static const struct {const char *name; OpFn run;} OPERATIONS[] = {
     {"key.set", key_set}, {"key.remove", key_remove}, {"track.remove", track_remove},
     {"beat.add", beat_add}, {"beat.update", beat_update}, {"beat.remove", beat_remove}, {"beat.move", beat_move}, {"beat.split", beat_split},
     {"clip.add", clip_add}, {"clip.update", clip_update}, {"clip.remove", clip_remove},
-    {"script.set", script_set}, {"script.remove", script_remove},
+    {"script.create", script_create}, {"script.update", script_update}, {"script.remove", script_remove},
+    {"script.attach", script_attach}, {"script.detach", script_detach},
 };
 
 /* Run one operation and register its `as` name; the result object already holds the op name. */

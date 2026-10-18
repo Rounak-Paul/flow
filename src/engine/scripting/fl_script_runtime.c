@@ -28,7 +28,7 @@ struct Fl_ScriptRuntime {
     size_t entity;
     Fl_Tick tick;
     Fl_EntityState *state;
-    Fl_Script script;
+    const Fl_ScriptSource *script;
 };
 
 typedef union Fl_LuaAllocation { max_align_t alignment; size_t size; } Fl_LuaAllocation;
@@ -232,8 +232,8 @@ static int evaluate(lua_State *L)
     Fl_ScriptRuntime *r = *(Fl_ScriptRuntime **)lua_getextraspace(L);
     Fl_ScriptProgram *program = &r->programs[r->entity];
     if (program->ref == LUA_NOREF) {
-        char name[48]; snprintf(name, sizeof(name), "entity:%016llx", (unsigned long long)r->scene->entities[r->entity].id);
-        if (luaL_loadbufferx(L, r->script.source, r->script.source_size, name, "t") != LUA_OK) {
+        char name[FL_SCRIPT_NAME_MAX + 2]; snprintf(name, sizeof(name), "=%s", r->script->name);
+        if (luaL_loadbufferx(L, r->script->source, r->script->source_size, name, "t") != LUA_OK) {
             program->compile_failed = true;
             return lua_error(L);
         }
@@ -287,9 +287,11 @@ bool fl_script_runtime_evaluate(Fl_ScriptRuntime *r, const Fl_Scene *s, size_t e
     if (!r || !s || entity >= r->count || entity >= s->entity_count || !state) return false;
     Fl_Script script;
     if (!fl_script_decode(fl_entity_component(&s->entities[entity], FL_COMPONENT_SCRIPT), &script) || !script.enabled) return true;
+    const Fl_ScriptSource *source = fl_scene_script(s, script.script);
+    if (!source) return true;
     Fl_ScriptProgram *program = &r->programs[entity];
     if (program->compile_failed) return false;
-    r->scene = s; r->entity = entity; r->tick = tick; r->state = state; r->script = script;
+    r->scene = s; r->entity = entity; r->tick = tick; r->state = state; r->script = source;
     r->instructions = SCRIPT_INSTRUCTIONS;
     lua_State *L = r->lua;
     lua_sethook(L, instruction_limit, LUA_MASKCOUNT, SCRIPT_HOOK_INTERVAL);
@@ -308,7 +310,17 @@ bool fl_script_runtime_evaluate(Fl_ScriptRuntime *r, const Fl_Scene *s, size_t e
     }
     lua_settop(L, 0);
     lua_gc(L, LUA_GCCOLLECT);
-    r->scene = NULL; r->state = NULL; r->script = (Fl_Script){0};
+    r->scene = NULL; r->state = NULL; r->script = NULL;
+    return ok;
+}
+
+bool fl_script_check(const char *source, size_t size, char *error, size_t error_size)
+{
+    lua_State *L = luaL_newstate();
+    if (!L) {snprintf(error, error_size, "out of memory"); return false;}
+    bool ok = luaL_loadbufferx(L, source, size, "=script", "t") == LUA_OK;
+    if (!ok) snprintf(error, error_size, "%s", lua_tostring(L, -1));
+    lua_close(L);
     return ok;
 }
 

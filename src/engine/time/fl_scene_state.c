@@ -94,7 +94,7 @@ bool fl_scene_state_update(Fl_SceneState *st, const Fl_Scene *s, Fl_Tick tick)
         scripts = NULL;
         for (size_t i = 0; i < s->entity_count; ++i) {
             Fl_Script script;
-            if (fl_script_decode(fl_entity_component(&s->entities[i], FL_COMPONENT_SCRIPT), &script) && script.enabled) {
+            if (fl_script_decode(fl_entity_component(&s->entities[i], FL_COMPONENT_SCRIPT), &script) && script.enabled && fl_scene_script(s, script.script)) {
                 scripts = fl_script_runtime_create(s);
                 if (!scripts) return false;
                 break;

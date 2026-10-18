@@ -36,8 +36,9 @@ static void fixture(const char *dir, Fl_Id parent, bool duplicate)
     }
     for (int field = 0; field < 6; ++field) fl_binary_u64(&b, 0);
     for (uint64_t channel = 0; channel < 4; ++channel) fl_binary_u64(&b, channel == 3 ? 255 : 0);
+    fl_binary_u64(&b, 0);
     CHECK(fl_fs_join(path, sizeof(path), dir, "scenes/0000000000000001-0000000000000001.flscene"));
-    CHECK(fl_binary_save(&b, path, "FLSCENE\0", 7)); free(b.data);
+    CHECK(fl_binary_save(&b, path, "FLSCENE\0", 8)); free(b.data);
 }
 
 /* Exercise model ownership, mutation validation, transaction persistence and corrupt-input rejection. */

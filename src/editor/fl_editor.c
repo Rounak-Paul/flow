@@ -334,7 +334,7 @@ static bool start_jobs(Fl_Editor *editor)
 /* Assemble independent style sections without exceeding C's literal-size limit. */
 static Ca_Stylesheet *create_stylesheet(void)
 {
-    const char *parts[] = {FL_STYLE_CSS_PALETTE, FL_STYLE_CSS_SYSTEM, FL_STYLE_CSS_COMPONENTS, FL_STYLE_CSS_SCENE, FL_STYLE_CSS_SCENE_PANES, FL_STYLE_CSS_TREE, FL_STYLE_CSS_AUTHORING, FL_STYLE_CSS_ASSETS, FL_STYLE_CSS_FILE_BROWSER, FL_STYLE_CSS_TIMELINE, FL_STYLE_CSS_MOTION};
+    const char *parts[] = {FL_STYLE_CSS_PALETTE, FL_STYLE_CSS_SYSTEM, FL_STYLE_CSS_COMPONENTS, FL_STYLE_CSS_SCENE, FL_STYLE_CSS_SCENE_PANES, FL_STYLE_CSS_TREE, FL_STYLE_CSS_AUTHORING, FL_STYLE_CSS_ASSETS, FL_STYLE_CSS_SCRIPTS, FL_STYLE_CSS_FILE_BROWSER, FL_STYLE_CSS_TIMELINE, FL_STYLE_CSS_MOTION};
     size_t size = 1;
     for (size_t i = 0; i < sizeof(parts) / sizeof(parts[0]); ++i) size += strlen(parts[i]);
     char *css = malloc(size);
