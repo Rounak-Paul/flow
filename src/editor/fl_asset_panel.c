@@ -441,7 +441,7 @@ static void emit_tile(Fl_AssetPanel *p, const Fl_Asset *a)
     snprintf(tip, sizeof(tip), "%s\n%s%s  %s", a->name, label, detail, size);
     bool image = a->kind == FL_ASSET_IMAGE, placeable = image || a->kind == FL_ASSET_AUDIO;
     ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_ASSET_TILE, .id = id,
-        .on_drag_end = placeable ? row_drag_end : NULL, .drag_data = row});
+        .on_drag_end = placeable ? row_drag_end : NULL, .drag_data = row, .drag_preview = placeable});
     ca_btn_begin(&(Ca_BtnDesc){.direction = CA_VERTICAL, .on_click = row_clicked, .click_data = row,
         .style = p->selected == a->id ? FL_CLASS_ASSET_CARD_SELECTED : FL_CLASS_ASSET_CARD});
     ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_ASSET_PREVIEW});

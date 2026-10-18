@@ -102,7 +102,7 @@ void fl_widget_library_build(Ca_Dock *dock,Ca_Window *window,void *data)
         if (!matches(def->name,library->query)) continue;
         Fl_WidgetAction *action=&library->actions[kind];
         ca_div_begin(&(Ca_DivDesc){.direction=CA_VERTICAL,.style=FL_CLASS_WIDGET_WRAP,.id=def->name,
-            .on_drag_end=drag_end,.drag_data=action,.disabled=!enabled});
+            .on_drag_end=drag_end,.drag_data=action,.drag_preview=true,.disabled=!enabled});
         ca_btn_begin(&(Ca_BtnDesc){.direction=CA_VERTICAL,.style=FL_CLASS_WIDGET_CARD,.on_click=activate,.click_data=action,.disabled=!enabled});
         ca_text(&(Ca_TextDesc){.text=icons[kind],.style=FL_CLASS_WIDGET_ICON});
         ca_text(&(Ca_TextDesc){.text=def->name,.style=FL_CLASS_ASSET_NAME});

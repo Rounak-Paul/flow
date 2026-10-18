@@ -654,7 +654,8 @@ static void element(Fl_TimelinePanel *p, Fl_TimelineItem *it, const char *id, co
 {
     ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .id = id, .style = style, .position = CA_POSITION_ABSOLUTE,
         .pos_x = x, .pos_y = (FL_STYLE_TL_ROW_H - height) * 0.5f, .width = width, .height = height,
-        .on_drag_start = it ? item_drag_start : NULL, .on_drag = it ? item_drag : NULL, .on_drag_end = it ? item_drag_end : NULL, .drag_data = it});
+        .on_drag_start = it ? item_drag_start : NULL, .on_drag = it ? item_drag : NULL, .on_drag_end = it ? item_drag_end : NULL, .drag_data = it,
+        .drag_preview = it && (it->kind == ITEM_BEAT || it->kind == ITEM_KEY || it->kind == ITEM_CLIP)});
     (void)p;
 }
 

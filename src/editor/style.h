@@ -250,6 +250,7 @@
 #define FL_CLASS_ACTION "fl-action"
 #define FL_CLASS_SCENE_STRIP "fl-scene-strip"
 #define FL_CLASS_CARD "fl-scene-card"
+#define FL_CLASS_SCENE_DRAG "fl-scene-drag"
 #define FL_CLASS_CARD_SELECTED "fl-scene-card selected"
 #define FL_CLASS_HIERARCHY "fl-hierarchy"
 #define FL_CLASS_ENTITY "fl-entity"
@@ -271,6 +272,7 @@
     ".fl-action { padding: 5px 10px; background: " FL_COLOR_BG_OVERLAY "; border-radius: " FL_RADIUS_SM "; color: " FL_COLOR_TEXT_BRIGHT "; flex-shrink: 0; }" \
     ".fl-action:hover, .fl-recent:hover { background: " FL_COLOR_SELECTION "; }" \
     ".fl-scene-strip { width: 100%; height: 104px; flex-shrink: 0; padding: 8px; gap: 8px; overflow-x: auto; background: " FL_COLOR_BG_ELEVATED "; }" \
+    ".fl-scene-drag { flex-shrink: 0; cursor: grab; }" \
     ".fl-scene-card { width: 164px; height: 82px; flex-shrink: 0; overflow: hidden; padding: 12px; gap: 12px; background: " FL_COLOR_BG_SURFACE "; border: 1px solid " FL_COLOR_SEPARATOR "; border-radius: " FL_RADIUS_MD "; }" \
     ".fl-scene-card.selected { border-color: " FL_COLOR_ACCENT "; background: " FL_COLOR_SELECTION "; }" \
     ".fl-hierarchy { width: 100%; height: 100%; overflow-y: auto; gap: 4px; padding: 8px 0px; background: " FL_COLOR_BG_BASE "; }" \

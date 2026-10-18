@@ -2,6 +2,7 @@
 #include "style.h"
 #include "core/fl_log.h"
 #include "fl_scene_preview.h"
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +16,7 @@ struct Fl_ScenePanel {
     Ca_Window *window;
     Ca_Viewport *viewport;
     Ca_Div *hierarchy;
+    Ca_Div *scene_strip;
     Ca_Effect *keys;
     bool gesturing;
     double drag_offset_x,drag_offset_y,drag_scale_x,drag_scale_y;
@@ -167,6 +169,25 @@ static void scene_menu(int index, void *data)
         apply(p, (Fl_Op){.kind = FL_OP_SCENE_MOVE, .scene = row.scene, .position = index == 1 ? at - 1 : at + 1}, NULL);
 }
 
+/* Reorder a scene card on release inside the strip, preserving stable scene identity. */
+static void scene_drag_end(const Ca_DragEvent *event, void *data)
+{
+    Fl_Row row = *(Fl_Row *)data;
+    Fl_ScenePanel *p = row.panel;
+    if (hypotf(event->dx, event->dy) < FL_STYLE_WIDGET_DRAG_THRESHOLD * ca_instance_get_scale(ca_window_instance(event->window)) || !p->scene_strip) return;
+    float x, y, w, h;
+    ca_div_content_screen_rect(p->scene_strip, &x, &y, &w, &h);
+    if (event->x < x || event->x > x + w || event->y < y || event->y > y + h) return;
+    size_t count = fl_project_scene_count(p->project), from = count, to = 0;
+    for (size_t i = 0; i < count; ++i) {
+        if (fl_project_scene_at(p->project, i)->id == row.scene) { from = i; continue; }
+        ca_div_screen_rect(p->rows[i].bounds, &x, NULL, &w, NULL);
+        if (event->x >= x + w * .5f) ++to;
+    }
+    if (from < count && from != to)
+        apply(p, (Fl_Op){.kind = FL_OP_SCENE_MOVE, .scene = row.scene, .position = to}, NULL);
+}
+
 /* Context actions create children, change parent, reorder siblings, or delete a subtree. */
 static void entity_menu(int index, void *data)
 {
@@ -257,7 +278,7 @@ Fl_ScenePanel *fl_scene_panel_create(Fl_SceneEdit *edit, Fl_Fonts *fonts, Fl_Job
 
 void fl_scene_panel_teardown(void *data)
 {
-    Fl_ScenePanel *p = data; p->dock = NULL; p->window = NULL; p->viewport=NULL; p->hierarchy=NULL;
+    Fl_ScenePanel *p = data; p->dock = NULL; p->window = NULL; p->viewport=NULL; p->hierarchy=NULL;p->scene_strip=NULL;
 }
 
 void fl_scene_panel_destroy(Fl_ScenePanel *p)
@@ -286,17 +307,19 @@ void fl_scene_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
     ca_btn_begin(&(Ca_BtnDesc){.text = "+ Scene", .on_click = add_scene, .click_data = p, .style = FL_CLASS_ACTION}); ca_btn_end();
     ca_btn_begin(&(Ca_BtnDesc){.text = "Save project", .on_click = save_project, .click_data = p, .style = FL_CLASS_ACTION}); ca_btn_end();
     ca_div_end();
-    ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_SCENE_STRIP});
+    p->scene_strip = ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_SCENE_STRIP});
     for (size_t i = 0; i < scenes; ++i) {
         const Fl_Scene *scene = fl_project_scene_at(p->project, i);
         Fl_Row *row = &p->rows[p->row_count++]; *row = (Fl_Row){.panel=p,.scene=scene->id};
         char id[48]; snprintf(id, sizeof(id), "scene-%llu", (unsigned long long)scene->id);
-        ca_btn_begin(&(Ca_BtnDesc){.on_click = select_row, .click_data = row, .id = id,
+        row->bounds = ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .id = id,
+            .style = FL_CLASS_SCENE_DRAG, .on_drag_end = scene_drag_end, .drag_data = row, .drag_preview = true});
+        ca_btn_begin(&(Ca_BtnDesc){.on_click = select_row, .click_data = row,
             .direction = CA_VERTICAL, .style = scene->id == fl_scene_edit_scene(p->edit) ? FL_CLASS_CARD_SELECTED : FL_CLASS_CARD});
         char info[96]; snprintf(info, sizeof(info), "%zu   %.2fs", i + 1, scene->duration / 120000.0);
         ca_text(&(Ca_TextDesc){.text = info, .style = FL_CLASS_MUTED});
         ca_text(&(Ca_TextDesc){.text = scene->name, .style = FL_CLASS_HEADING});
-        ca_btn_end();
+        ca_btn_end(); ca_div_end();
         const char *items[] = {"Rename", "Move earlier", "Move later", "Delete scene"};
         ca_context_menu(&(Ca_CtxMenuDesc){.items = items, .item_count = 4, .on_select = scene_menu, .select_data = row});
     }
