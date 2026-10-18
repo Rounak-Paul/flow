@@ -37,31 +37,43 @@ bool fl_widget_is_geometry(Fl_WidgetKind kind)
     return (kind >= FL_WIDGET_ELLIPSE && kind <= FL_WIDGET_ARROW) || fl_widget_is_polygon(kind);
 }
 
-/* Vertex k of a polygon kind in normalized box coordinates; the renderer's shader uses the same outlines. */
-static void polygon_vertex(Fl_WidgetKind kind, int k, double *x, double *y)
+size_t fl_widget_polygon(Fl_WidgetKind kind, double out[FL_POLYGON_MAX_VERTICES][2])
 {
     static const double pi = 3.14159265358979323846;
+    size_t count = 0;
     switch (kind) {
-    case FL_WIDGET_TRIANGLE: *x = k == 0 ? 0 : k == 1 ? 1 : -1; *y = k == 0 ? -1 : 1; break;
-    case FL_WIDGET_DIAMOND: *x = cos(-pi / 2 + k * pi / 2); *y = sin(-pi / 2 + k * pi / 2); break;
-    case FL_WIDGET_HEXAGON: *x = cos(k * pi / 3); *y = sin(k * pi / 3) / 0.86602540378; break;
-    default: {
-        double radius = k % 2 ? 0.4 : 1, angle = -pi / 2 + k * pi / 5;
-        *x = radius * cos(angle); *y = radius * sin(angle) + 0.0955;
+    case FL_WIDGET_TRIANGLE:
+        count = 3;
+        out[0][0] = 0; out[0][1] = -1; out[1][0] = 1; out[1][1] = 1; out[2][0] = -1; out[2][1] = 1;
+        break;
+    case FL_WIDGET_DIAMOND:
+        count = 4;
+        for (size_t k = 0; k < count; ++k) {out[k][0] = cos(-pi / 2 + k * pi / 2); out[k][1] = sin(-pi / 2 + k * pi / 2);}
+        break;
+    case FL_WIDGET_HEXAGON:
+        count = 6;
+        for (size_t k = 0; k < count; ++k) {out[k][0] = cos(k * pi / 3); out[k][1] = sin(k * pi / 3) / 0.86602540378;}
+        break;
+    case FL_WIDGET_STAR:
+        count = 10;
+        for (size_t k = 0; k < count; ++k) {
+            double radius = k % 2 ? 0.4 : 1, angle = -pi / 2 + k * pi / 5;
+            out[k][0] = radius * cos(angle); out[k][1] = radius * sin(angle) + 0.0955;
+        }
+        break;
+    default: break;
     }
-    }
+    return count;
 }
 
 bool fl_widget_shape_contains(Fl_WidgetKind kind, double nx, double ny)
 {
     if (kind == FL_WIDGET_ELLIPSE) return nx * nx + ny * ny <= 1;
-    if (!fl_widget_is_polygon(kind)) return false;
-    const int count = kind == FL_WIDGET_TRIANGLE ? 3 : kind == FL_WIDGET_DIAMOND ? 4 : kind == FL_WIDGET_HEXAGON ? 6 : 10;
+    double v[FL_POLYGON_MAX_VERTICES][2];
+    const size_t count = fl_widget_polygon(kind, v);
     bool inside = false;
-    for (int i = 0, j = count - 1; i < count; j = i++) {
-        double xi, yi, xj, yj;
-        polygon_vertex(kind, i, &xi, &yi); polygon_vertex(kind, j, &xj, &yj);
-        if ((yi > ny) != (yj > ny) && nx < (xj - xi) * (ny - yi) / (yj - yi) + xi) inside = !inside;
+    for (size_t i = 0, j = count - 1; i < count; j = i++) {
+        if ((v[i][1] > ny) != (v[j][1] > ny) && nx < (v[j][0] - v[i][0]) * (ny - v[i][1]) / (v[j][1] - v[i][1]) + v[i][0]) inside = !inside;
     }
     return inside;
 }

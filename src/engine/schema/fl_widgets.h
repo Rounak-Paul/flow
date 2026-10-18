@@ -31,6 +31,13 @@ typedef struct Fl_WidgetDef {
 bool fl_widget_is_polygon(Fl_WidgetKind kind);
 /* True for kinds stored as a geometry component (ellipse, line, arrow and the polygons). */
 bool fl_widget_is_geometry(Fl_WidgetKind kind);
+#define FL_POLYGON_MAX_VERTICES 10
+/*
+ * Outline of a polygon kind in coordinates normalized to the box (-1..1 on both axes, y downwards), in drawing order.
+ * Writes up to FL_POLYGON_MAX_VERTICES points to out and returns their count; zero for other kinds. This is the
+ * single definition of the outline: picking, thumbnails and the GPU shader all derive from it.
+ */
+size_t fl_widget_polygon(Fl_WidgetKind kind, double out[FL_POLYGON_MAX_VERTICES][2]);
 /*
  * Whether the point (nx, ny) lies inside an ellipse or polygon kind, in coordinates normalized to the box:
  * -1..1 on both axes, y downwards. False for other kinds.
