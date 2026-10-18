@@ -131,7 +131,8 @@ void fl_scene_preview_render(Ca_Viewport *viewport,void *data)
     if (g&&map.scale>0&&p->renderer&&fl_scene_renderer_begin(p->renderer,cmd,ca_viewport_format(viewport),w,h)) {
         fl_scene_renderer_background(p->renderer,cmd,&frame,&target,scene->background);
         draw_grid(p,cmd,&frame);
-        fl_scene_renderer_entities(p->renderer,cmd,&frame,scene,state,g);
+        Fl_RenderTarget surface={ca_viewport_image_view(viewport),ca_viewport_format(viewport),w,h,ca_viewport_frame_index(viewport)};
+        fl_scene_renderer_entities(p->renderer,cmd,&surface,&frame,scene,state,g);
         VkDescriptorSet white=fl_scene_renderer_white(p->renderer);
         double logical_scale=map.scale;
         Fl_Appearance frame_edge={.stroke=FL_STYLE_CANVAS_FRAME_RGBA,.stroke_width=1/map.scale};

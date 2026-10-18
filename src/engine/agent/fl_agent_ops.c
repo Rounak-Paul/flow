@@ -149,7 +149,7 @@ static bool configure(Ctx *x, const Fl_Scene *scene, const Fl_Entity *e, const c
     static const char *const keys[] = {"name", "visible", "x", "y", "width", "height", "rotation", "scale_x", "scale_y", "opacity",
         "fill", "stroke", "stroke_width", "text", "font_size", "font_family", "font_weight", "italic", "asset",
         "radius", "fill2", "gradient_angle", "shadow_blur", "shadow_x", "shadow_y", "shadow_color", "align",
-        "start", "offset", "rate", "loop", "crop", NULL};
+        "start", "offset", "rate", "loop", "crop", "clip", "blur", NULL};
     if (!agent_object(props, f, ctx) || !agent_only_keys(props, f, ctx, keys)) return false;
     const Fl_WidgetDef *def = fl_widget_for_entity(e);
     Fl_Transform t = {.scale_x = 1, .scale_y = 1};
@@ -247,7 +247,7 @@ static bool configure(Ctx *x, const Fl_Scene *scene, const Fl_Entity *e, const c
     const char *shape_kinds = "rectangle, image or video";
     if (!agent_get_number(props, "radius", false, &number, &present, f, ctx)) return false;
     if (present) {
-        if (!def || !(def->kind == FL_WIDGET_RECTANGLE || def->has_image || def->has_video)) return fl_fail(f, "not_applicable", "%s: radius needs a %s", ctx, shape_kinds);
+        if (!def || !(def->kind == FL_WIDGET_RECTANGLE || def->kind == FL_WIDGET_GROUP || def->has_image || def->has_video)) return fl_fail(f, "not_applicable", "%s: radius needs a %s (or a group that clips)", ctx, shape_kinds);
         if (number < 0 || number > 65536) return fl_fail(f, "invalid_argument", "%s: radius is 0..65536", ctx);
         style.radius = number; style_given = true;
     }
@@ -272,6 +272,13 @@ static bool configure(Ctx *x, const Fl_Scene *scene, const Fl_Entity *e, const c
         if (region[0] < 0 || region[1] < 0 || region[2] < 0.001 || region[3] < 0.001 || region[0] + region[2] > 1 + 1e-9 || region[1] + region[3] > 1 + 1e-9)
             return fl_fail(f, "invalid_argument", "%s: crop must stay inside the source: x, y >= 0, width, height >= 0.001, x + width <= 1, y + height <= 1", ctx);
         memcpy(style.crop, region, sizeof(region)); style_given = true;
+    }
+    if (!agent_get_bool(props, "clip", &style.clip, &present, f, ctx)) return false;
+    if (present) style_given = true;
+    if (!agent_get_number(props, "blur", false, &number, &present, f, ctx)) return false;
+    if (present) {
+        if (number < 0 || number > 512) return fl_fail(f, "invalid_argument", "%s: blur is 0..512 scene pixels", ctx);
+        style.blur = number; style_given = true;
     }
     bool shadowable = def && (def->kind == FL_WIDGET_RECTANGLE || def->kind == FL_WIDGET_ELLIPSE || def->has_image || def->has_video);
     static const char *const shadow_keys[] = {"shadow_blur", "shadow_x", "shadow_y"};

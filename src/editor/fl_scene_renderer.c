@@ -16,6 +16,12 @@
 #define KIND_IMAGE 6
 #define IMAGE_MAX_SIDE 8192u
 #define PIPELINE_FORMATS 4u
+#define LAYER_SLOTS 4u
+#define LAYER_DEPTH 3u
+#define LAYER_FORMAT VK_FORMAT_R16G16B16A16_SFLOAT
+#define KIND_COMPOSITE 17
+#define KIND_BLUR 18
+#define MAX_BLUR_TAPS 96
 
 typedef struct Fl_CachedText {
     Fl_Id entity;
@@ -72,6 +78,8 @@ struct Fl_SceneRenderer {
     uint64_t text_revision, text_generation;
     Fl_Tick text_tick;
     double text_scale;
+    Fl_GpuImage *layers[LAYER_SLOTS][LAYER_DEPTH], *scratch[LAYER_SLOTS];
+    uint32_t layer_width, layer_height;
     Fl_VideoFrame *videos;
     size_t video_count, video_capacity;
     Fl_Retired *graveyard;
@@ -104,6 +112,14 @@ static bool create_pipeline(Fl_SceneRenderer *p, VkFormat format)
         "float minor=(1-min(min(d.x,d.y),1))*smoothstep(2,6,1/max(fwidth(cell.x),fwidth(cell.y)));"
         "float major=(1-min(min(b.x,b.y),1))*smoothstep(2,6,1/max(fwidth(big.x),fwidth(big.y)));"
         "color=mix(p.fill,p.stroke,major);color.a*=max(minor,major);return;}"
+        "if(kind==17.){vec2 uv0=gl_FragCoord.xy/size;vec4 c=texture(mask,uv0);float cover=1.;"
+        "if(p.fill2.y>.5){vec2 px=gl_FragCoord.xy;vec2 l=vec2(p.fill.x*px.x+p.fill.y*px.y+p.fill.z,p.stroke.x*px.x+p.stroke.y*px.y+p.stroke.z);"
+        "vec2 box=vec2(p.fill.w,p.stroke.w);float d;if(p.fill2.z>.5){vec2 q=(l-box*.5)/(box*.5);d=(length(q)-1.)*min(box.x,box.y)*.5;}"
+        "else d=rbox(l-box*.5,box*.5,min(p.fill2.x,min(box.x,box.y)*.5));float w=max(fwidth(d),.001);cover=1.-smoothstep(-w,w,d);}"
+        "color=vec4(c.a>1e-5?c.rgb/c.a:vec3(0.),c.a*cover);return;}"
+        "if(kind==18.){float sigma=max(p.extra.x,.01);vec2 dir=p.extra.yz;vec2 uv0=gl_FragCoord.xy/size;int n=int(min(ceil(sigma*3.),96.));"
+        "vec4 sum=vec4(0.);float total=0.;for(int i=-n;i<=n;++i){float w=exp(-.5*float(i*i)/(sigma*sigma));sum+=texture(mask,uv0+dir*float(i)/size)*w;total+=w;}"
+        "sum/=total;color=vec4(sum.a>1e-5?sum.rgb/sum.a:vec3(0.),sum.a);return;}"
         "if(kind==16.){float m=p.extra.w;float d=rbox((uv-.5)*size,size*.5-m,r);color=p.fill;color.a*=1-smoothstep(-sw,sw,d);return;}"
         "if(kind==5.){color=p.fill;color.a*=texture(mask,uv).r;return;}"
         "if(kind==6.){color=texture(mask,p.fill2.xy+uv*p.fill2.zw);color.a*=p.fill.a;"
@@ -497,39 +513,190 @@ void fl_scene_renderer_background(Fl_SceneRenderer *p, VkCommandBuffer cmd, cons
     fl_scene_renderer_primitive(p, cmd, frame, background, target->width, target->height, FL_WIDGET_RECTANGLE, board, fl_scene_renderer_white(p));
 }
 
-void fl_scene_renderer_entities(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_SceneFrame *frame, const Fl_Scene *scene,
-                                const Fl_SceneState *state, const Fl_SceneGeometry *g)
+/* Which pixels of an entity to draw: everything, only its shadow (which a layer must not cut), or only its body. */
+typedef enum Fl_EntityPart { PART_ALL, PART_SHADOW, PART_BODY } Fl_EntityPart;
+
+/* Draw one entity's own pixels; children are drawn by the caller. */
+static void draw_entity(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_SceneFrame *frame, const Fl_Scene *scene,
+                        const Fl_SceneState *state, const Fl_SceneGeometry *g, size_t index, Fl_EntityPart part)
 {
     VkDescriptorSet white = fl_scene_renderer_white(p);
     const Fl_Appearance placeholder = {.fill = FL_RENDER_PLACEHOLDER_FILL_RGBA, .stroke = FL_RENDER_PLACEHOLDER_STROKE_RGBA, .stroke_width = FL_RENDER_PLACEHOLDER_STROKE};
-    for (size_t i = 0; i < g->count; ++i) {
-        size_t index = g->order[i]; const Fl_ResolvedEntity *v = &g->entities[index]; const Fl_Entity *e = &scene->entities[index];
-        if (!v->visible || v->kind == FL_WIDGET_GROUP || v->opacity <= 0) continue;
-        Fl_Appearance look = state ? state->entities[index].appearance : fl_widget_appearance(e);
-        look.fill[3] = (unsigned char)lround(look.fill[3] * v->opacity);
-        look.stroke[3] = (unsigned char)lround(look.stroke[3] * v->opacity);
-        Fl_Appearance picture = {.fill = {255, 255, 255, (unsigned char)lround(255 * v->opacity)}};
-        Fl_Style style = fl_entity_style(e);
-        Fl_PrimitiveStyle shape = {.radius = style.radius, .gradient = style.gradient, .gradient_angle = style.gradient_angle};
-        memcpy(shape.gradient_to, style.gradient_to, 4);
-        memcpy(shape.crop, state ? state->entities[index].crop : style.crop, sizeof(shape.crop));
-        shape.gradient_to[3] = (unsigned char)lround(style.gradient_to[3] * v->opacity);
-        bool boxed = v->kind == FL_WIDGET_RECTANGLE || v->kind == FL_WIDGET_ELLIPSE || v->kind == FL_WIDGET_IMAGE || v->kind == FL_WIDGET_VIDEO;
-        if (boxed && style.shadow_blur > 0 && style.shadow_color[3])
-            draw_shadow(p, cmd, frame, v->world, v->local.width, v->local.height, v->kind == FL_WIDGET_ELLIPSE ? 1e9 : style.radius, &style, v->opacity);
-        VkDescriptorSet mask = white;
-        if (v->kind == FL_WIDGET_TEXT) {
-            mask = VK_NULL_HANDLE;
-            if (p->text_scene == scene->id) for (size_t j = 0; j < p->text_count; ++j)
-                if (p->texts[j].entity == e->id) mask = fl_gpu_image_descriptor(p->texts[j].image);
-        } else if (v->kind == FL_WIDGET_IMAGE || v->kind == FL_WIDGET_VIDEO) {
-            mask = v->kind == FL_WIDGET_IMAGE ? picture_descriptor(p, e) : video_descriptor(p, e->id);
-            if (mask) fl_scene_renderer_styled(p, cmd, frame, v->world, v->local.width, v->local.height, (Fl_WidgetKind)KIND_IMAGE, picture, mask, &shape);
-            else fl_scene_renderer_styled(p, cmd, frame, v->world, v->local.width, v->local.height, FL_WIDGET_RECTANGLE, placeholder, white, &shape);
-            continue;
-        }
-        if (mask) fl_scene_renderer_styled(p, cmd, frame, v->world, v->local.width, v->local.height, v->kind, look, mask, boxed ? &shape : NULL);
+    const Fl_ResolvedEntity *v = &g->entities[index]; const Fl_Entity *e = &scene->entities[index];
+    if (!v->visible || v->kind == FL_WIDGET_GROUP || v->opacity <= 0) return;
+    Fl_Appearance look = state ? state->entities[index].appearance : fl_widget_appearance(e);
+    look.fill[3] = (unsigned char)lround(look.fill[3] * v->opacity);
+    look.stroke[3] = (unsigned char)lround(look.stroke[3] * v->opacity);
+    Fl_Appearance picture = {.fill = {255, 255, 255, (unsigned char)lround(255 * v->opacity)}};
+    Fl_Style style = fl_entity_style(e);
+    Fl_PrimitiveStyle shape = {.radius = style.radius, .gradient = style.gradient, .gradient_angle = style.gradient_angle};
+    memcpy(shape.gradient_to, style.gradient_to, 4);
+    shape.gradient_to[3] = (unsigned char)lround(style.gradient_to[3] * v->opacity);
+    memcpy(shape.crop, state ? state->entities[index].crop : style.crop, sizeof(shape.crop));
+    bool boxed = v->kind == FL_WIDGET_RECTANGLE || v->kind == FL_WIDGET_ELLIPSE || v->kind == FL_WIDGET_IMAGE || v->kind == FL_WIDGET_VIDEO;
+    if (part != PART_BODY && boxed && style.shadow_blur > 0 && style.shadow_color[3])
+        draw_shadow(p, cmd, frame, v->world, v->local.width, v->local.height, v->kind == FL_WIDGET_ELLIPSE ? 1e9 : style.radius, &style, v->opacity);
+    if (part == PART_SHADOW) return;
+    VkDescriptorSet mask = white;
+    if (v->kind == FL_WIDGET_TEXT) {
+        mask = VK_NULL_HANDLE;
+        if (p->text_scene == scene->id) for (size_t j = 0; j < p->text_count; ++j)
+            if (p->texts[j].entity == e->id) mask = fl_gpu_image_descriptor(p->texts[j].image);
+    } else if (v->kind == FL_WIDGET_IMAGE || v->kind == FL_WIDGET_VIDEO) {
+        mask = v->kind == FL_WIDGET_IMAGE ? picture_descriptor(p, e) : video_descriptor(p, e->id);
+        if (mask) fl_scene_renderer_styled(p, cmd, frame, v->world, v->local.width, v->local.height, (Fl_WidgetKind)KIND_IMAGE, picture, mask, &shape);
+        else fl_scene_renderer_styled(p, cmd, frame, v->world, v->local.width, v->local.height, FL_WIDGET_RECTANGLE, placeholder, white, &shape);
+        return;
     }
+    if (mask) fl_scene_renderer_styled(p, cmd, frame, v->world, v->local.width, v->local.height, v->kind, look, mask, boxed ? &shape : NULL);
+}
+
+/* Full-access barrier with a layout change; layers are small in number, so simplicity beats precise stages. */
+static void layer_transition(VkCommandBuffer cmd, VkImage image, VkImageLayout from, VkImageLayout to)
+{
+    VkImageMemoryBarrier barrier = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT, .oldLayout = from, .newLayout = to,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = image,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+}
+
+static void begin_pass(VkCommandBuffer cmd, VkImageView view, uint32_t width, uint32_t height, bool clear)
+{
+    VkRenderingAttachmentInfo attachment = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = view, .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .loadOp = clear ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE, .clearValue.color = {.float32 = {0, 0, 0, 0}}};
+    VkRenderingInfo info = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea.extent = {width, height}, .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &attachment};
+    vkCmdBeginRendering(cmd, &info);
+}
+
+/* Layer images for a frame slot, recreated when the target size changes. */
+static bool ensure_layers(Fl_SceneRenderer *p, const Fl_RenderTarget *t)
+{
+    if (p->layer_width != t->width || p->layer_height != t->height) {
+        vkDeviceWaitIdle(p->device);
+        for (size_t s = 0; s < LAYER_SLOTS; ++s) {
+            for (size_t d = 0; d < LAYER_DEPTH; ++d) {fl_gpu_image_destroy(p->layers[s][d]); p->layers[s][d] = NULL;}
+            fl_gpu_image_destroy(p->scratch[s]); p->scratch[s] = NULL;
+        }
+        p->layer_width = t->width; p->layer_height = t->height;
+    }
+    return true;
+}
+
+static Fl_GpuImage *layer_image(Fl_SceneRenderer *p, const Fl_RenderTarget *t, size_t level)
+{
+    Fl_GpuImage **slot = &p->layers[t->slot % LAYER_SLOTS][level];
+    if (!*slot) *slot = fl_gpu_target_create(p->images, LAYER_FORMAT, t->width, t->height);
+    return *slot;
+}
+
+static Fl_GpuImage *scratch_image(Fl_SceneRenderer *p, const Fl_RenderTarget *t)
+{
+    Fl_GpuImage **slot = &p->scratch[t->slot % LAYER_SLOTS];
+    if (!*slot) *slot = fl_gpu_target_create(p->images, LAYER_FORMAT, t->width, t->height);
+    return *slot;
+}
+
+/* Push block for a full-target pass over layer content (composite or one blur direction). */
+static void layer_push(float push[28], const Fl_RenderTarget *t, int kind)
+{
+    memset(push, 0, 28 * sizeof(float));
+    push[0] = 2; push[2] = -1; push[5] = 2; push[6] = -1;
+    push[16] = (float)t->width; push[17] = (float)t->height; push[19] = (float)kind;
+}
+
+/* Blur layer in place with two separable passes through the scratch image. */
+static bool blur_layer(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_RenderTarget *t, Fl_GpuImage *layer, double sigma)
+{
+    Fl_GpuImage *scratch = scratch_image(p, t);
+    if (!scratch) return false;
+    for (int pass = 0; pass < 2; ++pass) {
+        Fl_GpuImage *from = pass ? scratch : layer, *to = pass ? layer : scratch;
+        layer_transition(cmd, fl_gpu_image_handle(to), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        begin_pass(cmd, fl_gpu_image_view(to), t->width, t->height, true);
+        float push[28];
+        layer_push(push, t, KIND_BLUR);
+        push[24] = (float)fmin(sigma, MAX_BLUR_TAPS / 3.0); push[25] = pass ? 0.f : 1.f; push[26] = pass ? 1.f : 0.f;
+        bool ok = fl_scene_renderer_begin(p, cmd, LAYER_FORMAT, t->width, t->height);
+        if (ok) fl_scene_renderer_push(p, cmd, push, fl_gpu_image_descriptor(from));
+        vkCmdEndRendering(cmd);
+        layer_transition(cmd, fl_gpu_image_handle(to), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        if (!ok) return false;
+    }
+    return true;
+}
+
+/* Resume rendering into the layer below (or the base target when level is zero). */
+static bool resume(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_RenderTarget *t, size_t level)
+{
+    if (level == 0) {
+        begin_pass(cmd, t->view, t->width, t->height, false);
+        return fl_scene_renderer_begin(p, cmd, t->format, t->width, t->height);
+    }
+    Fl_GpuImage *below = layer_image(p, t, level - 1);
+    begin_pass(cmd, fl_gpu_image_view(below), t->width, t->height, false);
+    return fl_scene_renderer_begin(p, cmd, LAYER_FORMAT, t->width, t->height);
+}
+
+/* Finish the layer at level: blur it, return to the layer below and composite it there, cut to the root's box. */
+static void close_layer(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_RenderTarget *t, const Fl_SceneFrame *frame, size_t level,
+                        const Fl_ResolvedEntity *v, const Fl_Style *style)
+{
+    Fl_GpuImage *layer = layer_image(p, t, level);
+    vkCmdEndRendering(cmd);
+    layer_transition(cmd, fl_gpu_image_handle(layer), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    double sigma = style->blur * t->width / frame->width;
+    if (sigma > 0.05) blur_layer(p, cmd, t, layer, sigma);
+    if (!resume(p, cmd, t, level)) return;
+    float push[28];
+    layer_push(push, t, KIND_COMPOSITE);
+    const double *i = v->inverse.v, kx = frame->width / t->width, ky = frame->height / t->height;
+    push[8] = (float)(i[0] * kx); push[9] = (float)(i[1] * ky); push[10] = (float)(i[0] * frame->x + i[1] * frame->y + i[2]); push[11] = (float)v->local.width;
+    push[12] = (float)(i[3] * kx); push[13] = (float)(i[4] * ky); push[14] = (float)(i[3] * frame->x + i[4] * frame->y + i[5]); push[15] = (float)v->local.height;
+    push[20] = (float)fmin(style->radius, fmin(v->local.width, v->local.height) * .5); push[21] = style->clip ? 1.f : 0.f; push[22] = v->kind == FL_WIDGET_ELLIPSE ? 1.f : 0.f;
+    for (size_t k = 0; k < 28; ++k) if (!isfinite(push[k])) return;
+    fl_scene_renderer_push(p, cmd, push, fl_gpu_image_descriptor(layer));
+}
+
+void fl_scene_renderer_entities(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_RenderTarget *target, const Fl_SceneFrame *frame,
+                                const Fl_Scene *scene, const Fl_SceneState *state, const Fl_SceneGeometry *g)
+{
+    size_t *parent = g->count ? malloc(g->count * sizeof(*parent)) : NULL;
+    for (size_t i = 0; parent && i < g->count; ++i) {
+        const Fl_Entity *above = fl_scene_entity(scene, scene->entities[i].parent);
+        parent[i] = above ? (size_t)(above - scene->entities) : SIZE_MAX;
+    }
+    struct {size_t entity, end; Fl_Style style;} open[LAYER_DEPTH];
+    size_t depth = 0;
+    ensure_layers(p, target);
+    for (size_t k = 0; k < g->count; ++k) {
+        while (depth && k >= open[depth - 1].end) {
+            --depth; close_layer(p, cmd, target, frame, depth, &g->entities[open[depth].entity], &open[depth].style);
+        }
+        size_t index = g->order[k];
+        const Fl_ResolvedEntity *v = &g->entities[index];
+        Fl_Style style = fl_entity_style(&scene->entities[index]);
+        bool layered = parent && (style.clip || style.blur > 0) && v->visible && v->invertible && v->opacity > 0 && depth < LAYER_DEPTH &&
+                       layer_image(p, target, depth);
+        if (!layered) {draw_entity(p, cmd, frame, scene, state, g, index, PART_ALL); continue;}
+        draw_entity(p, cmd, frame, scene, state, g, index, PART_SHADOW);
+        Fl_GpuImage *layer = layer_image(p, target, depth);
+        vkCmdEndRendering(cmd);
+        layer_transition(cmd, fl_gpu_image_handle(layer), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        begin_pass(cmd, fl_gpu_image_view(layer), target->width, target->height, true);
+        fl_scene_renderer_begin(p, cmd, LAYER_FORMAT, target->width, target->height);
+        draw_entity(p, cmd, frame, scene, state, g, index, PART_BODY);
+        size_t end = k + 1;
+        while (end < g->count) {
+            size_t walk = g->order[end];
+            while (walk != SIZE_MAX && walk != index) walk = parent[walk];
+            if (walk == SIZE_MAX) break;
+            ++end;
+        }
+        open[depth].entity = index; open[depth].end = end; open[depth].style = style; ++depth;
+    }
+    while (depth) {--depth; close_layer(p, cmd, target, frame, depth, &g->entities[open[depth].entity], &open[depth].style);}
+    free(parent);
 }
 
 Fl_SceneRenderer *fl_scene_renderer_create(const Fl_SceneRendererDesc *d)
@@ -557,6 +724,10 @@ void fl_scene_renderer_destroy(Fl_SceneRenderer *p)
     vkDeviceWaitIdle(p->device);
     for (size_t i = 0; i < p->picture_count; ++i) release_picture(&p->pictures[i]);
     for (size_t i = 0; i < p->text_count; ++i) {fl_gpu_image_destroy(p->texts[i].image); free(p->texts[i].text);}
+    for (size_t s = 0; s < LAYER_SLOTS; ++s) {
+        for (size_t d = 0; d < LAYER_DEPTH; ++d) fl_gpu_image_destroy(p->layers[s][d]);
+        fl_gpu_image_destroy(p->scratch[s]);
+    }
     for (size_t i = 0; i < p->video_count; ++i) fl_gpu_image_destroy(p->videos[i].image);
     for (size_t i = 0; i < p->graveyard_count; ++i) fl_gpu_image_destroy(p->graveyard[i].image);
     free(p->videos); free(p->graveyard); free(p->pictures); free(p->texts);
@@ -629,7 +800,8 @@ bool fl_scene_renderer_render(Fl_SceneRenderer *p, const Fl_Project *project, co
         ok = fl_scene_renderer_begin(p, cmd, format, w, h);
         if (ok) {
             fl_scene_renderer_background(p, cmd, &frame, &frame, scene->background);
-            fl_scene_renderer_entities(p, cmd, &frame, scene, &state, &geometry);
+            Fl_RenderTarget target = {o.view, format, w, h, 0};
+            fl_scene_renderer_entities(p, cmd, &target, &frame, scene, &state, &geometry);
         }
         vkCmdEndRendering(cmd);
         transition(cmd, o.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,

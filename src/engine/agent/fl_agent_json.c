@@ -351,6 +351,8 @@ static cJSON *entity_json(const Fl_Scene *s, const Fl_Entity *e, bool with_sourc
     Fl_Style style;
     if (fl_style_decode(fl_entity_component(e, FL_COMPONENT_STYLE), &style)) {
         if (style.radius > 0) cJSON_AddNumberToObject(o, "radius", style.radius);
+        if (style.clip) cJSON_AddBoolToObject(o, "clip", true);
+        if (style.blur > 0) cJSON_AddNumberToObject(o, "blur", style.blur);
         if (style.gradient) {agent_color_json(o, "fill2", style.gradient_to); cJSON_AddNumberToObject(o, "gradient_angle", style.gradient_angle * RAD_TO_DEG);}
         if (style.shadow_blur > 0) {
             cJSON_AddNumberToObject(o, "shadow_blur", style.shadow_blur); cJSON_AddNumberToObject(o, "shadow_x", style.shadow_x);

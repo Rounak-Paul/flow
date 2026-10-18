@@ -548,7 +548,7 @@ static void build_hierarchy(Fl_ScenePanel *p, const Fl_Scene *s)
         }
         chain[d] = i;
         const Fl_Entity *e = &s->entities[i];
-        const bool branch = first[i] != LINK_NONE || e->component_count != 0, collapsed = branch && collapsed_index(p, e->id) < p->collapsed_count;
+        const bool branch = first[i] != LINK_NONE, collapsed = branch && collapsed_index(p, e->id) < p->collapsed_count;
         Fl_Row *row = &p->rows[p->row_count++]; *row = (Fl_Row){.panel=p,.scene=s->id,.entity=e->id};
         char id[48]; snprintf(id, sizeof(id), "entity-%llu", (unsigned long long)e->id);
         row->bounds = ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_ENTITY_ROW, .id = id});
@@ -573,20 +573,6 @@ static void build_hierarchy(Fl_ScenePanel *p, const Fl_Scene *s)
         ca_btn_end();
         const char *items[] = {"Rename", "Add child group", "Add child rectangle", "Toggle visibility", "Move to root", "Move up", "Move down", "Delete subtree", "Parent to selected"};
         ca_context_menu(&(Ca_CtxMenuDesc){.items = items, .item_count = 9, .on_select = entity_menu, .select_data = row});
-        if (!collapsed) for (size_t component = 0; component < e->component_count; ++component) {
-            const Fl_Component *c = &e->components[component];
-            const char *name = fl_component_name(c->type);
-            char label[64], component_id[80];
-            if (!name) {snprintf(label, sizeof(label), "Component %llu", (unsigned long long)c->type); name = label;}
-            snprintf(component_id, sizeof(component_id), "%s-component-%llu", id, (unsigned long long)c->type);
-            ca_btn_begin(&(Ca_BtnDesc){.on_click = select_row, .click_data = row, .id = component_id, .style = FL_CLASS_TREE_ROW});
-            for (size_t indent = 0; indent <= d; ++indent) {
-                ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_TREE_GUIDE, .no_hover = true}); ca_div_end();
-            }
-            ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_TREE_LEAF, .no_hover = true}); ca_div_end();
-            ca_text(&(Ca_TextDesc){.text = name, .style = FL_CLASS_TREE_NAME_MUTED});
-            ca_btn_end();
-        }
         ca_div_end();
         if (collapsed) skip_below = d;
     }

@@ -70,6 +70,38 @@ Fl_GpuImage *fl_gpu_image_create(Fl_GpuImages *device, Fl_GpuImageFormat format,
     return image;
 }
 
+Fl_GpuImage *fl_gpu_target_create(Fl_GpuImages *device, VkFormat format, uint32_t w, uint32_t h)
+{
+    if (!device || !w || !h) return NULL;
+    Fl_GpuImage *image = calloc(1, sizeof(*image)); if (!image) return NULL;
+    image->owner = device;
+    VkImageCreateInfo desc = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = format, .extent = {w, h, 1},
+        .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+    VmaAllocationCreateInfo gpu = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    bool ok = vmaCreateImage(device->allocator, &desc, &gpu, &image->image, &image->allocation, NULL) == VK_SUCCESS;
+    VkImageViewCreateInfo view = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = image->image, .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = format, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    if (ok) ok = vkCreateImageView(device->device, &view, NULL, &image->view) == VK_SUCCESS;
+    VkDescriptorPoolSize pool_size = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
+    VkDescriptorPoolCreateInfo pool = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &pool_size};
+    if (ok) ok = vkCreateDescriptorPool(device->device, &pool, NULL, &image->pool) == VK_SUCCESS;
+    VkDescriptorSetAllocateInfo sets = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = image->pool,
+        .descriptorSetCount = 1, .pSetLayouts = &device->layout};
+    if (ok) ok = vkAllocateDescriptorSets(device->device, &sets, &image->descriptor) == VK_SUCCESS;
+    if (ok) {
+        VkDescriptorImageInfo sampled = {device->sampler, image->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkWriteDescriptorSet write = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = image->descriptor, .dstBinding = 0,
+            .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &sampled};
+        vkUpdateDescriptorSets(device->device, 1, &write, 0, NULL);
+    }
+    if (!ok) {fl_gpu_image_destroy(image); return NULL;}
+    return image;
+}
+
+VkImage fl_gpu_image_handle(const Fl_GpuImage *image) { return image ? image->image : VK_NULL_HANDLE; }
+VkImageView fl_gpu_image_view(const Fl_GpuImage *image) { return image ? image->view : VK_NULL_HANDLE; }
+
 Fl_GpuImages *fl_gpu_images_create(Ca_Instance *instance)
 {
     if (!instance) return NULL;

@@ -28,6 +28,7 @@ typedef struct Fl_ExportDesc {
     uint32_t crf;               /* x264 quality, 0 (lossless) .. 51; 0 selects 16 */
     const Fl_Id *scenes;        /* scenes to export in order; NULL exports every scene */
     size_t scene_count;
+    double crossfade;           /* seconds each scene dissolves into the next, overlapping them; 0 cuts. Shorter than every scene */
 } Fl_ExportDesc;
 
 /* Create an exporter drawing with renderer (borrowed, outlives it). NULL on failure. */

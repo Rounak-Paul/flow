@@ -44,9 +44,22 @@ bool fl_scene_renderer_begin(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, Vk
 /* Fill target (scene units) with the backdrop colour; frame is the visible world rectangle the target maps into. */
 void fl_scene_renderer_background(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, const Fl_SceneFrame *frame, const Fl_SceneFrame *target,
                                   const unsigned char color[4]);
-/* Draw every visible entity in draw order. geometry and state describe the same scene time. */
-void fl_scene_renderer_entities(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, const Fl_SceneFrame *frame, const Fl_Scene *scene,
-                                const Fl_SceneState *state, const Fl_SceneGeometry *geometry);
+/* The colour target being rendered into, so layer passes can pause it and resume. Its layout must be
+   VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL. */
+typedef struct Fl_RenderTarget {
+    VkImageView view;
+    VkFormat format;
+    uint32_t width, height;
+    uint32_t slot;                  /* frame-in-flight index, selecting a private set of layer images */
+} Fl_RenderTarget;
+
+/*
+ * Draw every visible entity in draw order. geometry and state describe the same scene time. Entities with clip or
+ * blur render themselves and their children into an offscreen layer that is blurred, cut to the entity's box and
+ * composited, which ends and restarts rendering on target; rendering is active on target again on return.
+ */
+void fl_scene_renderer_entities(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, const Fl_RenderTarget *target, const Fl_SceneFrame *frame,
+                                const Fl_Scene *scene, const Fl_SceneState *state, const Fl_SceneGeometry *geometry);
 /* Shader kinds beyond the widget kinds, for callers issuing raw push blocks. */
 #define FL_RENDER_KIND_GRID 15
 

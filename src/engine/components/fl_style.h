@@ -18,10 +18,12 @@ typedef struct Fl_Style {
     unsigned char shadow_color[4];      /* sRGB RGBA8 */
     Fl_TextAlign align;
     double crop[4];                     /* source region of an image or video: x, y, width, height as fractions of the whole */
+    bool clip;                          /* children (and the entity itself) are cut to this entity's box, rounded by radius */
+    double blur;                        /* gaussian blur in scene pixels applied to the entity and its children together */
 } Fl_Style;
 
 /* Encoded size of the version-one style payload. */
-#define FL_STYLE_BYTES 82u
+#define FL_STYLE_BYTES 91u
 
 /* Encode style into out as little-endian canonical bytes. */
 void fl_style_encode(const Fl_Style *style, unsigned char out[FL_STYLE_BYTES]);

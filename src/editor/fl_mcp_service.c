@@ -168,13 +168,14 @@ static cJSON *export_json(const Fl_ExportStatus *status)
 
 static void tool_export_video(Fl_McpCall *call, const cJSON *args, void *data)
 {
-    static const char *const keys[] = {"path", "width", "fps", "crf", "scenes", NULL};
+    static const char *const keys[] = {"path", "width", "fps", "crf", "scenes", "crossfade", NULL};
     Fl_McpService *s = data;
     if (!only_keys(call, args, keys) || !require_editor(s, call)) return;
     const cJSON *path = cJSON_GetObjectItemCaseSensitive(args, "path"), *scenes = cJSON_GetObjectItemCaseSensitive(args, "scenes");
-    double width = 1920, fps = 60, crf = 0;
+    double width = 1920, fps = 60, crf = 0, crossfade = 0;
     if (!cJSON_IsString(path) || !path->valuestring[0]) {fl_mcp_return_error(call, "missing_field", "\"path\" is required (a file name goes to the project's exports folder)"); return;}
-    if (!number_arg(call, args, "width", false, &width, NULL) || !number_arg(call, args, "fps", false, &fps, NULL) || !number_arg(call, args, "crf", false, &crf, NULL)) return;
+    if (!number_arg(call, args, "width", false, &width, NULL) || !number_arg(call, args, "fps", false, &fps, NULL) || !number_arg(call, args, "crf", false, &crf, NULL) ||
+        !number_arg(call, args, "crossfade", false, &crossfade, NULL)) return;
     if (width < 2 || width > 16384 || width != (uint32_t)width || fps != (uint32_t)fps || crf != (uint32_t)crf || crf < 0) {fl_mcp_return_error(call, "invalid_argument", "width, fps and crf are whole numbers"); return;}
     Fl_Id ids[256];
     size_t count = 0;
@@ -194,7 +195,7 @@ static void tool_export_video(Fl_McpCall *call, const cJSON *args, void *data)
         fl_mcp_return_error(call, "invalid_argument", "that path is too long"); return;
     }
     if (!fl_exporter_start(s->exporter, s->project, &(Fl_ExportDesc){.path = full, .width = (uint32_t)width, .fps = (uint32_t)fps, .crf = (uint32_t)crf,
-                                                                     .scenes = scenes ? ids : NULL, .scene_count = count}, error, sizeof(error))) {
+                                                                     .scenes = scenes ? ids : NULL, .scene_count = count, .crossfade = crossfade}, error, sizeof(error))) {
         fl_mcp_return_error(call, "export_failed", "%s", error); return;
     }
     Fl_ExportStatus status = fl_exporter_status(s->exporter);
@@ -301,9 +302,9 @@ static bool register_editor_tools(Fl_McpService *s)
     static const char *const empty = "{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}";
     const Fl_McpTool tools[] = {
         {"export_video", "Render the project's scenes in order to an H.264 MP4 with ffmpeg. path may be a file name (written to the project's exports folder) or an absolute path. "
-         "width defaults to 1920 (height follows the aspect; both must be even), fps to 60, crf 0..51 (default 16, lower is better). scenes optionally lists scene ids. "
+         "width defaults to 1920 (height follows the aspect; both must be even), fps to 60, crf 0..51 (default 16, lower is better). scenes optionally lists scene ids. crossfade (seconds, default 0) dissolves each scene into the next by overlapping them. "
          "It runs in the background: poll get_export_status.",
-         "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"width\":{\"type\":\"integer\"},\"fps\":{\"type\":\"integer\"},\"crf\":{\"type\":\"integer\"},\"scenes\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"}}},\"required\":[\"path\"],\"additionalProperties\":false}",
+         "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"width\":{\"type\":\"integer\"},\"fps\":{\"type\":\"integer\"},\"crf\":{\"type\":\"integer\"},\"crossfade\":{\"type\":\"number\"},\"scenes\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"}}},\"required\":[\"path\"],\"additionalProperties\":false}",
          false, tool_export_video, s},
         {"get_export_status", "Progress of the latest video export: state, frames done and total, elapsed time and output path.", empty, true, tool_get_export_status, s},
         {"cancel_export", "Stop the running video export.", empty, false, tool_cancel_export, s},

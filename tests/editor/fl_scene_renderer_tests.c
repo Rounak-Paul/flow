@@ -9,6 +9,7 @@
 #include "platform/fl_paths.h"
 #include "platform/fl_process.h"
 #include "project/fl_asset_import.h"
+#include "components/fl_style.h"
 #include "schema/fl_widgets.h"
 #include "text/fl_fonts.h"
 #include <causality.h>
@@ -163,6 +164,39 @@ int main(int argc, char **argv)
     CHECK(near(at(&frame, 750, 150), 10, 200, 120, 2));
     fl_frame_free(&frame);
 
+    /* Clip cuts children to the box (rounded corners included); blur spreads an entity's light beyond its edge. */
+    Fl_Id effects_scene = 0, clipper = 0, overflow = 0, glow = 0;
+    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_SCENE_ADD, .name = "Effects"}, &effects_scene));
+    CHECK(fl_widget_create(p, effects_scene, 0, FL_WIDGET_GROUP, 400, 300, &clipper));
+    CHECK(fl_widget_create(p, effects_scene, clipper, FL_WIDGET_RECTANGLE, -100, -100, &overflow));
+    CHECK(fl_widget_create(p, effects_scene, 0, FL_WIDGET_RECTANGLE, 1200, 300, &glow));
+    {
+        Fl_Id ids[3] = {clipper, overflow, glow};
+        double sizes[3][2] = {{400, 300}, {800, 600}, {200, 200}};
+        for (int i = 0; i < 3; ++i) {
+            const Fl_Entity *e = fl_scene_entity(fl_project_scene(p, effects_scene), ids[i]);
+            Fl_Transform t; CHECK(fl_transform_decode(fl_entity_component(e, FL_COMPONENT_TRANSFORM), &t));
+            t.width = sizes[i][0]; t.height = sizes[i][1];
+            unsigned char transform[56], style_bytes[FL_STYLE_BYTES], appearance[24];
+            fl_transform_encode(&t, transform);
+            Fl_Appearance a = fl_widget_appearance(e);
+            memcpy(a.fill, i == 1 ? red : white, 4); a.stroke_width = 0; fl_appearance_encode(&a, appearance);
+            Fl_Style look = fl_style_default();
+            if (i == 0) {look.clip = true; look.radius = 60;}
+            if (i == 2) look.blur = 20;
+            fl_style_encode(&look, style_bytes);
+            Fl_Component components[3] = {{FL_COMPONENT_TRANSFORM, 1, 56, transform}, {FL_COMPONENT_STYLE, 1, FL_STYLE_BYTES, style_bytes}, {FL_COMPONENT_APPEARANCE, 1, 24, appearance}};
+            CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ENTITY_CONFIGURE, .scene = effects_scene, .entity = ids[i], .name = e->name, .visible = true,
+                .components = components, .component_count = i == 0 ? 2 : 3}, NULL));
+        }
+    }
+    scene = fl_project_scene(p, effects_scene);
+    CHECK(fl_scene_renderer_render(renderer, p, scene, 0, 960, &frame));
+    CHECK(near(at(&frame, 300, 225), 255, 0, 0, 1) && near(at(&frame, 180, 225), 25, 31, 47, 1) && near(at(&frame, 300, 100), 25, 31, 47, 1));
+    CHECK(near(at(&frame, 204, 154), 25, 31, 47, 3) && near(at(&frame, 212, 160), 255, 0, 0, 1));
+    CHECK(near(at(&frame, 650, 200), 255, 255, 255, 12) && at(&frame, 596, 200).r > 70 && at(&frame, 596, 200).r < 200 && near(at(&frame, 540, 200), 25, 31, 47, 6));
+    fl_frame_free(&frame);
+
     /* Target aspect frames the output; invalid requests fail without drawing. */
     CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_SCENE_ASPECT, .scene = scene_id, .aspect_width = 1, .aspect_height = 1}, NULL));
     scene = fl_project_scene(p, scene_id);
@@ -174,20 +208,30 @@ int main(int argc, char **argv)
     if (fl_ffmpeg_path()) {
         Fl_Exporter *exporter = fl_exporter_create(bus, renderer);
         char output[FL_PATH_MAX], error[128];
+        const Fl_Id first_scene = scene_id;
         CHECK(exporter && fl_fs_join(output, sizeof(output), argv[1], "export.mp4"));
         fl_fs_remove(output);
-        CHECK(!fl_exporter_start(exporter, p, &(Fl_ExportDesc){.path = output, .width = 321, .fps = 10}, error, sizeof(error)) && strstr(error, "even"));
-        CHECK(!fl_exporter_start(exporter, p, &(Fl_ExportDesc){.path = output, .width = 320, .fps = 0}, error, sizeof(error)));
-        CHECK(fl_exporter_start(exporter, p, &(Fl_ExportDesc){.path = output, .width = 320, .fps = 10}, error, sizeof(error)));
-        CHECK(!fl_exporter_start(exporter, p, &(Fl_ExportDesc){.path = output, .width = 320, .fps = 10}, error, sizeof(error)) && strstr(error, "already"));
+        CHECK(!fl_exporter_start(exporter, p, &(Fl_ExportDesc){.path = output, .width = 321, .fps = 10, .scenes = &first_scene, .scene_count = 1}, error, sizeof(error)) && strstr(error, "even"));
+        CHECK(!fl_exporter_start(exporter, p, &(Fl_ExportDesc){.path = output, .width = 320, .fps = 0, .scenes = &first_scene, .scene_count = 1}, error, sizeof(error)));
+        CHECK(fl_exporter_start(exporter, p, &(Fl_ExportDesc){.path = output, .width = 320, .fps = 10, .scenes = &first_scene, .scene_count = 1}, error, sizeof(error)));
+        CHECK(!fl_exporter_start(exporter, p, &(Fl_ExportDesc){.path = output, .width = 320, .fps = 10, .scenes = &first_scene, .scene_count = 1}, error, sizeof(error)) && strstr(error, "already"));
         while (fl_exporter_status(exporter).state == FL_EXPORT_RUNNING) fl_event_bus_dispatch(bus);
         Fl_ExportStatus status = fl_exporter_status(exporter);
         CHECK(status.state == FL_EXPORT_DONE && status.frames_done == 50 && status.frames_total == 50 && status.width == 320 && status.height == 320);
         CHECK(fl_fs_file_size(output) > 1000);
         fl_fs_remove(output);
-        CHECK(fl_exporter_start(exporter, p, &(Fl_ExportDesc){.path = output, .width = 320, .fps = 10}, error, sizeof(error)));
+        CHECK(fl_exporter_start(exporter, p, &(Fl_ExportDesc){.path = output, .width = 320, .fps = 10, .scenes = &first_scene, .scene_count = 1}, error, sizeof(error)));
         fl_exporter_cancel(exporter);
         CHECK(fl_exporter_status(exporter).state == FL_EXPORT_CANCELLED && !fl_fs_exists(output));
+        const Fl_Id both[2] = {scene_id, effects_scene};
+        CHECK(!fl_exporter_start(exporter, p, &(Fl_ExportDesc){.path = output, .width = 320, .fps = 10, .scenes = both, .scene_count = 2}, error, sizeof(error)) && strstr(error, "aspect"));
+        CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_SCENE_ASPECT, .scene = effects_scene, .aspect_width = 1, .aspect_height = 1}, NULL));
+        CHECK(!fl_exporter_start(exporter, p, &(Fl_ExportDesc){.path = output, .width = 320, .fps = 10, .scenes = both, .scene_count = 2, .crossfade = 5}, error, sizeof(error)) && strstr(error, "shorter"));
+        CHECK(fl_exporter_start(exporter, p, &(Fl_ExportDesc){.path = output, .width = 320, .fps = 10, .scenes = both, .scene_count = 2, .crossfade = 1}, error, sizeof(error)));
+        while (fl_exporter_status(exporter).state == FL_EXPORT_RUNNING) fl_event_bus_dispatch(bus);
+        status = fl_exporter_status(exporter);
+        CHECK(status.state == FL_EXPORT_DONE && status.frames_done == 90 && status.frames_total == 90);
+        fl_fs_remove(output);
         fl_exporter_destroy(exporter);
     }
 

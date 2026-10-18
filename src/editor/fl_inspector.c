@@ -14,7 +14,7 @@
 #include <string.h>
 
 enum { NAME,X,Y,WIDTH,HEIGHT,ROTATION,SCALE_X,SCALE_Y,FILL,STROKE,STROKE_WIDTH,FONT_SIZE,CONTENT,FONT_FILTER,OPACITY,RADIUS,SHADOW_BLUR,SHADOW_X,SHADOW_Y,SHADOW_COLOR,GRADIENT_TO,GRADIENT_ANGLE,CROP_X,CROP_Y,CROP_W,CROP_H,
-       VIDEO_START,VIDEO_OFFSET,VIDEO_RATE,SCRIPT_SOURCE,FIELD_COUNT };
+       VIDEO_START,VIDEO_OFFSET,VIDEO_RATE,BLUR,SCRIPT_SOURCE,FIELD_COUNT };
 #define WEIGHT_OPTIONS 32
 typedef struct Fl_InspectorField { struct Fl_Inspector *owner; char *value; bool dirty; } Fl_InspectorField;
 typedef struct Fl_FontChoice { struct Fl_Inspector *owner; size_t family; uint64_t generation; } Fl_FontChoice;
@@ -37,7 +37,7 @@ struct Fl_Inspector {
     Fl_Typography typography;
     Fl_Id image;
     Fl_TextAlign align;
-    bool loop;
+    bool loop,clip;
     Fl_FontChoice choices[FL_STYLE_FONT_LIST_LIMIT];
     unsigned weights[WEIGHT_OPTIONS];
     size_t weight_count;
@@ -149,6 +149,10 @@ static void loop_changed(Ca_Checkbox *checkbox,void *data)
 {
     Fl_Inspector *p=data;p->loop=ca_checkbox_get(checkbox);drafted(p);
 }
+static void clip_changed(Ca_Checkbox *checkbox,void *data)
+{
+    Fl_Inspector *p=data;p->clip=ca_checkbox_get(checkbox);drafted(p);
+}
 /* Map the image dropdown back to the asset id captured at build time. */
 static void image_chosen(Ca_Select *select,void *data)
 {
@@ -230,9 +234,9 @@ static void apply(Ca_Button *button,void *data)
         components[count++]=(Fl_Component){FL_COMPONENT_IMAGE,1,8,image};
     }
     Fl_Style look=fl_style_default();
-    if (def&&def->kind!=FL_WIDGET_GROUP&&def->kind!=FL_WIDGET_LINE&&def->kind!=FL_WIDGET_ARROW) {
+    if (def) {
         double v[4];
-        bool ok=number(p->fields[RADIUS].value,&look.radius)&&number(p->fields[SHADOW_BLUR].value,&look.shadow_blur)&&
+        bool ok=number(p->fields[BLUR].value,&look.blur)&&number(p->fields[RADIUS].value,&look.radius)&&number(p->fields[SHADOW_BLUR].value,&look.shadow_blur)&&
             number(p->fields[SHADOW_X].value,&look.shadow_x)&&number(p->fields[SHADOW_Y].value,&look.shadow_y)&&number(p->fields[GRADIENT_ANGLE].value,&v[0]);
         look.gradient_angle=v[0]*3.14159265358979323846/180;
         for (int i=0;ok&&i<4;++i) ok=number(p->fields[CROP_X+i].value,&look.crop[i]);
@@ -240,10 +244,10 @@ static void apply(Ca_Button *button,void *data)
         const char *to=p->fields[GRADIENT_TO].value;
         look.gradient=to&&to[0];
         if (ok&&look.gradient) ok=color(to,look.gradient_to);
-        look.align=p->align;
+        look.align=p->align;look.clip=p->clip;
         unsigned char probe[FL_STYLE_BYTES];fl_style_encode(&look,probe);
         Fl_Component probe_component={FL_COMPONENT_STYLE,1,FL_STYLE_BYTES,probe};
-        if (!ok||!fl_widget_component_valid(&probe_component)) {status(p,"Check radius, shadow, gradient and crop values.");return;}
+        if (!ok||!fl_widget_component_valid(&probe_component)) {status(p,"Check radius, blur, shadow, gradient and crop values.");return;}
         Fl_Style plain=fl_style_default();unsigned char plain_bytes[FL_STYLE_BYTES];fl_style_encode(&plain,plain_bytes);
         if (memcmp(probe,plain_bytes,sizeof(probe))||fl_entity_component(entity,FL_COMPONENT_STYLE)) {
             memcpy(style_bytes,probe,sizeof(probe));components[count++]=(Fl_Component){FL_COMPONENT_STYLE,1,FL_STYLE_BYTES,style_bytes};
@@ -330,7 +334,8 @@ static bool load(Fl_Inspector *p,const Fl_Scene *scene,const Fl_Entity *entity)
     p->image=0;fl_image_asset_decode(fl_entity_component(entity,FL_COMPONENT_IMAGE),&p->image);
     Fl_Style look=fl_entity_style(entity);
     if (now) memcpy(look.crop,now->crop,sizeof(look.crop));
-    p->align=look.align;
+    p->align=look.align;p->clip=look.clip;
+    p->loaded_numbers[BLUR]=look.blur;snprintf(text,sizeof(text),"%.9g",look.blur);if (!field_set(&p->fields[BLUR],text)) return false;
     const double style_values[]={look.radius,look.shadow_blur,look.shadow_x,look.shadow_y};
     for (size_t i=0;i<4;++i) {p->loaded_numbers[RADIUS+i]=style_values[i];snprintf(text,sizeof(text),"%.9g",style_values[i]);if (!field_set(&p->fields[RADIUS+i],text)) return false;}
     snprintf(text,sizeof(text),"#%02X%02X%02X%02X",look.shadow_color[0],look.shadow_color[1],look.shadow_color[2],look.shadow_color[3]);if (!field_set(&p->fields[SHADOW_COLOR],text)) return false;
@@ -359,7 +364,7 @@ static void field(Fl_Inspector *p,int index,const char *label,bool numeric)
 {
     static const int animated[FIELD_COUNT]={-1,FL_PROP_X,FL_PROP_Y,FL_PROP_WIDTH,FL_PROP_HEIGHT,FL_PROP_ROTATION,FL_PROP_SCALE_X,
         FL_PROP_SCALE_Y,FL_PROP_FILL,FL_PROP_STROKE,FL_PROP_STROKE_WIDTH,FL_PROP_FONT_SIZE,-1,-1,FL_PROP_OPACITY,-1,-1,-1,-1,-1,-1,-1,
-        FL_PROP_CROP_X,FL_PROP_CROP_Y,FL_PROP_CROP_W,FL_PROP_CROP_H,-1,-1,-1,-1};
+        FL_PROP_CROP_X,FL_PROP_CROP_Y,FL_PROP_CROP_W,FL_PROP_CROP_H,-1,-1,-1,-1,-1};
     const Fl_Scene *scene=fl_project_scene(fl_scene_edit_project(p->edit),p->scene);
     bool keyed=animated[index]>=0&&fl_scene_track(scene,p->entity,(Fl_AnimProperty)animated[index]);
     char text[64];snprintf(text,sizeof(text),keyed ? "%s " CA_ICON_NF_FA_DIAMOND : "%s",label);
@@ -524,10 +529,12 @@ static void image_section(Fl_Inspector *p)
 /* Emit appearance extras: corner radius, gradient, shadow, text alignment, crop window and video playback. */
 static void style_section(Fl_Inspector *p,const Fl_WidgetDef *def)
 {
-    if (!def||def->kind==FL_WIDGET_GROUP||def->kind==FL_WIDGET_LINE||def->kind==FL_WIDGET_ARROW) return;
+    if (!def) return;
     ca_text(&(Ca_TextDesc){.text="Style",.style=FL_CLASS_HEADING});
-    bool box=def->kind==FL_WIDGET_RECTANGLE||def->has_image||def->has_video,shape=def->kind==FL_WIDGET_RECTANGLE||def->kind==FL_WIDGET_ELLIPSE;
+    bool box=def->kind==FL_WIDGET_RECTANGLE||def->kind==FL_WIDGET_GROUP||def->has_image||def->has_video,shape=def->kind==FL_WIDGET_RECTANGLE||def->kind==FL_WIDGET_ELLIPSE;
     if (box) field(p,RADIUS,"Radius",true);
+    ca_checkbox(&(Ca_CheckboxDesc){.text="Clip children",.checked=p->clip,.on_change=clip_changed,.change_data=p,.id="property-clip"});
+    field(p,BLUR,"Blur",true);
     if (shape) {field(p,GRADIENT_TO,"Gradient to",false);field(p,GRADIENT_ANGLE,"Gradient °",true);}
     if (shape||def->has_image||def->has_video) {
         field(p,SHADOW_BLUR,"Shadow blur",true);field(p,SHADOW_X,"Shadow X",true);field(p,SHADOW_Y,"Shadow Y",true);field(p,SHADOW_COLOR,"Shadow colour",false);

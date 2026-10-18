@@ -477,7 +477,7 @@
 #define FL_CLASS_PROPERTY_LABEL_KEYED "fl-property-label keyed"
 #define FL_CLASS_PROPERTY_INPUT "fl-property-input"
 #define FL_STYLE_CSS_AUTHORING \
-    ".fl-entity-row { width: 100%; height: " FL_TREE_ROW_H "; flex-shrink: 0; }" \
+    ".fl-entity-row { width: 100%; flex-shrink: 0; }" \
     ".fl-stage { width: 100%; flex-grow: 1; min-height: 0px; overflow: hidden; border-radius: " FL_RADIUS_CARD_GUTTER "; }" \
     ".fl-library, .fl-inspector { width: 100%; height: 100%; padding: 10px; gap: 10px; overflow-y: auto; background: transparent; }" \
     ".fl-widget-wrap { width: 90px; height: 72px; flex-shrink: 0; }" \
