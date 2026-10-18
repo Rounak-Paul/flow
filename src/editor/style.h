@@ -37,13 +37,13 @@
 #define FL_STYLE_BACKDROP "background: " FL_COLOR_BACKDROP ";"
 
 /* Glass materials: translucent fills, hairline rims and soft depth. */
-#define FL_COLOR_GLASS_TOP      "rgba(255, 255, 255, 0.028)"
-#define FL_COLOR_GLASS_BOTTOM   "rgba(255, 255, 255, 0.012)"
+#define FL_COLOR_GLASS_TOP      "rgba(64, 80, 82, 0.20)"
+#define FL_COLOR_GLASS_BOTTOM   "rgba(58, 68, 66, 0.30)"
 #define FL_COLOR_GLASS_BAR      "rgba(255, 255, 255, 0.012)"
 #define FL_COLOR_GLASS_BORDER   "rgba(255, 255, 255, 0.075)"
 #define FL_COLOR_GLASS_RIM      "rgba(255, 255, 255, 0.12)"
 #define FL_COLOR_GLASS_SHADOW   "rgba(0, 0, 0, 0.42)"
-#define FL_COLOR_FIELD          "rgba(0, 0, 0, 0.34)"
+#define FL_COLOR_FIELD          "rgba(14, 30, 64, 0.20)"
 #define FL_COLOR_FIELD_HOVER    "rgba(0, 0, 0, 0.44)"
 #define FL_COLOR_CONTROL        "rgba(255, 255, 255, 0.035)"
 #define FL_COLOR_CONTROL_HOVER  "rgba(255, 255, 255, 0.07)"
@@ -121,7 +121,7 @@
 
 /* Blur strengths (logical pixels) and the gutter between floating panels. */
 #define FL_BLUR_PANEL           "28px"
-#define FL_AMBIENT_LIGHT        "48px 88px 2.4"
+#define FL_AMBIENT_LIGHT        "56px 140px 0.45"
 #define FL_BLUR_FLOAT           "40px"
 #define FL_PANEL_GAP            "8px"
 
@@ -441,7 +441,7 @@
 #define FL_STYLE_IMAGE_PLACEHOLDER_STROKE 2.0
 #define FL_STYLE_FONT_LIST_LIMIT 300
 #define FL_CLASS_ASSETS "fl-assets"
-#define FL_CLASS_ASSET_GRID "fl-asset-grid fl-ambient"
+#define FL_CLASS_ASSET_GRID "fl-asset-grid"
 #define FL_CLASS_ASSET_TILE "fl-asset-tile"
 #define FL_CLASS_ASSET_CARD "fl-asset-card"
 #define FL_CLASS_ASSET_CARD_SELECTED "fl-asset-card selected"
