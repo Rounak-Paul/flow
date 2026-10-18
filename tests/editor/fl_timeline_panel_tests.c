@@ -49,6 +49,44 @@ static void check_beat_interactions(Fl_TimelinePanel *panel)
     CHECK(fl_anchor_resolve(scene_of(panel), &fl_scene_key(scene_of(panel), key, NULL)->at) == fl_scene_length(scene_of(panel)));
 }
 
+/* Beat blocks reorder on release; their keys follow and no-op drops do not write. */
+static void check_beat_reordering(Fl_TimelinePanel *panel)
+{
+    const Fl_Scene *s = scene_of(panel);
+    Fl_Id first = s->beats[0].id, second = s->beats[1].id, last = s->beats[s->beat_count - 1].id;
+    Fl_Tick length = fl_scene_length(s), duration = (Fl_Tick)s->beats[0].duration;
+    Fl_Id entity, key;
+    CHECK(fl_widget_create(project_of(panel), s->id, 0, FL_WIDGET_RECTANGLE, 0, 0, &entity));
+    CHECK(fl_project_apply(project_of(panel), &(Fl_Op){.kind = FL_OP_KEY_SET, .scene = s->id, .entity = entity,
+        .property = FL_PROP_X, .anchor = {FL_ANCHOR_BEAT, first, false, duration / 2}, .value = {12}}, &key));
+    panel->zoom = FL_STYLE_TL_ZOOM;
+    Fl_TimelineItem block = {panel, ITEM_BEAT, first};
+    uint64_t revision = s->revision;
+    item_drag_start(NULL, &block);
+    item_drag(&(Ca_DragEvent){.dx = 100000}, &block);
+    CHECK(s->beats[0].id == first && s->revision == revision);
+    item_drag_end(&(Ca_DragEvent){.dx = 100000}, &block);
+    CHECK(s->beats[0].id == second && s->beats[s->beat_count - 1].id == first);
+    CHECK(fl_scene_length(s) == length && panel->selected_beat == first);
+    CHECK(fl_anchor_resolve(s, &fl_scene_key(s, key, NULL)->at) == length - duration + duration / 2);
+    CHECK(fl_scene_edit_time(panel->edit) == length - duration);
+    revision = s->revision;
+    item_drag_start(NULL, &block);
+    item_drag(&(Ca_DragEvent){.dx = -100000}, &block);
+    item_drag_end(&(Ca_DragEvent){.dx = 0}, &block);
+    CHECK(s->revision == revision && s->beats[s->beat_count - 1].id == first);
+    item_drag_start(NULL, &block);
+    item_drag_end(&(Ca_DragEvent){.dx = -100000}, &block);
+    CHECK(s->beats[0].id == first && s->beats[s->beat_count - 1].id == last);
+    CHECK(fl_anchor_resolve(s, &fl_scene_key(s, key, NULL)->at) == duration / 2);
+    item_drag_start(NULL, &block);
+    CHECK(fl_project_apply(project_of(panel), &(Fl_Op){.kind = FL_OP_BEAT_UPDATE, .scene = s->id, .beat = second,
+        .name = "External edit", .beat_duration = s->beats[1].duration}, NULL));
+    revision = s->revision;
+    item_drag_end(&(Ca_DragEvent){.dx = 100000}, &block);
+    CHECK(s->revision == revision && s->beats[0].id == first);
+}
+
 /* Exercise property-scoped authoring, selection cleanup, upsert and navigation. */
 int main(int argc, char **argv)
 {
@@ -109,6 +147,7 @@ int main(int argc, char **argv)
     CHECK(fl_project_apply(project, &(Fl_Op){.kind = FL_OP_ENTITY_REMOVE, .scene = scene, .entity = rectangle}, NULL));
     CHECK(panel->selected_key == 0);
     check_beat_interactions(panel);
+    check_beat_reordering(panel);
     fl_timeline_panel_destroy(panel); fl_scene_edit_destroy(edit); fl_project_destroy(project);
     CHECK(fl_event_bus_destroy(bus)); fl_fs_remove(path);
     return FLOW_TEST_RESULT("fl_timeline_panel_tests");

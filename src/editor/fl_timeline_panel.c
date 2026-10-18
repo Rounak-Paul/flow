@@ -20,6 +20,11 @@ struct Fl_TimelinePanel {
     Ca_Window *window;
     Ca_Div *playhead, *header_playhead, *header_content, *ruler, *scroll, *label_content, *lanes;
     Ca_Effect *scroll_effect;
+    Ca_Div *beat_drop_marker;
+    Fl_Id drag_beat, drag_scene;
+    uint64_t drag_revision;
+    size_t beat_drop;
+    float drag_scroll;
     float label_height, content_width;
     Ca_Label *clock;
     double zoom;                /* pixels per second */
@@ -309,14 +314,58 @@ static void ruler_drag(const Ca_DragEvent *event, void *data)
     fl_playback_seek(it->panel->playback, tick_of(it->panel, event->local_x));
 }
 
-/* Begin dragging a key, beat edge or clip: remember its original time. */
+/* Read the native horizontal offset so panning during a beat drag remains coherent. */
+static float horizontal_offset(Fl_TimelinePanel *p)
+{
+    Ca_Signal *offset = p->window ? ca_get_scroll_x_signal(p->window, "timeline-scroll") : NULL;
+    return offset ? ca_signal_get_float(offset) : 0;
+}
+
+/* Preview an insertion slot without changing document order or callback ownership mid-drag. */
+static void preview_beat_drop(Fl_TimelinePanel *p, Fl_Tick center)
+{
+    const Fl_Scene *s = scene_of(p);
+    if (!s || s->id != p->drag_scene || s->revision != p->drag_revision) return;
+    size_t from = SIZE_MAX, position = 0;
+    Fl_Tick at = 0;
+    for (size_t i = 0; i < s->beat_count; ++i) {
+        Fl_Tick duration = (Fl_Tick)s->beats[i].duration;
+        if (s->beats[i].id == p->drag_beat) from = i;
+        else if (center > at + duration / 2) ++position;
+        at += duration;
+    }
+    if (from == SIZE_MAX) return;
+    p->beat_drop = position;
+    Fl_Tick boundary = 0;
+    size_t before = position > from ? position + 1 : position;
+    for (size_t i = 0; i < before; ++i) boundary += (Fl_Tick)s->beats[i].duration;
+    if (p->beat_drop_marker) {
+        float scale = panel_scale(p);
+        ca_div_set_absolute_rect(p->beat_drop_marker, (x_of(p, boundary) - 1) * scale,
+            FL_STYLE_TL_RULER_H * scale, 2 * scale, FL_STYLE_TL_ROW_H * scale);
+        ca_set_hidden(p->beat_drop_marker, position == from);
+    }
+}
+
+/* Capture a beat reorder, key move, beat resize or clip move. */
 static void item_drag_start(const Ca_DragEvent *event, void *data)
 {
     (void)event; Fl_TimelineItem *it = data; Fl_TimelinePanel *p = it->panel;
     const Fl_Scene *s = scene_of(p);
     if (!s) return;
+    p->drag_beat = 0;
     p->drag_origin = 0; p->drag_moved = false; p->drag_time = fl_scene_edit_time(p->edit);
-    if (it->kind == ITEM_KEY) {
+    if (it->kind == ITEM_BEAT) {
+        Fl_Tick start, end;
+        if (fl_scene_beat_range(s, it->id, &start, &end)) {
+            fl_playback_pause(p->playback);
+            p->drag_beat = it->id; p->drag_scene = s->id; p->drag_revision = s->revision;
+            p->drag_origin = start + (end - start) / 2; p->drag_scroll = horizontal_offset(p);
+            p->selected_beat = it->id; p->selected_key = p->selected_clip = 0;
+            for (size_t i = 0; i < s->beat_count; ++i) if (s->beats[i].id == it->id) p->beat_drop = i;
+            invalidate(p);
+        }
+    } else if (it->kind == ITEM_KEY) {
         const Fl_Keyframe *k = fl_scene_key(s, it->id, NULL);
         if (k) {p->drag_origin = fl_anchor_resolve(s, &k->at); p->selected_key = k->id;}
     } else if (it->kind == ITEM_BEAT_EDGE) {
@@ -345,17 +394,22 @@ static Fl_Tick snap_resize(const Fl_TimelinePanel *p, const Fl_Scene *s, Fl_Id b
     return distance <= limit ? best : tick;
 }
 
-/* Live drag: move keys and clips (snapped) or resize beats. */
+/* Preview beat insertion, move keys/clips with snapping, or resize beat edges. */
 static void item_drag(const Ca_DragEvent *event, void *data)
 {
     Fl_TimelineItem *it = data; Fl_TimelinePanel *p = it->panel;
     const Fl_Scene *s = scene_of(p);
     if (!s) return;
-    float dx = event->dx / panel_scale(p);
+    float dx = (event->dx + (it->kind == ITEM_BEAT ? horizontal_offset(p) - p->drag_scroll : 0)) / panel_scale(p);
     bool at_origin = fabsf(dx) < FL_STYLE_WIDGET_DRAG_THRESHOLD;
     if (at_origin && !p->drag_moved) return;
     if (!at_origin) p->drag_moved = true;
     Fl_Tick target = p->drag_origin + (at_origin ? 0 : (Fl_Tick)llround(dx / p->zoom * FL_TICKS_PER_SECOND));
+    if (it->kind == ITEM_BEAT) {
+        p->drag_applied = target;
+        if (p->drag_beat) preview_beat_drop(p, target);
+        return;
+    }
     if (it->kind == ITEM_BEAT_EDGE) {
         Fl_Tick start;
         if (!fl_scene_beat_range(s, it->id, &start, NULL)) return;
@@ -386,13 +440,28 @@ static void item_drag(const Ca_DragEvent *event, void *data)
     }
 }
 
-/* A press without movement selects the element and moves the playhead to it. */
+/* Commit a beat drop or final drag delta; a click selects and seeks. */
 static void item_drag_end(const Ca_DragEvent *event, void *data)
 {
     Fl_TimelineItem *it = data; Fl_TimelinePanel *p = it->panel;
     const Fl_Scene *s = scene_of(p);
     if (!s) return;
-    if (it->kind == ITEM_KEY || it->kind == ITEM_BEAT_EDGE || it->kind == ITEM_CLIP) item_drag(event, data);
+    if (it->kind == ITEM_BEAT || it->kind == ITEM_KEY || it->kind == ITEM_BEAT_EDGE || it->kind == ITEM_CLIP) item_drag(event, data);
+    if (it->kind == ITEM_BEAT && p->drag_beat) {
+        Fl_Id beat = p->drag_beat; p->drag_beat = 0;
+        if (p->beat_drop_marker) ca_set_hidden(p->beat_drop_marker, true);
+        if (p->drag_moved) {
+            if (s->id != p->drag_scene || s->revision != p->drag_revision) return;
+            size_t from = SIZE_MAX;
+            for (size_t i = 0; i < s->beat_count; ++i) if (s->beats[i].id == beat) from = i;
+            if (from != SIZE_MAX && from != p->beat_drop && apply(p, (Fl_Op){.kind = FL_OP_BEAT_MOVE,
+                .scene = s->id, .beat = beat, .position = p->beat_drop}, NULL)) {
+                Fl_Tick start;
+                if (fl_scene_beat_range(scene_of(p), beat, &start, NULL)) fl_playback_seek(p->playback, start);
+            }
+            invalidate(p); return;
+        }
+    }
     if (p->drag_moved || hypotf(event->dx, event->dy) / panel_scale(p) >= FL_STYLE_WIDGET_DRAG_THRESHOLD) return;
     Fl_Tick start;
     p->selected_key = p->selected_beat = p->selected_clip = 0;
@@ -534,7 +603,7 @@ Fl_TimelinePanel *fl_timeline_panel_create(Fl_SceneEdit *edit, Fl_Playback *play
 void fl_timeline_panel_teardown(void *data)
 {
     Fl_TimelinePanel *p = data;
-    ca_effect_destroy(p->scroll_effect); p->scroll_effect = NULL; p->label_content = NULL; p->header_content = NULL; p->header_playhead = NULL;
+    ca_effect_destroy(p->scroll_effect); p->scroll_effect = NULL; p->label_content = NULL; p->header_content = NULL; p->header_playhead = NULL; p->beat_drop_marker = NULL;
     p->dock = NULL; p->window = NULL; p->playhead = NULL; p->ruler = NULL; p->scroll = NULL; p->lanes = NULL; p->clock = NULL;
 }
 
@@ -600,7 +669,7 @@ static void label_row(const char *text, const char *style)
 void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
 {
     Fl_TimelinePanel *p = data; p->dock = dock; p->window = window;
-    ca_effect_destroy(p->scroll_effect); p->scroll_effect = NULL; p->label_content = NULL; p->header_content = NULL; p->header_playhead = NULL;
+    ca_effect_destroy(p->scroll_effect); p->scroll_effect = NULL; p->label_content = NULL; p->header_content = NULL; p->header_playhead = NULL; p->beat_drop_marker = NULL;
     const Fl_Scene *s = scene_of(p);
     Fl_Project *project = project_of(p);
     ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_TIMELINE});
@@ -761,6 +830,9 @@ void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
     }
     ca_div_end();
 
+    p->beat_drop_marker = ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_TL_BEAT_DROP,
+        .position = CA_POSITION_ABSOLUTE, .width = 2, .height = FL_STYLE_TL_ROW_H, .hidden = true, .no_hover = true});
+    ca_div_end();
     p->header_playhead = ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_TL_PLAYHEAD,
         .position = CA_POSITION_ABSOLUTE, .width = 2, .height = FL_STYLE_TL_RULER_H + FL_STYLE_TL_ROW_H, .no_hover = true});
     ca_div_end(); ca_div_end(); ca_div_end();
@@ -823,6 +895,7 @@ void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
     ca_div_end();
     ca_div_end();
     ca_div_end();
+    if (p->drag_beat && p->drag_moved) preview_beat_drop(p, p->drag_applied);
     p->scroll_effect = ca_effect(ca_window_instance(window), sync_scroll, p);
     sync_playhead(p);
 }

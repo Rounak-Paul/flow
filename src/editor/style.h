@@ -436,6 +436,7 @@
 #define FL_CLASS_TL_BEAT_SELECTED "fl-tl-beat selected"
 #define FL_CLASS_TL_BEAT_TEXT "fl-tl-beat-text"
 #define FL_CLASS_TL_EDGE "fl-tl-edge"
+#define FL_CLASS_TL_BEAT_DROP "fl-tl-beat-drop"
 #define FL_CLASS_TL_EDGE_MARK "fl-tl-edge-mark"
 #define FL_CLASS_TL_SPAN "fl-tl-span"
 #define FL_CLASS_TL_KEY "fl-tl-key"
@@ -473,6 +474,9 @@
     ".fl-tl-clip { background: " FL_COLOR_BG_OVERLAY "; }" \
     ".fl-tl-beat.selected, .fl-tl-clip.selected { border-color: " FL_COLOR_ACCENT "; background: " FL_COLOR_SELECTION "; }" \
     ".fl-tl-beat-text { font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MEDIUM "; white-space: nowrap; }" \
+    ".fl-tl-beat { cursor: grab; }" \
+    ".fl-tl-beat:active { cursor: grabbing; }" \
+    ".fl-tl-beat-drop { background: " FL_COLOR_ACCENT "; z-index: 3; }" \
     ".fl-tl-edge { z-index: 2; cursor: ew-resize; align-items: center; justify-content: center; background: transparent; }" \
     ".fl-tl-edge-mark { width: 2px; height: 16px; background: " FL_COLOR_TEXT_DIM "; }" \
     ".fl-tl-edge:hover { background: " FL_COLOR_ACCENT "; }" \
