@@ -27,3 +27,10 @@ target_include_directories(fl_scene_edit_tests PRIVATE "${CMAKE_CURRENT_SOURCE_D
 target_link_libraries(fl_scene_edit_tests PRIVATE flow_engine)
 flow_target_warnings(fl_scene_edit_tests)
 add_test(NAME fl_scene_edit_tests COMMAND fl_scene_edit_tests "${CMAKE_CURRENT_BINARY_DIR}/scratch/fl_scene_edit_tests")
+
+add_executable(fl_timeline_panel_tests editor/fl_timeline_panel_tests.c)
+target_include_directories(fl_timeline_panel_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(fl_timeline_panel_tests PRIVATE flow_editor causality)
+target_compile_definitions(fl_timeline_panel_tests PRIVATE $<$<PLATFORM_ID:Windows>:CA_API=>)
+flow_target_warnings(fl_timeline_panel_tests)
+add_test(NAME fl_timeline_panel_tests COMMAND fl_timeline_panel_tests "${CMAKE_CURRENT_BINARY_DIR}/scratch/fl_timeline_panel_tests")

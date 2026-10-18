@@ -139,6 +139,7 @@ typedef struct Fl_Op {
     Fl_Id beat, key, track, clip;
     uint64_t beat_duration;
     bool auto_advance;
+    bool scale_keys; /* BEAT_UPDATE: scale in-beat key offsets with its duration; audio is not stretched. */
     Fl_AnimProperty property;
     Fl_TimeAnchor anchor;
     double value[4];

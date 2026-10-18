@@ -4,7 +4,8 @@
 
 /*
  * Timeline panel: transport, ruler with playhead, beat lane, one lane per
- * animated property (keyframes) and one per audio clip. Edits go through
+ * animated property of the selected objects and one per audio clip. Explicit
+ * property keying and per-track navigation edit only their target channel. Edits go through
  * timeline operations; time moves through the playback controller.
  */
 typedef struct Fl_TimelinePanel Fl_TimelinePanel;

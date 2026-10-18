@@ -393,11 +393,12 @@
     ".fl-file-summary { flex-grow: 1; min-width: 0px; color: " FL_COLOR_TEXT_MUTED "; font-size: " FL_FONT_SM "; }"
 
 /* Timeline panel. */
+#define FL_STYLE_TL_LABEL_W 240.0f
 #define FL_STYLE_TL_PAD 12.0f
 #define FL_STYLE_TL_ROW_H 26.0f
 #define FL_STYLE_TL_RULER_H 22.0f
 #define FL_STYLE_TL_KEY 14.0f
-#define FL_STYLE_TL_EDGE_W 8.0f
+#define FL_STYLE_TL_EDGE_W 14.0f
 #define FL_STYLE_TL_SNAP 6.0
 #define FL_STYLE_TL_ZOOM 120.0
 #define FL_STYLE_TL_ZOOM_MIN 8.0
@@ -408,15 +409,24 @@
 #define FL_STYLE_TL_FADE ((uint64_t)FL_TICKS_PER_SECOND / 2)
 #define FL_STYLE_TIMELINE_HEIGHT 240.0f
 #define FL_CLASS_TIMELINE "fl-timeline"
+#define FL_CLASS_TL_SELECTION "fl-tl-selection"
+#define FL_CLASS_TL_SELECT "fl-tl-select"
+#define FL_CLASS_TL_TRACK_NAME "fl-tl-track-name"
+#define FL_CLASS_TL_TRACK_ACTION "fl-tl-track-action"
 #define FL_CLASS_TL_CLOCK "fl-tl-clock"
 #define FL_CLASS_TL_SPACER "fl-tl-spacer"
+#define FL_CLASS_TL_SCROLL "fl-tl-scroll"
 #define FL_CLASS_TL_BODY "fl-tl-body"
+#define FL_CLASS_TL_LABEL_VIEWPORT "fl-tl-label-viewport"
+#define FL_CLASS_TL_LABEL_CONTENT "fl-tl-label-content"
+#define FL_CLASS_TL_KEY_CONTENT "fl-tl-key-content"
 #define FL_CLASS_TL_LABELS "fl-tl-labels"
 #define FL_CLASS_TL_LABEL "fl-tl-label"
 #define FL_CLASS_TL_LABEL_SELECTED "fl-tl-label selected"
 #define FL_CLASS_TL_LABEL_TEXT "fl-tl-label-text"
 #define FL_CLASS_TL_RULER_LABEL "fl-tl-ruler-label"
 #define FL_CLASS_TL_LANES "fl-tl-lanes"
+#define FL_CLASS_TL_HEADER "fl-tl-header"
 #define FL_CLASS_TL_CONTENT "fl-tl-content"
 #define FL_CLASS_TL_RULER "fl-tl-ruler"
 #define FL_CLASS_TL_TICK "fl-tl-tick"
@@ -426,6 +436,7 @@
 #define FL_CLASS_TL_BEAT_SELECTED "fl-tl-beat selected"
 #define FL_CLASS_TL_BEAT_TEXT "fl-tl-beat-text"
 #define FL_CLASS_TL_EDGE "fl-tl-edge"
+#define FL_CLASS_TL_EDGE_MARK "fl-tl-edge-mark"
 #define FL_CLASS_TL_SPAN "fl-tl-span"
 #define FL_CLASS_TL_KEY "fl-tl-key"
 #define FL_CLASS_TL_KEY_SELECTED "fl-tl-key selected"
@@ -436,15 +447,23 @@
 #define FL_CLASS_TL_PLAYHEAD "fl-tl-playhead"
 #define FL_STYLE_CSS_TIMELINE \
     ".fl-timeline { width: 100%; height: 100%; gap: 0px; overflow: hidden; background: " FL_COLOR_BG_BASE "; }" \
+    ".fl-tl-selection { width: 100%; padding: 4px 10px; gap: 8px; align-items: center; flex-shrink: 0; background: " FL_COLOR_BG_ELEVATED "; }" \
+    ".fl-tl-select { width: 130px; flex-shrink: 0; }" \
+    ".fl-tl-track-name { flex-grow: 1; min-width: 0px; overflow: hidden; white-space: nowrap; font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MEDIUM "; }" \
+    ".fl-tl-track-action { width: 22px; height: 22px; padding: 0px; flex-shrink: 0; font-size: " FL_FONT_SM "; }" \
     ".fl-tl-clock { font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MEDIUM "; padding: 0px 8px; flex-shrink: 0; }" \
     ".fl-tl-spacer { flex-grow: 1; height: 1px; }" \
-    ".fl-tl-body { width: 100%; flex-grow: 1; min-height: 0px; overflow-y: auto; gap: 0px; }" \
-    ".fl-tl-labels { width: 170px; flex-shrink: 0; gap: 0px; background: " FL_COLOR_BG_ELEVATED "; }" \
+    ".fl-tl-scroll { width: 100%; flex-grow: 1; min-height: 0px; overflow: auto; gap: 0px; }" \
+    ".fl-tl-body { width: 100%; flex-grow: 1; min-height: 0px; overflow: hidden; gap: 0px; }" \
+    ".fl-tl-labels { width: 240px; flex-shrink: 0; gap: 0px; background: " FL_COLOR_BG_ELEVATED "; }" \
+    ".fl-tl-label-viewport { width: 100%; flex-grow: 1; min-height: 0px; overflow: hidden; }" \
+    ".fl-tl-label-content, .fl-tl-key-content { flex-shrink: 0; gap: 0px; }" \
     ".fl-tl-ruler-label { width: 100%; height: 22px; flex-shrink: 0; }" \
     ".fl-tl-label { width: 100%; height: 26px; flex-shrink: 0; padding: 0px 10px; align-items: center; overflow: hidden; }" \
     ".fl-tl-label.selected { background: " FL_COLOR_SELECTION "; }" \
     ".fl-tl-label-text { font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MEDIUM "; white-space: nowrap; }" \
-    ".fl-tl-lanes { flex-grow: 1; min-width: 0px; overflow-x: auto; gap: 0px; }" \
+    ".fl-tl-lanes { flex-grow: 1; min-width: 0px; min-height: 0px; overflow: hidden; gap: 0px; }" \
+    ".fl-tl-header { width: 100%; height: 48px; flex-shrink: 0; overflow: hidden; }" \
     ".fl-tl-content { flex-shrink: 0; gap: 0px; }" \
     ".fl-tl-ruler { height: 22px; flex-shrink: 0; background: " FL_COLOR_BG_ELEVATED "; }" \
     ".fl-tl-tick { height: 22px; padding: 4px 0px 0px 3px; border-left: 1px solid " FL_COLOR_SEPARATOR "; }" \
@@ -454,7 +473,8 @@
     ".fl-tl-clip { background: " FL_COLOR_BG_OVERLAY "; }" \
     ".fl-tl-beat.selected, .fl-tl-clip.selected { border-color: " FL_COLOR_ACCENT "; background: " FL_COLOR_SELECTION "; }" \
     ".fl-tl-beat-text { font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MEDIUM "; white-space: nowrap; }" \
-    ".fl-tl-edge { background: transparent; }" \
+    ".fl-tl-edge { z-index: 2; cursor: ew-resize; align-items: center; justify-content: center; background: transparent; }" \
+    ".fl-tl-edge-mark { width: 2px; height: 16px; background: " FL_COLOR_TEXT_DIM "; }" \
     ".fl-tl-edge:hover { background: " FL_COLOR_ACCENT "; }" \
     ".fl-tl-span { background: " FL_COLOR_SEPARATOR "; }" \
     ".fl-tl-key { align-items: center; justify-content: center; }" \

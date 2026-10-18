@@ -18,13 +18,18 @@ struct Fl_TimelinePanel {
     Fl_EventBus *bus;
     Ca_Dock *dock;
     Ca_Window *window;
-    Ca_Div *playhead, *ruler;
+    Ca_Div *playhead, *header_playhead, *header_content, *ruler, *scroll, *label_content, *lanes;
+    Ca_Effect *scroll_effect;
+    float label_height, content_width;
     Ca_Label *clock;
-    float playhead_height;
     double zoom;                /* pixels per second */
     Fl_TimelineItem *items;
     size_t item_count, item_capacity;
     Fl_Id selected_key, selected_beat, selected_clip;
+    Fl_Id selection_entity;
+    Fl_AnimProperty property;
+    Fl_AnimProperty properties[FL_PROP_COUNT];
+    size_t property_count;
     Fl_Tick drag_origin, drag_applied;
     Ca_Window *rename_window;
     Ca_TextInput *rename_input;
@@ -33,6 +38,36 @@ struct Fl_TimelinePanel {
 
 static const char *const PROPERTY_NAMES[FL_PROP_COUNT] = {
     "X", "Y", "Width", "Height", "Rotation", "Scale X", "Scale Y", "Opacity", "Fill", "Stroke", "Stroke width", "Font size"};
+
+/* Align fixed headers and labels with the two axes of the key viewport. */
+static void sync_scroll(void *data)
+{
+    Fl_TimelinePanel *p = data;
+    Ca_Signal *offset = ca_get_scroll_y_signal(p->window, "timeline-scroll");
+    float y = offset ? ca_signal_get_float(offset) : 0;
+    Ca_Signal *size = ca_div_size_signal(p->scroll);
+    if (size) (void)ca_signal_get(size);
+    float scale = ca_instance_get_scale(ca_window_instance(p->window));
+    ca_div_set_absolute_rect(p->label_content, 0, -y, FL_STYLE_TL_LABEL_W * scale, p->label_height * scale);
+    Ca_Signal *horizontal = ca_get_scroll_x_signal(p->window, "timeline-scroll");
+    float x = horizontal ? ca_signal_get_float(horizontal) : 0;
+    ca_div_set_absolute_rect(p->header_content, -x, 0, p->content_width * scale,
+        (FL_STYLE_TL_RULER_H + FL_STYLE_TL_ROW_H) * scale);
+}
+
+/* Wheel input over property names scrolls their matching key rows. */
+static void labels_scrolled(double dx, double dy, void *data)
+{
+    (void)dx; Fl_TimelinePanel *p = data;
+    ca_scroll_wheel(p->window, "timeline-scroll", dy);
+}
+
+/* Pan time with either wheel axis over the fixed ruler and beat strip. */
+static void header_scrolled(double dx, double dy, void *data)
+{
+    Fl_TimelinePanel *p = data;
+    ca_scroll_wheel_x(p->window, "timeline-scroll", fabs(dx) > fabs(dy) ? dx : dy);
+}
 
 /* Rebuild on the next frame. */
 static void invalidate(Fl_TimelinePanel *p)
@@ -85,7 +120,11 @@ static void sync_playhead(Fl_TimelinePanel *p)
 {
     const Fl_Scene *scene = scene_of(p);
     Fl_Tick now = fl_scene_edit_time(p->edit);
-    if (p->playhead) ca_div_set_absolute_rect(p->playhead, x_of(p, now) - 1, 0, 2, p->playhead_height);
+    float scale = p->window ? ca_instance_get_scale(ca_window_instance(p->window)) : 1;
+    float x = (x_of(p, now) - 1) * scale;
+    if (p->playhead) ca_div_set_absolute_rect(p->playhead, x, 0, 2 * scale, p->label_height * scale);
+    if (p->header_playhead) ca_div_set_absolute_rect(p->header_playhead, x, 0, 2 * scale,
+        (FL_STYLE_TL_RULER_H + FL_STYLE_TL_ROW_H) * scale);
     if (p->clock) {
         char a[32], b[32], text[72];
         format_time(now, a, sizeof(a)); format_time(fl_scene_length(scene), b, sizeof(b));
@@ -140,33 +179,115 @@ static void add_beat(Ca_Button *b, void *data)
                          .beat_duration = FL_STYLE_TL_BEAT_DEFAULT}, &id)) p->selected_beat = id;
 }
 
-/* Key transform and opacity of every selected entity at the playhead. */
-static void key_selection(Ca_Button *b, void *data)
+/* Report whether this entity exposes the property in the authoring UI. */
+static bool property_supported(const Fl_Entity *entity, Fl_AnimProperty property)
 {
-    (void)b; Fl_TimelinePanel *p = data;
+    if (!entity) return false;
+    if (property < 0 || property >= FL_PROP_COUNT) return false;
+    if (property <= FL_PROP_OPACITY) return fl_entity_component(entity, FL_COMPONENT_TRANSFORM) != NULL;
+    const Fl_WidgetDef *def = fl_widget_for_entity(entity);
+    if (!def) return false;
+    if (property == FL_PROP_FILL) return def->has_fill;
+    if (property == FL_PROP_STROKE || property == FL_PROP_STROKE_WIDTH) return def->has_stroke;
+    return property == FL_PROP_FONT_SIZE && def->has_text;
+}
+
+/* Capture only the requested evaluated channel; same-time keys are updated in place. */
+static void key_property(Fl_TimelinePanel *p, Fl_Id entity, Fl_AnimProperty property)
+{
     const Fl_Scene *s = scene_of(p);
+    const Fl_Entity *e = fl_scene_entity(s, entity);
+    if (fl_playback_playing(p->playback) || !property_supported(e, property)) return;
     const Fl_SceneState *state = fl_scene_edit_state(p->edit);
-    if (!s || !state) return;
+    if (!state) return;
+    const Fl_EntityState *v = &state->entities[e - s->entities];
+    const double scalar[] = {v->transform.x, v->transform.y, v->transform.width, v->transform.height,
+        v->transform.rotation, v->transform.scale_x, v->transform.scale_y, v->opacity};
     Fl_Tick now = fl_scene_edit_time(p->edit);
-    size_t count = 0;
-    Fl_Id selected[256];
-    for (size_t i = 0; i < s->entity_count && count < 256; ++i)
-        if (fl_scene_edit_contains(p->edit, s->entities[i].id)) selected[count++] = s->entities[i].id;
-    for (size_t n = 0; n < count; ++n) {
-        const Fl_Scene *scene = scene_of(p);
-        state = fl_scene_edit_state(p->edit);
-        const Fl_Entity *e = fl_scene_entity(scene, selected[n]);
-        if (!e || !state) continue;
-        const Fl_EntityState *v = &state->entities[e - scene->entities];
-        const double values[8] = {v->transform.x, v->transform.y, v->transform.width, v->transform.height,
-                                  v->transform.rotation, v->transform.scale_x, v->transform.scale_y, v->opacity};
-        for (int prop = 0; prop < 8; ++prop) {
-            const Fl_Track *t = fl_scene_track(scene_of(p), e->id, (Fl_AnimProperty)prop);
-            apply(p, (Fl_Op){.kind = FL_OP_KEY_SET, .scene = scene->id, .entity = selected[n], .property = (Fl_AnimProperty)prop,
-                .anchor = fl_anchor_at(scene_of(p), now), .value = {values[prop], 0, 0, 0},
-                .ease = t && t->key_count ? t->keys[t->key_count - 1].ease : FL_EASE_IN_OUT}, NULL);
-        }
+    Fl_Op op = {.kind = FL_OP_KEY_SET, .scene = s->id, .entity = entity, .property = property,
+        .anchor = fl_anchor_at(s, now), .ease = FL_EASE_IN_OUT};
+    if (property <= FL_PROP_OPACITY) op.value[0] = scalar[property];
+    else if (property == FL_PROP_FILL || property == FL_PROP_STROKE) {
+        const unsigned char *color = property == FL_PROP_FILL ? v->appearance.fill : v->appearance.stroke;
+        for (size_t i = 0; i < 4; ++i) op.value[i] = color[i];
+    } else op.value[0] = property == FL_PROP_STROKE_WIDTH ? v->appearance.stroke_width : v->appearance.font_size;
+    const Fl_Track *track = fl_scene_track(s, entity, property);
+    Fl_Tick previous = INT64_MIN;
+    for (size_t i = 0; track && i < track->key_count; ++i) {
+        Fl_Tick tick = fl_anchor_resolve(s, &track->keys[i].at);
+        if (tick <= now && tick >= previous) {previous = tick; op.ease = track->keys[i].ease;}
     }
+    Fl_Id id;
+    if (apply(p, op, &id)) {p->selected_key = id; invalidate(p);}
+}
+
+/* Choose one property without creating any tracks. */
+static void property_chosen(Ca_Select *select, void *data)
+{
+    Fl_TimelinePanel *p = data;
+    int index = ca_select_get(select);
+    if (index >= 0 && (size_t)index < p->property_count) p->property = p->properties[index];
+}
+
+/* Key one explicit property of the sole selected object. */
+static void key_selection(Ca_Button *button, void *data)
+{
+    (void)button; Fl_TimelinePanel *p = data;
+    if (fl_scene_edit_count(p->edit) == 1) key_property(p, fl_scene_edit_primary(p->edit), p->property);
+}
+
+/* Add or update a key on this row at the playhead. */
+static void key_track(Ca_Button *button, void *data)
+{
+    (void)button; Fl_TimelineItem *it = data;
+    const Fl_Scene *s = scene_of(it->panel);
+    for (size_t i = 0; s && i < s->track_count; ++i) if (s->tracks[i].id == it->id) {
+        key_property(it->panel, s->tracks[i].entity, s->tracks[i].property); return;
+    }
+}
+
+/* Seek to the nearest key strictly before or after the playhead on this track. */
+static void seek_track(Fl_TimelineItem *it, bool forward)
+{
+    Fl_TimelinePanel *p = it->panel;
+    const Fl_Scene *s = scene_of(p);
+    Fl_Tick now = fl_scene_edit_time(p->edit), best = forward ? INT64_MAX : INT64_MIN;
+    Fl_Id id = 0;
+    for (size_t i = 0; s && i < s->track_count; ++i) if (s->tracks[i].id == it->id)
+        for (size_t k = 0; k < s->tracks[i].key_count; ++k) {
+            const Fl_Keyframe *key = &s->tracks[i].keys[k];
+            Fl_Tick tick = fl_anchor_resolve(s, &key->at);
+            if (forward ? tick > now && tick < best : tick < now && tick > best) {best = tick; id = key->id;}
+        }
+    if (id) {p->selected_key = id; fl_playback_seek(p->playback, best); invalidate(p);}
+}
+
+/* Previous/next buttons borrow the row's stable track context. */
+static void previous_key(Ca_Button *button, void *data) {(void)button; seek_track(data, false);}
+static void next_key(Ca_Button *button, void *data) {(void)button; seek_track(data, true);}
+
+/* Delete the selected key; the engine removes an empty track. */
+static void delete_key(Ca_Button *button, void *data)
+{
+    (void)button; Fl_TimelinePanel *p = data;
+    const Fl_Scene *s = scene_of(p);
+    if (s && p->selected_key && !fl_playback_playing(p->playback))
+        apply(p, (Fl_Op){.kind = FL_OP_KEY_REMOVE, .scene = s->id, .key = p->selected_key}, NULL);
+}
+
+/* Set easing for the selected key without changing its value or time. */
+static void ease_chosen(Ca_Select *select, void *data)
+{
+    Fl_TimelinePanel *p = data;
+    const Fl_Scene *s = scene_of(p);
+    const Fl_Track *track;
+    const Fl_Keyframe *key = fl_scene_key(s, p->selected_key, &track);
+    int index = ca_select_get(select);
+    if (!key || index < 0 || index >= FL_EASE_COUNT || fl_playback_playing(p->playback)) return;
+    Fl_Op op = {.kind = FL_OP_KEY_SET, .scene = s->id, .entity = track->entity, .property = track->property,
+        .key = key->id, .anchor = key->at, .ease = (Fl_Ease)index};
+    memcpy(op.value, key->value, sizeof(op.value));
+    apply(p, op, NULL);
 }
 
 /* Ruler: click or drag to scrub. */
@@ -185,7 +306,7 @@ static void item_drag_start(const Ca_DragEvent *event, void *data)
     p->drag_origin = 0;
     if (it->kind == ITEM_KEY) {
         const Fl_Keyframe *k = fl_scene_key(s, it->id, NULL);
-        if (k) p->drag_origin = fl_anchor_resolve(s, &k->at);
+        if (k) {p->drag_origin = fl_anchor_resolve(s, &k->at); p->selected_key = k->id;}
     } else if (it->kind == ITEM_BEAT_EDGE) {
         for (size_t i = 0; i < s->beat_count; ++i) if (s->beats[i].id == it->id) p->drag_origin = (Fl_Tick)s->beats[i].duration;
     } else if (it->kind == ITEM_CLIP) {
@@ -219,7 +340,7 @@ static void item_drag(const Ca_DragEvent *event, void *data)
     } else if (it->kind == ITEM_BEAT_EDGE) {
         for (size_t i = 0; i < s->beat_count; ++i) if (s->beats[i].id == it->id &&
             apply(p, (Fl_Op){.kind = FL_OP_BEAT_UPDATE, .scene = s->id, .beat = it->id, .name = s->beats[i].name,
-                             .beat_duration = (uint64_t)target, .auto_advance = s->beats[i].auto_advance}, NULL)) { p->drag_applied = target; break; }
+                             .beat_duration = (uint64_t)target, .scale_keys = true, .auto_advance = s->beats[i].auto_advance}, NULL)) { p->drag_applied = target; break; }
     } else if (it->kind == ITEM_CLIP) {
         for (size_t i = 0; i < s->clip_count; ++i) if (s->clips[i].id == it->id) {
             Fl_AudioClip clip = s->clips[i];
@@ -339,7 +460,22 @@ static void clip_menu(int index, void *data)
 }
 
 /* Rebuild on document and selection changes; follow time with the playhead only. */
-static bool changed(const Fl_Event *event, void *data) { (void)event; invalidate(data); return false; }
+static bool changed(const Fl_Event *event, void *data)
+{
+    (void)event; Fl_TimelinePanel *p = data;
+    Fl_Id primary = fl_scene_edit_primary(p->edit);
+    if (primary != p->selection_entity) {
+        p->selection_entity = primary; p->property = FL_PROP_X;
+        const Fl_Scene *scene = scene_of(p);
+        for (size_t i = 0; scene && i < scene->track_count; ++i) if (scene->tracks[i].entity == primary) {
+            p->property = scene->tracks[i].property; break;
+        }
+    }
+    const Fl_Track *track;
+    if (!fl_scene_key(scene_of(p), p->selected_key, &track) || !fl_scene_edit_contains(p->edit, track->entity))
+        p->selected_key = 0;
+    invalidate(p); return false;
+}
 static bool time_changed(const Fl_Event *event, void *data) { (void)event; sync_playhead(data); return false; }
 
 Fl_TimelinePanel *fl_timeline_panel_create(Fl_SceneEdit *edit, Fl_Playback *playback, Fl_EventBus *bus)
@@ -362,12 +498,14 @@ Fl_TimelinePanel *fl_timeline_panel_create(Fl_SceneEdit *edit, Fl_Playback *play
 void fl_timeline_panel_teardown(void *data)
 {
     Fl_TimelinePanel *p = data;
-    p->dock = NULL; p->window = NULL; p->playhead = NULL; p->ruler = NULL; p->clock = NULL;
+    ca_effect_destroy(p->scroll_effect); p->scroll_effect = NULL; p->label_content = NULL; p->header_content = NULL; p->header_playhead = NULL;
+    p->dock = NULL; p->window = NULL; p->playhead = NULL; p->ruler = NULL; p->scroll = NULL; p->lanes = NULL; p->clock = NULL;
 }
 
 void fl_timeline_panel_destroy(Fl_TimelinePanel *p)
 {
     if (!p) return;
+    ca_effect_destroy(p->scroll_effect);
     if (p->rename_window) ca_window_destroy(p->rename_window);
     fl_event_unsubscribe_owner(p->bus, p);
     free(p->items); free(p);
@@ -387,16 +525,22 @@ bool fl_timeline_panel_add_clip(Fl_TimelinePanel *p, Fl_Id asset, Fl_Tick tick)
 
 bool fl_timeline_panel_drop_asset(Fl_TimelinePanel *p, Fl_Id asset, double screen_x, double screen_y)
 {
-    if (!p || !p->window || !p->ruler) return false;
+    if (!p || !p->window || !p->ruler || !p->scroll || !p->lanes) return false;
     int wx, wy, width, height;
     ca_window_get_rect(p->window, &wx, &wy, &width, &height);
     float bx, by, w, h;
     ca_div_screen_rect(ca_window_content_div(p->window), &bx, &by, &w, &h);
     if (width <= 0) return false;
     double scale = w / width, x = (screen_x - wx) * scale, y = (screen_y - wy) * scale;
-    float rx, ry, rw, rh;
-    ca_div_screen_rect(p->ruler, &rx, &ry, &rw, &rh);
-    if (x < rx || x > rx + rw || y < ry || y > ry + p->playhead_height) return false;
+    float sx, sy, sw, sh;
+    ca_div_content_screen_rect(p->scroll, &sx, &sy, &sw, &sh);
+    if (x < sx || x > sx + sw || y < sy || y > sy + sh) return false;
+    float lx, ly, lw, lh;
+    ca_div_content_screen_rect(p->lanes, &lx, &ly, &lw, &lh);
+    if (x < lx || x > lx + lw || y < ly || y > ly + lh) return false;
+    float rx, rw;
+    ca_div_screen_rect(p->ruler, &rx, NULL, &rw, NULL);
+    if (x < rx || x > rx + rw) return false;
     return fl_timeline_panel_add_clip(p, asset, snap(p, scene_of(p), tick_of(p, x - rx)));
 }
 
@@ -420,22 +564,25 @@ static void label_row(const char *text, const char *style)
 void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
 {
     Fl_TimelinePanel *p = data; p->dock = dock; p->window = window;
+    ca_effect_destroy(p->scroll_effect); p->scroll_effect = NULL; p->label_content = NULL; p->header_content = NULL; p->header_playhead = NULL;
     const Fl_Scene *s = scene_of(p);
     Fl_Project *project = project_of(p);
     ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_TIMELINE});
     if (!s) {
         ca_text(&(Ca_TextDesc){.text = "No scene", .style = FL_CLASS_MUTED});
-        ca_div_end(); p->playhead = NULL; p->ruler = NULL; p->clock = NULL; return;
+        ca_div_end(); p->playhead = NULL; p->ruler = NULL; p->scroll = NULL; p->lanes = NULL; p->clock = NULL; return;
     }
-    size_t keys = 0;
-    for (size_t i = 0; i < s->track_count; ++i) keys += s->tracks[i].key_count;
-    size_t needed = 1 + s->beat_count * 2 + s->track_count + keys + s->clip_count;
+    size_t keys = 0, tracks = 0;
+    for (size_t i = 0; i < s->track_count; ++i) if (fl_scene_edit_contains(p->edit, s->tracks[i].entity)) {
+        keys += s->tracks[i].key_count; ++tracks;
+    }
+    size_t needed = 1 + s->beat_count * 2 + tracks + keys + s->clip_count;
     if (needed > p->item_capacity) {
         Fl_TimelineItem *grown = realloc(p->items, needed * sizeof(*grown));
         if (grown) { p->items = grown; p->item_capacity = needed; }
     }
     p->item_count = 0;
-    bool playing = fl_playback_playing(p->playback), selection = fl_scene_edit_count(p->edit) > 0;
+    bool playing = fl_playback_playing(p->playback);
     ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_TOOLBAR});
     ca_btn_begin(&(Ca_BtnDesc){.text = playing ? CA_ICON_NF_FA_PAUSE : CA_ICON_NF_FA_PLAY, .on_click = transport_toggle, .click_data = p,
         .style = FL_CLASS_ICON_ACTION}); ca_btn_end();
@@ -446,28 +593,80 @@ void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
     ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_TL_SPACER}); ca_div_end();
     ca_btn_begin(&(Ca_BtnDesc){.text = CA_ICON_NF_FA_PLUS, .on_click = add_beat, .click_data = p, .style = FL_CLASS_ICON_ACTION}); ca_btn_end();
     ca_tooltip(&(Ca_TooltipDesc){.text = "Add beat"});
-    ca_btn_begin(&(Ca_BtnDesc){.text = CA_ICON_NF_FA_DIAMOND, .on_click = key_selection, .click_data = p, .style = FL_CLASS_ICON_ACTION,
-        .disabled = !selection}); ca_btn_end();
-    ca_tooltip(&(Ca_TooltipDesc){.text = "Key selection"});
     ca_btn_begin(&(Ca_BtnDesc){.text = CA_ICON_NF_FA_MAGNIFYING_GLASS_MINUS, .on_click = zoom_out, .click_data = p, .style = FL_CLASS_ICON_ACTION}); ca_btn_end();
     ca_btn_begin(&(Ca_BtnDesc){.text = CA_ICON_NF_FA_MAGNIFYING_GLASS_PLUS, .on_click = zoom_in, .click_data = p, .style = FL_CLASS_ICON_ACTION}); ca_btn_end();
     ca_div_end();
 
+    size_t selected = fl_scene_edit_count(p->edit);
+    const Fl_Entity *entity = selected == 1 ? fl_scene_entity(s, fl_scene_edit_primary(p->edit)) : NULL;
+    char heading[192];
+    if (entity) snprintf(heading, sizeof(heading), "%s", entity->name);
+    else if (selected) snprintf(heading, sizeof(heading), "%zu objects selected", selected);
+    else heading[0] = 0;
+    ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_TL_SELECTION});
+    ca_text(&(Ca_TextDesc){.text = heading, .style = FL_CLASS_TL_LABEL_TEXT});
+    ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_TL_SPACER}); ca_div_end();
+    const char *options[FL_PROP_COUNT];
+    p->property_count = 0;
+    int property_index = 0;
+    for (int prop = 0; prop < FL_PROP_COUNT; ++prop) if (property_supported(entity, (Fl_AnimProperty)prop)) {
+        if (p->property == (Fl_AnimProperty)prop) property_index = (int)p->property_count;
+        options[p->property_count] = PROPERTY_NAMES[prop];
+        p->properties[p->property_count++] = (Fl_AnimProperty)prop;
+    }
+    if (p->property_count) p->property = p->properties[property_index];
+    ca_select(&(Ca_SelectDesc){.options = options, .option_count = (int)p->property_count, .selected = property_index,
+        .id = "timeline-property", .style = FL_CLASS_TL_SELECT, .on_change = property_chosen, .change_data = p,
+        .disabled = !entity || playing});
+    ca_btn_begin(&(Ca_BtnDesc){.text = "Add keyframe", .id = "timeline-add-key", .on_click = key_selection, .click_data = p,
+        .style = FL_CLASS_ACTION, .disabled = !p->property_count || playing}); ca_btn_end();
+    ca_tooltip(&(Ca_TooltipDesc){.text = "Key this property at the playhead. An existing key at this time is updated."});
+    ca_div_end();
+    const Fl_Track *selected_track;
+    const Fl_Keyframe *selected_key = fl_scene_key(s, p->selected_key, &selected_track);
+    if (selected_key && fl_scene_edit_contains(p->edit, selected_track->entity)) {
+        char time[32], detail[128];
+        format_time(fl_anchor_resolve(s, &selected_key->at), time, sizeof(time));
+        snprintf(detail, sizeof(detail), "%s key at %s", PROPERTY_NAMES[selected_track->property], time);
+        static const char *eases[] = {"Linear", "Ease in", "Ease out", "Ease in-out", "Hold"};
+        ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_TL_SELECTION});
+        ca_text(&(Ca_TextDesc){.text = detail, .style = FL_CLASS_TL_LABEL_TEXT});
+        ca_select(&(Ca_SelectDesc){.options = eases, .option_count = FL_EASE_COUNT, .selected = selected_key->ease,
+            .id = "timeline-ease", .style = FL_CLASS_TL_SELECT, .on_change = ease_chosen, .change_data = p, .disabled = playing});
+        ca_btn_begin(&(Ca_BtnDesc){.text = "Delete key", .id = "timeline-delete-key", .style = FL_CLASS_ACTION,
+            .on_click = delete_key, .click_data = p, .disabled = playing}); ca_btn_end();
+        ca_div_end();
+    }
+
     Fl_Tick length = fl_scene_length(s);
     float content = x_of(p, length) + FL_STYLE_TL_PAD;
-    size_t rows = 1 + s->track_count + s->clip_count;
-    p->playhead_height = FL_STYLE_TL_RULER_H + (float)rows * FL_STYLE_TL_ROW_H;
+    p->content_width = content;
+    p->label_height = (float)(tracks + s->clip_count) * FL_STYLE_TL_ROW_H;
     ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_TL_BODY});
     ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_TL_LABELS});
     ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_TL_RULER_LABEL}); ca_div_end();
     label_row("Beats", FL_CLASS_TL_LABEL);
+    ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_TL_LABEL_VIEWPORT,
+        .on_scroll = labels_scrolled, .scroll_data = p});
+    p->label_content = ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_TL_LABEL_CONTENT,
+        .position = CA_POSITION_ABSOLUTE, .width = FL_STYLE_TL_LABEL_W, .height = p->label_height});
     for (size_t i = 0; i < s->track_count; ++i) {
         const Fl_Track *t = &s->tracks[i];
+        if (!fl_scene_edit_contains(p->edit, t->entity)) continue;
         const Fl_Entity *e = fl_scene_entity(s, t->entity);
-        char text[192]; snprintf(text, sizeof(text), "%s  %s", e ? e->name : "?", PROPERTY_NAMES[t->property]);
-        label_row(text, fl_scene_edit_contains(p->edit, t->entity) ? FL_CLASS_TL_LABEL_SELECTED : FL_CLASS_TL_LABEL);
-        static const char *track_items[] = {"Remove animation"};
+        char text[192]; snprintf(text, sizeof(text), selected > 1 ? "%s / %s" : "%s%s",
+            selected > 1 && e ? e->name : "", PROPERTY_NAMES[t->property]);
+        ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_TL_LABEL});
+        ca_text(&(Ca_TextDesc){.text = text, .style = FL_CLASS_TL_TRACK_NAME});
         Fl_TimelineItem *it = item(p, ITEM_TRACK, t->id);
+        ca_btn_begin(&(Ca_BtnDesc){.text = "<", .style = FL_CLASS_TL_TRACK_ACTION, .on_click = previous_key, .click_data = it, .disabled = !it || playing}); ca_btn_end();
+        ca_tooltip(&(Ca_TooltipDesc){.text = "Previous keyframe"});
+        ca_btn_begin(&(Ca_BtnDesc){.text = CA_ICON_NF_FA_DIAMOND, .style = FL_CLASS_TL_TRACK_ACTION, .on_click = key_track, .click_data = it, .disabled = !it || playing}); ca_btn_end();
+        ca_tooltip(&(Ca_TooltipDesc){.text = "Add or update this property at the playhead"});
+        ca_btn_begin(&(Ca_BtnDesc){.text = ">", .style = FL_CLASS_TL_TRACK_ACTION, .on_click = next_key, .click_data = it, .disabled = !it || playing}); ca_btn_end();
+        ca_tooltip(&(Ca_TooltipDesc){.text = "Next keyframe"});
+        ca_div_end();
+        static const char *track_items[] = {"Remove animation"};
         if (it) ca_context_menu(&(Ca_CtxMenuDesc){.items = track_items, .item_count = 1, .on_select = track_menu, .select_data = it});
     }
     for (size_t i = 0; i < s->clip_count; ++i) {
@@ -476,12 +675,17 @@ void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
         label_row(text, FL_CLASS_TL_LABEL);
     }
     ca_div_end();
+    ca_div_end();
+    ca_div_end();
 
-    ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .id = "timeline-lanes", .style = FL_CLASS_TL_LANES});
-    ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_TL_CONTENT, .width = content});
+    p->lanes = ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .id = "timeline-lanes", .style = FL_CLASS_TL_LANES});
+    ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_TL_HEADER,
+        .on_scroll = header_scrolled, .scroll_data = p});
+    p->header_content = ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_TL_CONTENT,
+        .position = CA_POSITION_ABSOLUTE, .width = content, .height = FL_STYLE_TL_RULER_H + FL_STYLE_TL_ROW_H});
     Fl_TimelineItem *ruler = item(p, ITEM_RULER, 0);
     p->ruler = ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .id = "timeline-ruler", .style = FL_CLASS_TL_RULER, .width = content,
-        .on_drag_start = ruler_drag, .on_drag = ruler_drag, .drag_data = ruler});
+        .on_drag_start = ruler ? ruler_drag : NULL, .on_drag = ruler ? ruler_drag : NULL, .drag_data = ruler});
     static const double steps[] = {0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60, 300};
     double step = steps[9];
     for (size_t i = 0; i < 10; ++i) if (steps[i] * p->zoom >= FL_STYLE_TL_LABEL_SPACING) { step = steps[i]; break; }
@@ -507,16 +711,29 @@ void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
         ca_text(&(Ca_TextDesc){.text = b->name, .style = FL_CLASS_TL_BEAT_TEXT});
         ca_div_end();
         if (it) ca_context_menu(&(Ca_CtxMenuDesc){.items = beat_items, .item_count = 3, .on_select = beat_menu, .select_data = it});
-        snprintf(id, sizeof(id), "beat-edge-%llu", (unsigned long long)b->id);
-        element(p, item(p, ITEM_BEAT_EDGE, b->id), id, FL_CLASS_TL_EDGE, x + w - FL_STYLE_TL_EDGE_W * 0.5f, FL_STYLE_TL_EDGE_W, FL_STYLE_TL_ROW_H);
-        ca_div_end();
         at += (Fl_Tick)b->duration;
+    }
+    at = 0;
+    for (size_t i = 0; i < s->beat_count; ++i) {
+        const Fl_Beat *b = &s->beats[i];
+        at += (Fl_Tick)b->duration;
+        char id[48]; snprintf(id, sizeof(id), "beat-edge-%llu", (unsigned long long)b->id);
+        element(p, item(p, ITEM_BEAT_EDGE, b->id), id, FL_CLASS_TL_EDGE,
+            x_of(p, at) - FL_STYLE_TL_EDGE_W * 0.5f, FL_STYLE_TL_EDGE_W, FL_STYLE_TL_ROW_H);
+        ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_TL_EDGE_MARK, .no_hover = true});
+        ca_div_end(); ca_div_end();
     }
     ca_div_end();
 
+    p->header_playhead = ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_TL_PLAYHEAD,
+        .position = CA_POSITION_ABSOLUTE, .width = 2, .height = FL_STYLE_TL_RULER_H + FL_STYLE_TL_ROW_H, .no_hover = true});
+    ca_div_end(); ca_div_end(); ca_div_end();
+    p->scroll = ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .id = "timeline-scroll", .style = FL_CLASS_TL_SCROLL});
+    ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_TL_KEY_CONTENT, .width = content, .height = p->label_height});
     static const char *key_items[] = {"Linear", "Ease in", "Ease out", "Ease in-out", "Hold", "Delete"};
     for (size_t i = 0; i < s->track_count; ++i) {
         const Fl_Track *t = &s->tracks[i];
+        if (!fl_scene_edit_contains(p->edit, t->entity)) continue;
         ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_TL_ROW, .width = content});
         Fl_Tick first = INT64_MAX, last = INT64_MIN;
         for (size_t k = 0; k < t->key_count; ++k) {
@@ -563,11 +780,13 @@ void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
     }
     p->playhead = ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .id = "timeline-playhead", .style = FL_CLASS_TL_PLAYHEAD,
         .position = CA_POSITION_ABSOLUTE, .pos_x = x_of(p, fl_scene_edit_time(p->edit)) - 1, .pos_y = 0, .width = 2,
-        .height = p->playhead_height, .no_hover = true});
+        .height = p->label_height, .no_hover = true});
     ca_div_end();
     ca_div_end();
     ca_div_end();
     ca_div_end();
     ca_div_end();
+    ca_div_end();
+    p->scroll_effect = ca_effect(ca_window_instance(window), sync_scroll, p);
     sync_playhead(p);
 }

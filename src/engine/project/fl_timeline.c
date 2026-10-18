@@ -130,6 +130,25 @@ static bool length_fits(const Fl_Scene *s, size_t skip, uint64_t duration)
     return total <= (uint64_t)TICK_LIMIT;
 }
 
+/* Scale keys inside this beat, preserving their chosen start/end edge and IDs. */
+static void scale_beat_keys(Fl_Scene *s, Fl_Id beat, uint64_t before, uint64_t after)
+{
+    if (before == after) return;
+    for (size_t i = 0; i < s->track_count; ++i) {
+        Fl_Track *track = (Fl_Track *)&s->tracks[i];
+        for (size_t k = 0; k < track->key_count; ++k) {
+            Fl_TimeAnchor *at = &track->keys[k].at;
+            if (at->kind != FL_ANCHOR_BEAT || at->beat != beat) continue;
+            if (at->end ? at->offset > 0 || at->offset < -(Fl_Tick)before :
+                at->offset < 0 || (uint64_t)at->offset > before) continue;
+            Fl_Tick offset = (Fl_Tick)llroundl((long double)at->offset / before * after);
+            if (!at->end && offset > (Fl_Tick)after) offset = (Fl_Tick)after;
+            if (at->end && offset < -(Fl_Tick)after) offset = -(Fl_Tick)after;
+            at->offset = offset;
+        }
+    }
+}
+
 /* Rewrite anchors on beat as absolute times so removing it keeps their timing. */
 static void detach_anchors(Fl_Scene *s, Fl_Id beat)
 {
@@ -245,6 +264,7 @@ bool fl_timeline_apply(const Fl_Project *p, Fl_Scene *s, const Fl_Op *op, uint64
         char *name = copy_text(op->name);
         if (!name) return false;
         Fl_Beat *b = (Fl_Beat *)&s->beats[i];
+        if (op->scale_keys) scale_beat_keys(s, b->id, b->duration, op->beat_duration);
         free((void *)b->name);
         b->name = name; b->duration = op->beat_duration; b->auto_advance = op->auto_advance;
         sync_duration(s);
