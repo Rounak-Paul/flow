@@ -1,4 +1,6 @@
 #include "fl_widgets.h"
+#include "components/fl_animation.h"
+#include "components/fl_script.h"
 #include <math.h>
 #include <string.h>
 
@@ -75,8 +77,10 @@ Fl_Appearance fl_widget_appearance(const Fl_Entity *e)
 bool fl_widget_component_valid(const Fl_Component *c)
 {
     if (!c || !c->type || !c->version || (c->size && !c->data)) return false;
-    if (c->type <= FL_COMPONENT_OPACITY && c->version != 1) return false;
+    if (c->type <= FL_COMPONENT_SCRIPT && c->version != (c->type == FL_COMPONENT_ANIMATION || c->type == FL_COMPONENT_SCRIPT ? 2u : 1u)) return false;
     switch (c->type) {
+    case FL_COMPONENT_ANIMATION: return c->size == sizeof(Fl_Animation) && fl_animation_valid((const Fl_Animation *)c->data);
+    case FL_COMPONENT_SCRIPT: {Fl_Script script; return fl_script_decode(c, &script);}
     case FL_COMPONENT_TRANSFORM: { Fl_Transform t; return fl_transform_decode(c, &t); }
     case FL_COMPONENT_RECTANGLE: return c->size == 4;
     case FL_COMPONENT_TEXT: return !c->size || !memchr(c->data, 0, c->size);

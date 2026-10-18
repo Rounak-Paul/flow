@@ -190,7 +190,7 @@ my-talk.flow/
 ├── project.flow                   # binary manifest: name, next stable id, ordered scene references
 ├── scenes/
 │   └── <sceneId>-<revision>.flscene # immutable binary scene snapshots
-├── components/                    # project-local sources (future QuickJS runtime)
+├── components/                    # project-local sources (Lua source library)
 ├── assets/                        # imported assets; content addressing planned
 ├── exports/                       # final video outputs (later)
 └── .flow/
@@ -370,7 +370,7 @@ Flow is a native **C11** application built on **[causality](https://github.com/R
 │   ├─ Runtime: anchors → tracks → bindings → expansion results → layout → ResolvedScene         │
 │   └─ Renderer: DisplayList → Vulkan (viewports, offscreen targets, readback)                   │
 │                                                                                                │
-│  Component thread   QuickJS runtimes · pack + project components · simulation checkpoints      │
+│  Component thread   Lua semantic packs (planned) · project components · simulation checkpoints      │
 │  IPC thread         local socket server (JSON-RPC 2.0) · requests marshalled to main thread    │
 │  Encode thread      ffmpeg sidecar pipe · bounded frame queue (backpressure)                   │
 │  Media thread       audio decode / mix (miniaudio) · alignment jobs                            │
@@ -402,7 +402,7 @@ CMakeLists.txt
 vendors/
   causality/       UI + Vulkan foundation (submodule; brings glfw, glm, vma, freetype, stb)
   yyjson/          JSON read/write
-  quickjs-ng/      Component sandbox
+  lua/             Lua 5.4.7 interpreter
   harfbuzz/        Text shaping
   tree-sitter/     Code parsing + highlight (with grammars: glsl, c, cpp, rust, python, js)
   microtex/        LaTeX math typesetting → vector paths (C++, behind a C shim)
@@ -426,7 +426,7 @@ src/
     project/       fl_project (open / close / lock) · fl_snapshot · fl_oplog · fl_assets · fl_import
     time/          fl_tick · fl_anchor · fl_ease (cubic-bezier, spring)
     runtime/       fl_eval · fl_tracks · fl_bind (expression language) · fl_layout · fl_morph
-                   · fl_comp (component host, QuickJS) · fl_sim (checkpoints)
+                   · fl_comp (component host, Lua) · fl_sim (checkpoints)
     text/          fl_fontdb · fl_shape (FreeType + HarfBuzz) · fl_math (MicroTeX shim) · fl_code
     render/        fl_gpu (device context handed in by the host) · fl_dl (display list) · fl_r2d
                    · fl_glyphs · fl_r3d · fl_fx · fl_target (offscreen, MSAA, readback, YUV)
@@ -509,32 +509,27 @@ Flow has full control of rendering. `fl_render` builds passes on causality's `Vk
 - **Frame capture:** export renders to an offscreen target at the output resolution. A compute pass converts it to **YUV 4:2:0** (or keeps RGBA for alpha and ProRes 4444), copies it into a host-visible staging ring (N frames in flight), and hands it to the encode thread. There is no window, no compositor and no IPC copy in the loop.
 - **Shaders** are compiled from GLSL to SPIR-V at build time and embedded. `ca_shader_compile` is used only for user-authored shader effects (v0.2).
 
-### 6.7 Component sandbox
+### 6.7 Lua entity components
 
-- Components are **JavaScript (ES2023 modules)**, the language agents write most fluently. JSDoc typedefs ship with the SDK for editor tooling. Packs (`std`, `vk`) are embedded in the binary. Project components live in `components/*.js`.
-- They run in **QuickJS-ng** on the **component thread**. Each pack and the project get their own `JSRuntime` with a memory limit, and the only host bindings are the SDK surface: no file system, network, clock or OS. `Math.random` and `Date` are replaced with deterministic shims.
-- **Budgets:** an interrupt handler enforces a CPU deadline per expansion. On a violation the expansion is aborted, the runtime is reset if its heap is suspect, and the entity renders a visible error placeholder. The editor never stalls or crashes.
-- **Declarative output:** `expand` returns a plain object tree of primitive nodes (2D or 3D) with part tags. It is converted into C structs and validated. A component never touches the renderer.
-- **Caching:** results are memoized on `(kind, version, params hash, tick bucket)`. Simulation components store checkpoints every N steps for fast scrubbing.
-- The component contract:
+Lua 5.4.7 is the scripting language. Each entity always owns Transform and may own Animation and Lua Script components. Animation owns the scene Timeline state, named keyframed states, typed parameters and ordered graph transitions. Scripts control the animation player through play, parameter and trigger calls. Scripts are attached in the Inspector; their source and enabled state are persisted in the binary document.
 
-```js
-export default defineComponent({
-  kind: 'vk.WorkgroupGrid',
-  version: 1,
-  params: {
-    groups:    int({ min: 1, max: 64, default: 4, live: true }),
-    localSize: int({ min: 1, max: 32, default: 8, live: true }),
-    highlight: partRef('workgroups', { optional: true }),
-  },
-  parts: { workgroups: 'list', 'workgroups[].invocations': 'list' },
-  expand({ params, t, theme, rng }) {
-    return /* primitive subtree with part tags */;
-  },
-});
+- **Behavior lifecycle:** optional `on_init(self)`, required `on_update(self, dt, time)`, optional `on_destroy(self)`. Each instance retains private state. Updates use fixed 60 Hz document-time steps. Backward seeks reset and replay behavior; scene revision changes rebuild evaluated runtimes.
+- **Direct evaluation:** a script may instead define `on_evaluate(self, time)`, with a fresh environment per sample. This supports exact-time procedural motion without simulation replay.
+- **Ownership:** behaviors calculate procedural base values, then the player composes the sampled/blended animation pose relative to authored bind values. Scripts do not rewrite keyframes while playing. Invalid outputs reject evaluation atomically and report a diagnostic.
+- **Sandbox:** isolated environments, selected standard libraries, per-entity seeded randomness, stable key traversal, no filesystem/network/process/wall-clock access. Lua allocations and instruction execution are bounded. Behavior replay shares an instruction budget; long or expensive seeks can exceed it and report an error.
+- **Implementation:** Flow-owned evaluators run on the document thread and are independent of Causality. Semantic pack expansion, general engine bindings and simulation checkpoints remain future work. Detailed current API: `docs/lua-scripting.md`.
+
+```lua
+function on_init(self)
+    self.speed = 120
+end
+
+function on_update(self, dt, time)
+    self.transform.x = self.transform.x + self.speed * dt
+end
 ```
 
-- Each pack also exports a **manifest** (param JSON Schema, parts, examples). The core uses it to validate component props, and agents receive it through `describe_component`.
+Future semantic packs will expose typed parameters and stable named parts through manifests, using the same Lua language and validated component boundaries.
 
 ### 6.8 Persistence and history
 
@@ -573,7 +568,7 @@ export default defineComponent({
 | Graphics API | **Vulkan** (MoltenVK on macOS) | Full control: compute, MSAA, custom passes |
 | GPU memory | VMA (through causality) | Shared allocator with the UI |
 | JSON | **yyjson** | Fast, C, stable writer for diff-friendly files |
-| Scripting / components | **QuickJS-ng** | Embeddable, deterministic, memory and CPU limits, JS fluency for agents |
+| Scripting / components | **Lua 5.4.7** | Embeddable, deterministic, memory and CPU limits, small C integration and agent-friendly scripting |
 | Text shaping / raster | **HarfBuzz** + **FreeType** (FreeType shared with causality) | Correct shaping, bidi-ready, quality rasterization |
 | Math | **MicroTeX** behind a C shim | LaTeX → vector output |
 | Code highlight | **tree-sitter** + highlight queries | C library, token-accurate, enables code morphs |
@@ -713,7 +708,7 @@ Each milestone ends with a demo built from a real vkcompute chapter segment.
 | **M2** | Time | Time anchors in `runtime`, tracks, easing, beats, presenter mode, timeline UI, identity morphs | Present a 10-beat segment with morphs at 60fps on a laptop |
 | **M3** | Script | `media` (miniaudio playback, alignment), script lane, word alignment (whisper / imported JSON / TTS), word anchors, retime-on-change | Swap the voiceover take; all anchored motion stays in sync with no manual fixes |
 | **M4** | Agents | `agent`, `ipc`, MCP bridge (`flow mcp`), CLI modes, context packets, changesets, ScopeGuard, review UI, verify loop, `lint`, headless mode | Key test (§12) passes on a real chapter |
-| **M5** | Components | Component host (QuickJS-ng thread), `scene3d` renderer, simulation checkpoints, `pack-vk`, part selection and overrides | Agent animates `grid.workgroups[i]` parts without exploding the component |
+| **M5** | Components | Lua semantic component host, `scene3d` renderer, simulation checkpoints, `pack-vk`, part selection and overrides | Agent animates `grid.workgroups[i]` parts without exploding the component |
 | **M6** | Export & polish | `media` encoder (embedded ffmpeg), audio mixdown, stills, portable release binaries, theme presets, starter templates | Publish one full vkcompute chapter video made end to end in Flow |
 | **M7** | Validation | Closed beta (10–15 technical creators), telemetry on edit/agent loops | See §12 metrics |
 
@@ -733,7 +728,7 @@ Each milestone ends with a demo built from a real vkcompute chapter segment.
 | Main-thread contention (UI, document, GPU on one thread) | Time-sliced export and render jobs, component work off-thread, incremental evaluation, frame-timing hooks to catch regressions |
 | Codec licensing | ffmpeg as an LGPL sidecar process (not linked), platform H.264 encoders, `cargo-deny` license gate |
 | Slow scrubbing on simulations | Checkpointed step caches, memoized component expansion keyed on (params hash, t) |
-| Unsafe component code | QuickJS-ng runtimes on a dedicated thread with no host I/O bindings, deterministic shims, memory limits, interrupt-based CPU deadlines |
+| Unsafe component code | Lua runtimes with no host I/O bindings, deterministic shims, memory limits, interrupt-based CPU deadlines |
 | Word alignment quality | Accept multiple sources (TTS timestamps, forced alignment JSON, manual nudge); anchors survive realignment by word index plus text match |
 | Schema churn breaking projects | Versioned schema, pure migrations, fixture corpus from real dogfood projects |
 | Scope creep toward "PowerPoint replacement" | Positioned strictly as an explainer engine until M7 validation |
@@ -799,4 +794,4 @@ Each milestone ends with a demo built from a real vkcompute chapter segment.
 
 The native editor now includes dockable Widgets and Inspector panels alongside Scene and Console. The shared registry supplies Group, Rectangle, Ellipse, Line, Arrow, and Text defaults and property capabilities. A shared selection controller connects hierarchy selection, Inspector drafts and viewport move/resize/rotate gestures, including Shift multi-selection and parent-aware transforms. Creation, Inspector Apply and multi-entity transform gestures commit through validated atomic document operations; binary scene storage retains their versioned components.
 
-The Vulkan preview renders all six primitives (groups organize their children), inherited transforms/visibility, text coverage masks, and selection handles. Text uses the bundled regular font through Causality's public source-data API. Full shaping/font selection, animation, undo history and final video export remain their respective later milestones. Implementation ownership and verification are recorded in `.context/widget-authoring.md`.
+The Vulkan preview renders all six primitives (groups organize their children), inherited transforms/visibility, text coverage masks, and selection handles. Text uses the bundled regular font through Causality's public source-data API. Font selection and keyframe animation are implemented; undo history and final video export remain later milestones. Entity scripting is documented in `docs/lua-scripting.md`. Implementation ownership and verification are recorded in `.context/widget-authoring.md`.

@@ -1,4 +1,5 @@
 #include "fl_scene_state.h"
+#include "components/fl_animation.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -59,7 +60,7 @@ bool fl_track_sample(const Fl_Scene *s, const Fl_Track *t, Fl_Tick tick, double 
 }
 
 /* Write a sampled track value into the entity state. */
-static void apply_value(Fl_EntityState *e, Fl_AnimProperty property, const double v[4])
+void fl_entity_state_apply(Fl_EntityState *e, Fl_AnimProperty property, const double v[4])
 {
     double *channels[7] = {&e->transform.x, &e->transform.y, &e->transform.width, &e->transform.height,
                            &e->transform.rotation, &e->transform.scale_x, &e->transform.scale_y};
@@ -84,12 +85,31 @@ bool fl_scene_state_update(Fl_SceneState *st, const Fl_Scene *s, Fl_Tick tick)
     if (!st) return false;
     if (!s) { fl_scene_state_clear(st); return true; }
     if (st->valid && st->scene == s->id && st->revision == s->revision && st->tick == tick) return true;
+    bool replace_scripts = st->scene != s->id || st->revision != s->revision;
+    Fl_ScriptRuntime *scripts = st->scripts;
+    if (replace_scripts) {
+        scripts = NULL;
+        for (size_t i = 0; i < s->entity_count; ++i) {
+            Fl_Script script;
+            const Fl_Animation *animation=fl_entity_animation(&s->entities[i]);
+            if ((fl_script_decode(fl_entity_component(&s->entities[i], FL_COMPONENT_SCRIPT), &script) && script.enabled)||
+                (animation&&(animation->state_count||animation->parameter_count||animation->transition_count))) {
+                scripts = fl_script_runtime_create(s);
+                if (!scripts) return false;
+                break;
+            }
+        }
+    }
     if (s->entity_count > st->capacity) {
-        if (s->entity_count > SIZE_MAX / sizeof(Fl_EntityState)) return false;
+        if (s->entity_count > SIZE_MAX / sizeof(Fl_EntityState)) {
+            if (replace_scripts) fl_script_runtime_destroy(scripts);
+            return false;
+        }
         Fl_EntityState *grown = realloc(st->entities, s->entity_count * sizeof(*grown));
-        if (!grown) return false;
+        if (!grown) {if (replace_scripts) fl_script_runtime_destroy(scripts); return false;}
         st->entities = grown; st->capacity = s->entity_count;
     }
+    if (replace_scripts) {fl_script_runtime_destroy(st->scripts); st->scripts = scripts;}
     for (size_t i = 0; i < s->entity_count; ++i) {
         const Fl_Entity *e = &s->entities[i];
         Fl_EntityState *v = &st->entities[i];
@@ -98,11 +118,11 @@ bool fl_scene_state_update(Fl_SceneState *st, const Fl_Scene *s, Fl_Tick tick)
         v->appearance = fl_widget_appearance(e);
         v->opacity = fl_widget_opacity(e);
     }
-    double value[4];
-    for (size_t i = 0; i < s->track_count; ++i) {
-        const Fl_Track *t = &s->tracks[i];
-        const Fl_Entity *e = fl_scene_entity(s, t->entity);
-        if (e && fl_track_sample(s, t, tick, value)) apply_value(&st->entities[e - s->entities], t->property, value);
+    for (size_t i=0;i<s->entity_count;++i) {
+        const Fl_Entity *entity=&s->entities[i];
+        const Fl_Animation *animation=fl_entity_animation(entity);
+        if (st->scripts) fl_script_runtime_evaluate(st->scripts,s,i,tick,&st->entities[i]);
+        fl_animation_player_pose(fl_script_runtime_player(st->scripts,i),animation,s,entity,tick,&st->entities[i]);
     }
     st->scene = s->id; st->revision = s->revision; st->tick = tick; st->count = s->entity_count; st->valid = true;
     return true;
@@ -111,6 +131,7 @@ bool fl_scene_state_update(Fl_SceneState *st, const Fl_Scene *s, Fl_Tick tick)
 void fl_scene_state_clear(Fl_SceneState *st)
 {
     if (!st) return;
+    fl_script_runtime_destroy(st->scripts);
     free(st->entities);
     *st = (Fl_SceneState){0};
 }

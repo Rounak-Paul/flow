@@ -1,4 +1,5 @@
 #include "fl_timeline_panel.h"
+#include "components/fl_script.h"
 #include "style.h"
 #include "core/fl_log.h"
 #include <ca_icons.h>
@@ -258,8 +259,9 @@ static void key_track(Ca_Button *button, void *data)
 {
     (void)button; Fl_TimelineItem *it = data;
     const Fl_Scene *s = scene_of(it->panel);
-    for (size_t i = 0; s && i < s->track_count; ++i) if (s->tracks[i].id == it->id) {
-        key_property(it->panel, s->tracks[i].entity, s->tracks[i].property); return;
+    Fl_TrackIterator tracks = {.scene = s};
+    for (const Fl_Track *track; (track = fl_scene_track_next(&tracks));) if (track->id == it->id) {
+        key_property(it->panel, track->entity, track->property); return;
     }
 }
 
@@ -270,9 +272,10 @@ static void seek_track(Fl_TimelineItem *it, bool forward)
     const Fl_Scene *s = scene_of(p);
     Fl_Tick now = fl_scene_edit_time(p->edit), best = forward ? INT64_MAX : INT64_MIN;
     Fl_Id id = 0;
-    for (size_t i = 0; s && i < s->track_count; ++i) if (s->tracks[i].id == it->id)
-        for (size_t k = 0; k < s->tracks[i].key_count; ++k) {
-            const Fl_Keyframe *key = &s->tracks[i].keys[k];
+    Fl_TrackIterator tracks = {.scene = s};
+    for (const Fl_Track *track; (track = fl_scene_track_next(&tracks));) if (track->id == it->id)
+        for (size_t k = 0; k < track->key_count; ++k) {
+            const Fl_Keyframe *key = &track->keys[k];
             Fl_Tick tick = fl_anchor_resolve(s, &key->at);
             if (forward ? tick > now && tick < best : tick < now && tick > best) {best = tick; id = key->id;}
         }
@@ -572,8 +575,9 @@ static bool changed(const Fl_Event *event, void *data)
     if (primary != p->selection_entity) {
         p->selection_entity = primary; p->property = FL_PROP_X;
         const Fl_Scene *scene = scene_of(p);
-        for (size_t i = 0; scene && i < scene->track_count; ++i) if (scene->tracks[i].entity == primary) {
-            p->property = scene->tracks[i].property; break;
+        Fl_TrackIterator tracks = {.scene = scene};
+        for (const Fl_Track *track; (track = fl_scene_track_next(&tracks));) if (track->entity == primary) {
+            p->property = track->property; break;
         }
     }
     const Fl_Track *track;
@@ -679,8 +683,9 @@ void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
         ca_div_end(); p->playhead = NULL; p->ruler = NULL; p->scroll = NULL; p->lanes = NULL; p->clock = NULL; return;
     }
     size_t keys = 0, tracks = 0;
-    for (size_t i = 0; i < s->track_count; ++i) if (fl_scene_edit_contains(p->edit, s->tracks[i].entity)) {
-        keys += s->tracks[i].key_count; ++tracks;
+    Fl_TrackIterator scan = {.scene = s};
+    for (const Fl_Track *track; (track = fl_scene_track_next(&scan));) if (fl_scene_edit_contains(p->edit, track->entity)) {
+        keys += track->key_count; ++tracks;
     }
     size_t needed = 1 + s->beat_count * 2 + tracks + keys + s->clip_count;
     if (needed > p->item_capacity) {
@@ -756,8 +761,9 @@ void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
         .on_scroll = labels_scrolled, .scroll_data = p});
     p->label_content = ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_TL_LABEL_CONTENT,
         .position = CA_POSITION_ABSOLUTE, .width = FL_STYLE_TL_LABEL_W, .height = p->label_height});
-    for (size_t i = 0; i < s->track_count; ++i) {
-        const Fl_Track *t = &s->tracks[i];
+    Fl_TrackIterator label_tracks = {.scene = s};
+    for (const Fl_Track *track; (track = fl_scene_track_next(&label_tracks));) {
+        const Fl_Track *t = track;
         if (!fl_scene_edit_contains(p->edit, t->entity)) continue;
         const Fl_Entity *e = fl_scene_entity(s, t->entity);
         char text[192]; snprintf(text, sizeof(text), selected > 1 ? "%s / %s" : "%s%s",
@@ -840,8 +846,9 @@ void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
     p->scroll = ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .id = "timeline-scroll", .style = FL_CLASS_TL_SCROLL});
     ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_TL_KEY_CONTENT, .width = content, .height = p->label_height});
     static const char *key_items[] = {"Linear", "Ease in", "Ease out", "Ease in-out", "Hold", "Delete"};
-    for (size_t i = 0; i < s->track_count; ++i) {
-        const Fl_Track *t = &s->tracks[i];
+    Fl_TrackIterator lane_tracks = {.scene = s};
+    for (const Fl_Track *track; (track = fl_scene_track_next(&lane_tracks));) {
+        const Fl_Track *t = track;
         if (!fl_scene_edit_contains(p->edit, t->entity)) continue;
         ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_TL_ROW, .width = content});
         Fl_Tick first = INT64_MAX, last = INT64_MIN;

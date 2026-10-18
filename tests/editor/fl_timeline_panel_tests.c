@@ -110,7 +110,7 @@ int main(int argc, char **argv)
     CHECK(property_supported(fl_scene_entity(scene_of(panel), text), FL_PROP_FONT_SIZE));
     CHECK(fl_scene_edit_select(edit, scene, rectangle, false));
     key_selection(NULL, panel);
-    CHECK(scene_of(panel)->track_count == 1);
+    CHECK(fl_scene_track_count(scene_of(panel)) == 1);
     const Fl_Track *track = fl_scene_track(scene_of(panel), rectangle, FL_PROP_X); CHECK(track && track->key_count == 1);
     Fl_Id first = panel->selected_key, track_id = track->id;
     CHECK(first != 0);
@@ -125,11 +125,11 @@ int main(int argc, char **argv)
     next_key(NULL, &row); CHECK(fl_scene_edit_time(edit) == FL_TICKS_PER_SECOND * 2 && panel->selected_key == last);
     next_key(NULL, &row); CHECK(panel->selected_key == last);
     CHECK(fl_scene_edit_select(edit, scene, group, true));
-    panel->property = FL_PROP_Y; key_selection(NULL, panel); CHECK(scene_of(panel)->track_count == 1);
+    panel->property = FL_PROP_Y; key_selection(NULL, panel); CHECK(fl_scene_track_count(scene_of(panel)) == 1);
     CHECK(fl_scene_edit_select(edit, scene, group, false)); CHECK(panel->selected_key == 0);
-    key_selection(NULL, panel); CHECK(scene_of(panel)->track_count == 2);
+    key_selection(NULL, panel); CHECK(fl_scene_track_count(scene_of(panel)) == 2);
     playback.playing = true; panel->property = FL_PROP_OPACITY; key_selection(NULL, panel);
-    CHECK(scene_of(panel)->track_count == 2); playback.playing = false;
+    CHECK(fl_scene_track_count(scene_of(panel)) == 2); playback.playing = false;
     delete_key(NULL, panel); CHECK(!fl_scene_track(scene_of(panel), group, FL_PROP_Y));
     CHECK(fl_scene_edit_select(edit, scene, rectangle, false)); CHECK(panel->property == FL_PROP_X);
     const Fl_Scene *scene_record = scene_of(panel);

@@ -1,4 +1,8 @@
 #include "fl_inspector.h"
+#include "fl_file_browser.h"
+#include "components/fl_script.h"
+#include "components/fl_animation.h"
+#include "platform/fl_fs.h"
 #include "style.h"
 #include <ctype.h>
 #include <errno.h>
@@ -7,7 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { NAME,X,Y,WIDTH,HEIGHT,ROTATION,SCALE_X,SCALE_Y,FILL,STROKE,STROKE_WIDTH,FONT_SIZE,CONTENT,FONT_FILTER,OPACITY,FIELD_COUNT };
+enum { NAME,X,Y,WIDTH,HEIGHT,ROTATION,SCALE_X,SCALE_Y,FILL,STROKE,STROKE_WIDTH,FONT_SIZE,CONTENT,FONT_FILTER,OPACITY,SCRIPT_SOURCE,FIELD_COUNT };
 #define WEIGHT_OPTIONS 32
 typedef struct Fl_InspectorField { struct Fl_Inspector *owner; char *value; bool dirty; } Fl_InspectorField;
 typedef struct Fl_FontChoice { struct Fl_Inspector *owner; size_t family; uint64_t generation; } Fl_FontChoice;
@@ -17,6 +21,10 @@ struct Fl_Inspector {
     Fl_Fonts *fonts;
     Fl_EventBus *bus;
     Ca_Dock *dock;
+    Ca_Window *window;
+    Fl_FileBrowser *script_browser;
+    Fl_Id script_request_scene, script_request_entity;
+    bool script_present, script_enabled;
     Ca_Label *status;
     Fl_Id scene,entity;
     uint64_t revision;
@@ -64,6 +72,49 @@ static void drafted(Fl_Inspector *p)
     p->dirty=true;status(p,"Unsaved changes");
     if (p->dock) ca_dock_invalidate_panel(p->dock,"inspector");
 }
+/* Retain the script's enabled flag as part of the Inspector draft. */
+static void script_enabled(Ca_Checkbox *checkbox, void *data)
+{
+    Fl_Inspector *p = data; p->script_enabled = ca_checkbox_get(checkbox); drafted(p);
+}
+
+/* Stage a self-contained Lua source after verifying the file request's original target. */
+static void script_selected(const char *const *paths, size_t count, void *data)
+{
+    Fl_Inspector *p = data;
+    if (!count || p->scene != p->script_request_scene || p->entity != p->script_request_entity ||
+        fl_scene_edit_scene(p->edit) != p->scene || fl_scene_edit_primary(p->edit) != p->entity) return;
+    size_t size = 0;
+    char *source = fl_fs_read_file(paths[0], FL_SCRIPT_SOURCE_LIMIT, &size);
+    if (!source || !size || memchr(source, 0, size)) {free(source); status(p, "Could not read Lua source."); return;}
+    free(p->fields[SCRIPT_SOURCE].value); p->fields[SCRIPT_SOURCE].value = source;
+    p->script_present = true; p->script_enabled = true; drafted(p);
+}
+
+/* Pick Lua source; the document stores its bytes and never depends on the external path. */
+static void script_browse(Ca_Button *button, void *data)
+{
+    (void)button; Fl_Inspector *p = data;
+    if (!p->window) return;
+    if (!p->script_browser) p->script_browser = fl_file_browser_create(ca_window_instance(p->window));
+    static const char *extensions[] = {"lua"};
+    Fl_FileFilter filter = {"Lua scripts", extensions, 1};
+    p->script_request_scene = p->scene; p->script_request_entity = p->entity;
+    if (!fl_file_browser_show(p->script_browser, &(Fl_FileBrowserDesc){.mode = FL_FILE_BROWSER_OPEN_FILES,
+        .title = "Attach Lua script", .confirm_label = "Use script", .filters = &filter, .filter_count = 1,
+        .initial_path = fl_project_directory(fl_scene_edit_project(p->edit)), .on_confirm = script_selected, .user_data = p}))
+        status(p, "Could not open the script browser.");
+}
+
+/* Remove a saved script only when no Inspector draft would be discarded. */
+static void script_remove(Ca_Button *button, void *data)
+{
+    (void)button; Fl_Inspector *p = data;
+    if (p->dirty) return;
+    if (!fl_project_apply(fl_scene_edit_project(p->edit), &(Fl_Op){.kind = FL_OP_COMPONENT_REMOVE,
+        .scene = p->scene, .entity = p->entity, .component = {.type = FL_COMPONENT_SCRIPT}}, NULL)) status(p, "Could not remove script.");
+}
+
 /* Pick a family from the filtered list; stale rows from an older font generation are ignored. */
 static void family_chosen(Ca_Button *button,void *data)
 {
@@ -149,7 +200,7 @@ static void apply(Ca_Button *button,void *data)
     if (!p->fields[OPACITY].dirty) opacity=p->loaded_numbers[OPACITY];
     unsigned char bytes[56],style[24],typography[3+FL_TYPOGRAPHY_FAMILY_MAX],image[8],alpha[8];
     fl_transform_encode(&transform,bytes);fl_appearance_encode(&appearance,style);fl_opacity_encode(opacity,alpha);
-    Fl_Component components[6]={{FL_COMPONENT_TRANSFORM,1,56,bytes},{FL_COMPONENT_OPACITY,1,8,alpha}};size_t count=2;
+    Fl_Component components[7]={{FL_COMPONENT_TRANSFORM,1,56,bytes},{FL_COMPONENT_OPACITY,1,8,alpha}};size_t count=2;
     if (def&&def->kind!=FL_WIDGET_GROUP&&def->kind!=FL_WIDGET_IMAGE) components[count++]=(Fl_Component){FL_COMPONENT_APPEARANCE,1,24,style};
     if (def&&def->has_text) {
         size_t size=fl_typography_encode(&p->typography,typography);
@@ -162,11 +213,19 @@ static void apply(Ca_Button *button,void *data)
         fl_image_asset_encode(p->image,image);
         components[count++]=(Fl_Component){FL_COMPONENT_IMAGE,1,8,image};
     }
+    Fl_Component script = {0};
+    if (p->script_present) {
+        const char *source = p->fields[SCRIPT_SOURCE].value;
+        if (!fl_script_encode(&(Fl_Script){.source = source, .source_size = source ? strlen(source) : 0,
+            .enabled = p->script_enabled}, &script)) {status(p, "Invalid Lua script component."); return;}
+        components[count++] = script;
+    }
     p->applying=true;
     bool ok=fl_project_apply(fl_scene_edit_project(p->edit),&(Fl_Op){.kind=FL_OP_ENTITY_CONFIGURE,.scene=p->scene,.entity=p->entity,
         .name=p->fields[NAME].value,.visible=p->visible,.components=components,.component_count=count,
         .keyed=true,.tick=fl_scene_edit_time(p->edit)},NULL);
     p->applying=false;
+    free((void *)script.data);
     if (!ok) {status(p,"Invalid values or insufficient memory. Changes were not applied.");return;}
     p->dirty=false;p->refresh=true;status(p,"Saved");
     if (p->dock) ca_dock_invalidate_panel(p->dock,"inspector");
@@ -200,7 +259,9 @@ static bool changed(const Fl_Event *event,void *data)
 static bool load(Fl_Inspector *p,const Fl_Scene *scene,const Fl_Entity *entity)
 {
     const Fl_SceneState *state=fl_scene_edit_state(p->edit);
-    bool evaluated=state&&state->scene==scene->id&&state->count==scene->entity_count;
+    Fl_Script attached;
+    bool scripted=fl_script_decode(fl_entity_component(entity,FL_COMPONENT_SCRIPT),&attached)&&attached.enabled;
+    bool evaluated=!scripted&&state&&state->scene==scene->id&&state->count==scene->entity_count;
     const Fl_EntityState *now=evaluated ? &state->entities[entity-scene->entities] : NULL;
     Fl_Transform transform={.scale_x=1,.scale_y=1};
     if (now) transform=now->transform;
@@ -223,6 +284,15 @@ static bool load(Fl_Inspector *p,const Fl_Scene *scene,const Fl_Entity *entity)
     copy[content ? content->size : 0]=0;free(p->fields[CONTENT].value);p->fields[CONTENT].value=copy;
     p->typography=fl_widget_typography(entity);
     p->image=0;fl_image_asset_decode(fl_entity_component(entity,FL_COMPONENT_IMAGE),&p->image);
+    Fl_Script script;
+    p->script_present = fl_script_decode(fl_entity_component(entity, FL_COMPONENT_SCRIPT), &script);
+    p->script_enabled = p->script_present && script.enabled;
+    size_t source_size = p->script_present ? script.source_size : 0;
+    char *source = malloc(source_size + 1);
+    if (!source) return false;
+    if (source_size) memcpy(source, script.source, source_size);
+    source[source_size] = 0;
+    free(p->fields[SCRIPT_SOURCE].value); p->fields[SCRIPT_SOURCE].value = source;
     for (size_t i=0;i<FIELD_COUNT;++i) p->fields[i].dirty=false;
     p->visible=entity->visible;p->scene=scene->id;p->entity=entity->id;p->revision=scene->revision;p->refresh=false;return true;
 }
@@ -230,7 +300,7 @@ static bool load(Fl_Inspector *p,const Fl_Scene *scene,const Fl_Entity *entity)
 static void field(Fl_Inspector *p,int index,const char *label,bool numeric)
 {
     static const int animated[FIELD_COUNT]={-1,FL_PROP_X,FL_PROP_Y,FL_PROP_WIDTH,FL_PROP_HEIGHT,FL_PROP_ROTATION,FL_PROP_SCALE_X,
-        FL_PROP_SCALE_Y,FL_PROP_FILL,FL_PROP_STROKE,FL_PROP_STROKE_WIDTH,FL_PROP_FONT_SIZE,-1,-1,FL_PROP_OPACITY};
+        FL_PROP_SCALE_Y,FL_PROP_FILL,FL_PROP_STROKE,FL_PROP_STROKE_WIDTH,FL_PROP_FONT_SIZE,-1,-1,FL_PROP_OPACITY,-1};
     const Fl_Scene *scene=fl_project_scene(fl_scene_edit_project(p->edit),p->scene);
     bool keyed=animated[index]>=0&&fl_scene_track(scene,p->entity,(Fl_AnimProperty)animated[index]);
     char text[64];snprintf(text,sizeof(text),keyed ? "%s " CA_ICON_NF_FA_DIAMOND : "%s",label);
@@ -277,10 +347,11 @@ Fl_Inspector *fl_inspector_create(Fl_SceneEdit *edit,Fl_Fonts *fonts,Fl_Playback
         .fn=fonts_changed,.user_data=p,.owner=p}).generation) {fl_inspector_destroy(p);return NULL;}
     return p;
 }
-void fl_inspector_teardown(void *data) {Fl_Inspector *p=data;p->dock=NULL;p->status=NULL;}
+void fl_inspector_teardown(void *data) {Fl_Inspector *p=data;p->dock=NULL;p->status=NULL;p->window=NULL;}
 void fl_inspector_destroy(Fl_Inspector *p)
 {
     if (!p) return;
+    fl_file_browser_destroy(p->script_browser);
     fl_event_unsubscribe_owner(p->bus,p);for (int i=0;i<FIELD_COUNT;++i) free(p->fields[i].value);
     free(p->image_options);free(p);
 }
@@ -391,9 +462,25 @@ static void image_section(Fl_Inspector *p)
         ca_text(&(Ca_TextDesc){.text=line,.style=FL_CLASS_MUTED});
     }
 }
+/* Show script attachment, enabled state and the evaluator's current diagnostic. */
+static void script_section(Fl_Inspector *p, const Fl_Scene *scene)
+{
+    ca_text(&(Ca_TextDesc){.text="Lua Script",.style=FL_CLASS_HEADING});
+    ca_btn_begin(&(Ca_BtnDesc){.text=p->script_present ? "Replace source…" : "Attach Lua script…",.id="inspector-script-load",
+        .style=FL_CLASS_ACTION,.on_click=script_browse,.click_data=p});ca_btn_end();
+    if (!p->script_present) return;
+    ca_checkbox(&(Ca_CheckboxDesc){.text="Enabled",.checked=p->script_enabled,.on_change=script_enabled,.change_data=p,.id="inspector-script-enabled"});
+    const Fl_SceneState *state=fl_scene_edit_state(p->edit);
+    const Fl_Entity *entity=fl_scene_entity(scene,p->entity);
+    const char *error=state&&entity ? fl_script_runtime_error(state->scripts,(size_t)(entity-scene->entities)) : "";
+    if (*error) ca_text(&(Ca_TextDesc){.text=error,.style=FL_CLASS_WARNING,.wrap=true});
+    ca_btn_begin(&(Ca_BtnDesc){.text="Remove script",.id="inspector-script-remove",.style=FL_CLASS_ACTION,
+        .on_click=script_remove,.click_data=p,.disabled=p->dirty});ca_btn_end();
+}
+
 void fl_inspector_build(Ca_Dock *dock,Ca_Window *window,void *data)
 {
-    (void)window;Fl_Inspector *p=data;p->dock=dock;
+    Fl_Inspector *p=data;p->dock=dock;p->window=window;
     const Fl_Scene *scene=fl_project_scene(fl_scene_edit_project(p->edit),fl_scene_edit_scene(p->edit));
     const Fl_Entity *entity=fl_scene_entity(scene,fl_scene_edit_primary(p->edit));
     p->selection_count=fl_scene_edit_count(p->edit);
@@ -418,6 +505,20 @@ void fl_inspector_build(Ca_Dock *dock,Ca_Window *window,void *data)
     if (def&&def->has_stroke) {field(p,STROKE,"Stroke",false);field(p,STROKE_WIDTH,"Stroke px",true);}
     if (def&&def->has_text) {field(p,CONTENT,"Text",false);field(p,FONT_SIZE,"Font px",true);typography_section(p);}
     if (def&&def->has_image) image_section(p);
+    const Fl_Animation *animation=fl_entity_animation(entity);
+    if (animation) {
+        ca_text(&(Ca_TextDesc){.text="Animation",.style=FL_CLASS_HEADING});
+        char summary[96];snprintf(summary,sizeof(summary),"Timeline: %zu track%s · %zu state%s · %zu transition%s",animation->timeline.track_count,animation->timeline.track_count==1 ? "" : "s",
+            animation->state_count,animation->state_count==1 ? "" : "s",animation->transition_count,animation->transition_count==1 ? "" : "s");
+        ca_text(&(Ca_TextDesc){.text=summary,.style=FL_CLASS_MUTED,.wrap=true});
+        for (size_t state=0;state<animation->state_count;++state) {
+            const Fl_AnimationState *motion=&animation->states[state];
+            snprintf(summary,sizeof(summary),"%s%s · %.2f s%s",motion->id==animation->entry ? "Entry: " : "",motion->name,
+                (double)motion->duration/FL_TICKS_PER_SECOND,motion->loop ? " · loop" : "");
+            ca_text(&(Ca_TextDesc){.text=summary,.style=FL_CLASS_LABEL,.wrap=true});
+        }
+    }
+    script_section(p,scene);
     ca_div_begin(&(Ca_DivDesc){.direction=CA_HORIZONTAL,.style=FL_CLASS_TOOLBAR});
     ca_btn_begin(&(Ca_BtnDesc){.text="Apply",.id="inspector-apply",.style=FL_CLASS_ACTION,.on_click=apply,.click_data=p});ca_btn_end();
     ca_btn_begin(&(Ca_BtnDesc){.text="Revert",.id="inspector-revert",.style=FL_CLASS_ACTION,.on_click=revert,.click_data=p});ca_btn_end();

@@ -1,5 +1,6 @@
 #pragma once
 #include "schema/fl_widgets.h"
+#include "scripting/fl_script_runtime.h"
 
 /* Evaluated per-entity values at one scene time (base components overridden by tracks). */
 typedef struct Fl_EntityState {
@@ -15,6 +16,7 @@ typedef struct Fl_SceneState {
     bool valid;
     Fl_EntityState *entities;
     size_t count, capacity;
+    Fl_ScriptRuntime *scripts;
 } Fl_SceneState;
 
 /* Apply ease to normalised progress t in [0, 1]. */
@@ -26,3 +28,6 @@ bool fl_track_sample(const Fl_Scene *scene, const Fl_Track *track, Fl_Tick tick,
 bool fl_scene_state_update(Fl_SceneState *state, const Fl_Scene *scene, Fl_Tick tick);
 /* Free storage and reset. */
 void fl_scene_state_clear(Fl_SceneState *state);
+
+/* Apply one validated property value to evaluated state. */
+void fl_entity_state_apply(Fl_EntityState *state, Fl_AnimProperty property, const double value[4]);

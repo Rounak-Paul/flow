@@ -1,16 +1,13 @@
 #pragma once
 #include "core/fl_event.h"
+#include "components/fl_transform.h"
+#include "components/fl_animation.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
-typedef uint64_t Fl_Id;
 typedef struct Fl_Project Fl_Project;
 
-/* Component schema ids are persistent; unknown schemas are preserved verbatim. */
-enum { FL_COMPONENT_TRANSFORM = 1, FL_COMPONENT_RECTANGLE = 2, FL_COMPONENT_TEXT = 3,
-       FL_COMPONENT_APPEARANCE = 4, FL_COMPONENT_GEOMETRY = 5, FL_COMPONENT_TYPOGRAPHY = 6,
-       FL_COMPONENT_IMAGE = 7, FL_COMPONENT_OPACITY = 8 };
 /* Persistent media classes of imported assets. */
 typedef enum Fl_AssetKind { FL_ASSET_IMAGE = 1, FL_ASSET_VIDEO, FL_ASSET_AUDIO, FL_ASSET_FONT } Fl_AssetKind;
 #define FL_ASSET_EXTENSION_MAX 15
@@ -26,10 +23,6 @@ typedef struct Fl_Asset {
     uint64_t duration;          /* video/audio length in 120000-per-second ticks; zero when unknown */
     uint32_t sample_rate, channels; /* audio stream description; zero otherwise */
 } Fl_Asset;
-#define FL_TICKS_PER_SECOND 120000u
-/* Transform values are local to the parent, in scene pixels and radians. */
-typedef struct Fl_Transform { double x, y, width, height, rotation, scale_x, scale_y; } Fl_Transform;
-typedef struct Fl_Component { uint64_t type, version; size_t size; const unsigned char *data; } Fl_Component;
 typedef struct Fl_Entity {
     Fl_Id id, parent;
     const char *name;
@@ -39,16 +32,6 @@ typedef struct Fl_Entity {
 } Fl_Entity;
 typedef struct Fl_EntityIndex Fl_EntityIndex;
 
-/* Scene time in FL_TICKS_PER_SECOND units. */
-typedef int64_t Fl_Tick;
-/* Keyframe/clip time: an absolute scene time, or an offset from a beat's start or end edge. */
-typedef enum Fl_AnchorKind { FL_ANCHOR_ABSOLUTE, FL_ANCHOR_BEAT } Fl_AnchorKind;
-typedef struct Fl_TimeAnchor {
-    Fl_AnchorKind kind;
-    Fl_Id beat;                 /* FL_ANCHOR_BEAT only */
-    bool end;                   /* measure from the beat's end edge */
-    Fl_Tick offset;             /* ticks after the edge; the scene time itself for FL_ANCHOR_ABSOLUTE */
-} Fl_TimeAnchor;
 /* Narrative step; beats partition the scene and their durations sum to the scene duration. */
 typedef struct Fl_Beat {
     Fl_Id id;
@@ -56,26 +39,6 @@ typedef struct Fl_Beat {
     uint64_t duration;          /* ticks, > 0 */
     bool auto_advance;          /* presenter: continue without a click */
 } Fl_Beat;
-/* Animatable entity properties. Colour values are sRGB 0..255 per channel. */
-typedef enum Fl_AnimProperty {
-    FL_PROP_X, FL_PROP_Y, FL_PROP_WIDTH, FL_PROP_HEIGHT, FL_PROP_ROTATION, FL_PROP_SCALE_X, FL_PROP_SCALE_Y,
-    FL_PROP_OPACITY, FL_PROP_FILL, FL_PROP_STROKE, FL_PROP_STROKE_WIDTH, FL_PROP_FONT_SIZE, FL_PROP_COUNT
-} Fl_AnimProperty;
-/* Interpolation from a keyframe towards the next one. */
-typedef enum Fl_Ease { FL_EASE_LINEAR, FL_EASE_IN, FL_EASE_OUT, FL_EASE_IN_OUT, FL_EASE_HOLD, FL_EASE_COUNT } Fl_Ease;
-typedef struct Fl_Keyframe {
-    Fl_Id id;
-    Fl_TimeAnchor at;
-    double value[4];            /* scalar properties use value[0] */
-    Fl_Ease ease;
-} Fl_Keyframe;
-/* One property of one entity driven by keyframes (at most one track per entity/property). */
-typedef struct Fl_Track {
-    Fl_Id id, entity;
-    Fl_AnimProperty property;
-    Fl_Keyframe *keys;
-    size_t key_count, key_capacity;
-} Fl_Track;
 /* Audio asset placed on the scene timeline. */
 typedef struct Fl_AudioClip {
     Fl_Id id, asset;
@@ -100,8 +63,6 @@ typedef struct Fl_Scene {
     size_t identity_capacity, entity_capacity;
     const Fl_Beat *beats;               /* ordered; empty means one implicit beat spanning duration */
     size_t beat_count;
-    const Fl_Track *tracks;
-    size_t track_count, track_capacity;
     const Fl_AudioClip *clips;
     size_t clip_count;
 } Fl_Scene;
@@ -114,7 +75,10 @@ typedef enum Fl_OpKind {
     FL_OP_ASSET_ADD, FL_OP_ASSET_REMOVE, FL_OP_ASSET_RENAME,
     FL_OP_BEAT_ADD, FL_OP_BEAT_REMOVE, FL_OP_BEAT_UPDATE, FL_OP_BEAT_MOVE,
     FL_OP_KEY_SET, FL_OP_KEY_REMOVE, FL_OP_TRACK_REMOVE,
-    FL_OP_CLIP_ADD, FL_OP_CLIP_UPDATE, FL_OP_CLIP_REMOVE, FL_OP_BEAT_SPLIT, FL_OP_SCENE_ASPECT, FL_OP_SCENE_CAMERA
+    FL_OP_CLIP_ADD, FL_OP_CLIP_UPDATE, FL_OP_CLIP_REMOVE, FL_OP_BEAT_SPLIT, FL_OP_SCENE_ASPECT, FL_OP_SCENE_CAMERA,
+    FL_OP_ANIMATION_STATE_SET, FL_OP_ANIMATION_STATE_REMOVE, FL_OP_ANIMATION_ENTRY,
+    FL_OP_ANIMATION_PARAMETER_SET, FL_OP_ANIMATION_PARAMETER_REMOVE,
+    FL_OP_ANIMATION_TRANSITION_SET, FL_OP_ANIMATION_TRANSITION_REMOVE
 } Fl_OpKind;
 /* One local transform replacement in an atomic selection gesture. */
 typedef struct Fl_TransformEdit { Fl_Id entity; Fl_Transform transform; } Fl_TransformEdit;
@@ -143,6 +107,10 @@ typedef struct Fl_Op {
        Keys stay within scene/beat bounds; absolute inputs attach to their containing beat.
        remove (key); track remove (track).
        Clips: add/update (clip_record; update targets clip), remove (clip). */
+    Fl_Id animation_state, animation_parameter, animation_transition;
+    const Fl_AnimationState *animation_state_record;
+    const Fl_AnimationParameter *animation_parameter_record;
+    const Fl_AnimationTransition *animation_transition_record;
     Fl_Id beat, key, track, clip;
     uint64_t beat_duration;
     bool auto_advance;
@@ -182,8 +150,6 @@ const Fl_Scene *fl_project_scene_at(const Fl_Project *project, size_t index);
 const Fl_Scene *fl_project_scene(const Fl_Project *project, Fl_Id id);
 /* Borrow entity from scene by stable id, or NULL. Valid until mutation. */
 const Fl_Entity *fl_scene_entity(const Fl_Scene *scene, Fl_Id id);
-/* Borrow component of schema type from entity, or NULL. Valid until mutation. */
-const Fl_Component *fl_entity_component(const Fl_Entity *entity, uint64_t type);
 /* Return the number of assets in import order; zero for NULL. */
 size_t fl_project_asset_count(const Fl_Project *project);
 /* Borrow asset at index, by stable id, or by content hash; NULL when absent. Valid until mutation. */
@@ -209,10 +175,15 @@ bool fl_scene_beat_range(const Fl_Scene *scene, Fl_Id beat, Fl_Tick *start, Fl_T
 Fl_Tick fl_anchor_resolve(const Fl_Scene *scene, const Fl_TimeAnchor *anchor);
 /* Anchor tick to the start of the beat containing it (absolute when the scene has no beats). */
 Fl_TimeAnchor fl_anchor_at(const Fl_Scene *scene, Fl_Tick tick);
-/* Borrow the track animating entity's property, or NULL. Valid until mutation. */
+/* Linear traversal of entity-owned Timeline tracks without rebuilding scene-level storage. */
+typedef struct Fl_TrackIterator { const Fl_Scene *scene; size_t entity, track; } Fl_TrackIterator;
+/* Borrow the next track and advance iterator; NULL at the end. */
+const Fl_Track *fl_scene_track_next(Fl_TrackIterator *iterator);
+/* Count entity-owned Timeline tracks in scene order. */
+size_t fl_scene_track_count(const Fl_Scene *scene);
+/* Borrow a track at its flattened scene index, or NULL. Valid until mutation. */
+const Fl_Track *fl_scene_track_at(const Fl_Scene *scene, size_t index);
+/* Borrow the Timeline track animating entity's property, or NULL. Valid until mutation. */
 const Fl_Track *fl_scene_track(const Fl_Scene *scene, Fl_Id entity, Fl_AnimProperty property);
-/* Borrow a keyframe by id with its track, or NULL. */
+/* Borrow a Timeline keyframe by id with its track, or NULL. */
 const Fl_Keyframe *fl_scene_key(const Fl_Scene *scene, Fl_Id key, const Fl_Track **track);
-/* Encode/decode the v1 transform component; no native struct bytes reach disk. */
-void fl_transform_encode(const Fl_Transform *transform, unsigned char out[56]);
-bool fl_transform_decode(const Fl_Component *component, Fl_Transform *out);

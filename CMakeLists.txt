@@ -27,6 +27,8 @@ endif()
 
 set(FLOW_BIN_DIR "${PROJECT_SOURCE_DIR}/bin" CACHE PATH "Directory receiving the flow executable")
 
+add_subdirectory(vendors/lua)
+
 find_package(Threads REQUIRED)
 find_package(Vulkan REQUIRED)
 
@@ -60,8 +62,8 @@ add_custom_command(
 file(GLOB_RECURSE FLOW_ENGINE_SOURCES CONFIGURE_DEPENDS src/engine/*.c)
 add_library(flow_engine STATIC ${FLOW_ENGINE_SOURCES} "${FLOW_EMBEDDED_FONT_SOURCE}")
 target_include_directories(flow_engine PUBLIC "${PROJECT_SOURCE_DIR}/src/engine")
-target_include_directories(flow_engine SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/vendors/stb" "${PROJECT_SOURCE_DIR}/vendors/miniaudio")
-target_link_libraries(flow_engine PUBLIC Threads::Threads PRIVATE freetype)
+target_include_directories(flow_engine SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/vendors/lua" "${PROJECT_SOURCE_DIR}/vendors/stb" "${PROJECT_SOURCE_DIR}/vendors/miniaudio")
+target_link_libraries(flow_engine PUBLIC Threads::Threads PRIVATE freetype lua)
 if(APPLE)
     target_sources(flow_engine PRIVATE src/engine/platform/fl_video_frame_apple.m)
     set_source_files_properties(src/engine/platform/fl_video_frame_apple.m PROPERTIES COMPILE_OPTIONS "-fobjc-arc")

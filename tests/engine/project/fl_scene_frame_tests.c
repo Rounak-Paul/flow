@@ -76,11 +76,32 @@ int main(int argc, char **argv)
     CHECK(fl_fs_join(path, sizeof(path), directory, relative));
     fl_project_destroy(project);
     Fl_Binary binary; uint64_t version;
-    CHECK(fl_binary_load(&binary, path, "FLSCENE\0", 4, &version));
-    CHECK(version == 4 && binary.size >= 32);
-    Fl_Binary legacy = {.data = binary.data + binary.cursor, .size = binary.size - binary.cursor - 32};
+    CHECK(fl_binary_load(&binary, path, "FLSCENE\0", 6, &version));
+    CHECK(version == 6 && binary.size >= 32);
+    if (version != 6 || binary.size < 32) {free(binary.data); return 1;}
+    Fl_Binary legacy = {0};
+    size_t end = binary.size - 32;
+    Fl_Binary scan = {.data=binary.data,.size=end,.cursor=binary.cursor};
+    for (int field=0;field<2;++field) fl_binary_get_u64(&scan);
+    char *name=fl_binary_get_string(&scan);free(name);
+    for (int field=0;field<3;++field) fl_binary_get_u64(&scan);
+    uint64_t entities=fl_binary_get_u64(&scan);
+    for (uint64_t entity_index=0;entity_index<entities;++entity_index) {
+        fl_binary_get_u64(&scan);fl_binary_get_u64(&scan);name=fl_binary_get_string(&scan);free(name);
+        fl_binary_get_u64(&scan);uint64_t components=fl_binary_get_u64(&scan);
+        for (uint64_t component=0;component<components;++component) {
+            fl_binary_get_u64(&scan);fl_binary_get_u64(&scan);uint64_t bytes=fl_binary_get_u64(&scan);scan.cursor+=(size_t)bytes;
+        }
+    }
+    uint64_t beats=fl_binary_get_u64(&scan);
+    for (uint64_t beat=0;beat<beats;++beat) {
+        fl_binary_get_u64(&scan);name=fl_binary_get_string(&scan);free(name);fl_binary_get_u64(&scan);fl_binary_get_u64(&scan);
+    }
+    fl_binary_write(&legacy,binary.data+binary.cursor,scan.cursor-binary.cursor);
+    fl_binary_u64(&legacy,0);
+    fl_binary_write(&legacy,binary.data+scan.cursor,end-scan.cursor);
     CHECK(fl_binary_save(&legacy, path, "FLSCENE\0", 2));
-    free(binary.data);
+    free(legacy.data);free(binary.data);
     project = fl_project_open(directory, NULL); CHECK(project);
     scene = fl_project_scene(project, id);
     CHECK(scene && scene->aspect_width == 0 && scene->aspect_height == 0);

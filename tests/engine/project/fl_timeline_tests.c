@@ -161,9 +161,9 @@ static void check_key_ownership_repair(const char *root)
     fl_scene_state_clear(&evaluated);
     CHECK(fl_project_save(p)); revision = s->revision; fl_project_destroy(p);
     p = fl_project_open(directory, NULL); CHECK(p); if (!p) return;
-    s = fl_project_scene(p, scene); CHECK(s->revision == revision && s->track_count == 3);
+    s = fl_project_scene(p, scene); CHECK(s->revision == revision && fl_scene_track_count(s) == 3);
     CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_BEAT_REMOVE, .scene = scene, .beat = second}, NULL));
-    CHECK(s->track_count == 0);
+    CHECK(fl_scene_track_count(s) == 0);
     fl_project_destroy(p);
 }
 
@@ -268,7 +268,7 @@ int main(int argc, char **argv)
     CHECK(p != NULL); if (!p) return 1;
     s = fl_project_scene(p, scene);
     CHECK(s && s->beat_count == 2 && !strcmp(s->beats[0].name, "Intro") && s->beats[0].duration == 2 * SECOND && fl_scene_length(s) == 5 * SECOND);
-    CHECK(s->track_count == 5 && fl_scene_track(s, box, FL_PROP_X)->key_count == 3 && sample(p, scene, box, FL_PROP_X, SECOND / 2) == 70);
+    CHECK(fl_scene_track_count(s) == 5 && fl_scene_track(s, box, FL_PROP_X)->key_count == 3 && sample(p, scene, box, FL_PROP_X, SECOND / 2) == 70);
     CHECK(s->clip_count == 1 && s->clips[0].gain == 0.5 && s->clips[0].start.beat == beat2 && s->clips[0].fade_in == SECOND / 10);
 
     /* Removing a beat removes its keys; the last beat cannot be removed. */
@@ -286,7 +286,7 @@ int main(int argc, char **argv)
     CHECK(!fl_project_apply(p, &(Fl_Op){.kind = FL_OP_KEY_REMOVE, .scene = scene, .key = k}, NULL));
     CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ENTITY_REMOVE, .scene = scene, .entity = group}, NULL));
     s = fl_project_scene(p, scene);
-    CHECK(s->track_count == 0);
+    CHECK(fl_scene_track_count(s) == 0);
     CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_CLIP_REMOVE, .scene = scene, .clip = clip}, NULL) &&
           fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ASSET_REMOVE, .asset = voice}, NULL));
     CHECK(fl_project_save(p));
@@ -298,7 +298,7 @@ int main(int argc, char **argv)
     p = fl_project_open(argv[1], NULL); CHECK(p);
     if (p) {
         s = fl_project_scene(p, scene);
-        CHECK(s->beats[0].duration == 8 * SECOND && s->tracks[0].keys[0].at.offset == 2 * SECOND);
+        CHECK(s->beats[0].duration == 8 * SECOND && fl_scene_track_at(s, 0)->keys[0].at.offset == 2 * SECOND);
         fl_project_destroy(p);
     }
     check_key_ownership_repair(argv[1]);

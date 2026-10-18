@@ -1,4 +1,7 @@
 #include "fl_timeline_internal.h"
+#include "components/fl_animation.h"
+#include "components/fl_component.h"
+#include "components/fl_script.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -66,37 +69,52 @@ Fl_TimeAnchor fl_anchor_at(const Fl_Scene *s, Fl_Tick tick)
     return (Fl_TimeAnchor){FL_ANCHOR_ABSOLUTE, 0, false, tick};
 }
 
+const Fl_Track *fl_scene_track_next(Fl_TrackIterator *it)
+{
+    while (it && it->scene && it->entity < it->scene->entity_count) {
+        const Fl_Animation *a = fl_entity_animation(&it->scene->entities[it->entity]);
+        if (a && it->track < a->timeline.track_count) return &a->timeline.tracks[it->track++];
+        ++it->entity; it->track = 0;
+    }
+    return NULL;
+}
+
+size_t fl_scene_track_count(const Fl_Scene *s)
+{
+    size_t count = 0;
+    for (size_t i = 0; s && i < s->entity_count; ++i) {
+        const Fl_Animation *a = fl_entity_animation(&s->entities[i]);
+        if (a) count += a->timeline.track_count;
+    }
+    return count;
+}
+
+const Fl_Track *fl_scene_track_at(const Fl_Scene *s, size_t index)
+{
+    for (size_t i = 0; s && i < s->entity_count; ++i) {
+        const Fl_Animation *a = fl_entity_animation(&s->entities[i]);
+        if (!a) continue;
+        if (index < a->timeline.track_count) return &a->timeline.tracks[index];
+        index -= a->timeline.track_count;
+    }
+    return NULL;
+}
+
 const Fl_Track *fl_scene_track(const Fl_Scene *s, Fl_Id entity, Fl_AnimProperty property)
 {
-    for (size_t i = 0; s && i < s->track_count; ++i)
-        if (s->tracks[i].entity == entity && s->tracks[i].property == property) return &s->tracks[i];
+    const Fl_Animation *a = fl_entity_animation(fl_scene_entity(s, entity));
+    for (size_t i = 0; a && i < a->timeline.track_count; ++i)
+        if (a->timeline.tracks[i].property == property) return &a->timeline.tracks[i];
     return NULL;
 }
 
 const Fl_Keyframe *fl_scene_key(const Fl_Scene *s, Fl_Id key, const Fl_Track **track)
 {
-    for (size_t i = 0; s && key && i < s->track_count; ++i)
-        for (size_t j = 0; j < s->tracks[i].key_count; ++j)
-            if (s->tracks[i].keys[j].id == key) { if (track) *track = &s->tracks[i]; return &s->tracks[i].keys[j]; }
+    Fl_TrackIterator it = {.scene = s};
+    for (const Fl_Track *t; key && (t = fl_scene_track_next(&it));)
+        for (size_t k = 0; k < t->key_count; ++k)
+            if (t->keys[k].id == key) {if (track) *track = t; return &t->keys[k];}
     return NULL;
-}
-
-bool fl_property_value_valid(Fl_AnimProperty property, const double v[4])
-{
-    if (!v) return false;
-    for (int i = 0; i < 4; ++i) if (!isfinite(v[i])) return false;
-    switch (property) {
-    case FL_PROP_X: case FL_PROP_Y: case FL_PROP_ROTATION: case FL_PROP_SCALE_X: case FL_PROP_SCALE_Y:
-        return fabs(v[0]) <= 1e9;
-    case FL_PROP_WIDTH: case FL_PROP_HEIGHT: return v[0] >= 0 && v[0] <= 1e9;
-    case FL_PROP_OPACITY: return v[0] >= 0 && v[0] <= 1;
-    case FL_PROP_FILL: case FL_PROP_STROKE:
-        for (int i = 0; i < 4; ++i) if (v[i] < 0 || v[i] > 255) return false;
-        return true;
-    case FL_PROP_STROKE_WIDTH: return v[0] >= 0 && v[0] <= 65536;
-    case FL_PROP_FONT_SIZE: return v[0] >= 1 && v[0] <= 2048;
-    default: return false;
-    }
 }
 
 /* Validate an anchor against the scene's beats. */
@@ -139,8 +157,8 @@ static bool length_fits(const Fl_Scene *s, size_t skip, uint64_t duration)
 static void scale_beat_keys(Fl_Scene *s, Fl_Id beat, uint64_t before, uint64_t after)
 {
     if (before == after) return;
-    for (size_t i = 0; i < s->track_count; ++i) {
-        Fl_Track *track = (Fl_Track *)&s->tracks[i];
+    Fl_TrackIterator tracks = {.scene = s};
+    for (const Fl_Track *track; (track = fl_scene_track_next(&tracks));) {
         for (size_t k = 0; k < track->key_count; ++k) {
             Fl_TimeAnchor *at = &track->keys[k].at;
             if (at->kind != FL_ANCHOR_BEAT || at->beat != beat) continue;
@@ -169,8 +187,9 @@ static void split_anchor(Fl_TimeAnchor *at, Fl_Id beat, Fl_Id right, Fl_Tick lef
 /* Delete animation owned by this beat; preserve audio starts as absolute times. */
 static void remove_beat_content(Fl_Scene *s, Fl_Id beat)
 {
-    for (size_t i = s->track_count; i > 0; --i) {
-        Fl_Track *track = (Fl_Track *)&s->tracks[i - 1];
+    Fl_TrackIterator it = {.scene = s};
+    for (const Fl_Track *value; (value = fl_scene_track_next(&it));) {
+        Fl_Track *track = (Fl_Track *)value;
         size_t kept = 0;
         for (size_t k = 0; k < track->key_count; ++k) {
             const Fl_Keyframe *key = &track->keys[k];
@@ -209,38 +228,38 @@ static void place_beat(Fl_Scene *s, size_t position, Fl_Beat beat)
     beats[position] = beat; ++s->beat_count;
 }
 
-/* Ensure capacity for one more track. */
-static bool grow_tracks(Fl_Scene *s, size_t extra)
+/* Append an empty property track to its entity's component. */
+static Fl_Track *add_track(Fl_Scene *s, Fl_Id entity, Fl_AnimProperty property)
 {
-    if (s->track_count + extra <= s->track_capacity) return true;
-    size_t capacity = s->track_capacity ? s->track_capacity : 4;
-    while (capacity < s->track_count + extra) capacity *= 2;
-    if (capacity > SIZE_MAX / sizeof(Fl_Track)) return false;
-    Fl_Track *tracks = realloc((void *)s->tracks, capacity * sizeof(*tracks));
-    if (!tracks) return false;
-    s->tracks = tracks; s->track_capacity = capacity;
-    return true;
+    Fl_Entity *e = (Fl_Entity *)fl_scene_entity(s, entity);
+    Fl_Animation *a = fl_animation_require(e);
+    if (!a || a->timeline.track_count == FL_PROP_COUNT) return NULL;
+    Fl_Track *t = &a->timeline.tracks[a->timeline.track_count++];
+    *t = (Fl_Track){.entity = entity, .property = property};
+    return t;
 }
 
 /* Ensure a track can hold one more key. */
 static bool grow_keys(Fl_Track *t)
 {
     if (t->key_count < t->key_capacity) return true;
+    if (t->key_capacity > SIZE_MAX / sizeof(Fl_Keyframe) / 2) return false;
     size_t capacity = t->key_capacity ? t->key_capacity * 2 : 4;
-    if (capacity > SIZE_MAX / sizeof(Fl_Keyframe)) return false;
     Fl_Keyframe *keys = realloc(t->keys, capacity * sizeof(*keys));
     if (!keys) return false;
     t->keys = keys; t->key_capacity = capacity;
     return true;
 }
 
-/* Remove track index i, releasing its keys. */
-static void remove_track(Fl_Scene *s, size_t i)
+/* Remove a track from the owning component and release an empty component. */
+static void remove_track(Fl_Scene *s, const Fl_Track *track)
 {
-    Fl_Track *tracks = (Fl_Track *)s->tracks;
-    free(tracks[i].keys);
-    memmove(tracks + i, tracks + i + 1, (s->track_count - i - 1) * sizeof(*tracks));
-    --s->track_count;
+    Fl_Entity *e = (Fl_Entity *)fl_scene_entity(s, track->entity);
+    Fl_Animation *a = (Fl_Animation *)fl_entity_animation(e);
+    size_t index = (size_t)(track - a->timeline.tracks);
+    free(a->timeline.tracks[index].keys);
+    memmove(a->timeline.tracks + index, a->timeline.tracks + index + 1, (a->timeline.track_count - index - 1) * sizeof(*track));
+    if (!--a->timeline.track_count&&!a->state_count&&!a->parameter_count&&!a->transition_count) fl_entity_remove_component(e, FL_COMPONENT_ANIMATION);
 }
 
 /* Validate ease/anchor/value of a key operation for entity's property. */
@@ -281,9 +300,10 @@ bool fl_timeline_apply(const Fl_Project *p, Fl_Scene *s, const Fl_Op *op, uint64
         Fl_Beat *beat = (Fl_Beat *)&s->beats[i];
         Fl_Id id = (*next_id)++;
         bool auto_advance = beat->auto_advance;
-        for (size_t t = 0; t < s->track_count; ++t)
-            for (size_t k = 0; k < s->tracks[t].key_count; ++k)
-                split_anchor(&s->tracks[t].keys[k].at, op->beat, id, left, right);
+        Fl_TrackIterator it = {.scene = s};
+        for (const Fl_Track *t; (t = fl_scene_track_next(&it));)
+            for (size_t k = 0; k < t->key_count; ++k)
+                split_anchor(&t->keys[k].at, op->beat, id, left, right);
         for (size_t c = 0; c < s->clip_count; ++c)
             split_anchor(&((Fl_AudioClip *)s->clips)[c].start, op->beat, id, left, right);
         beat->duration = (uint64_t)left;
@@ -295,8 +315,11 @@ bool fl_timeline_apply(const Fl_Project *p, Fl_Scene *s, const Fl_Op *op, uint64
         size_t i = beat_index(s, op->beat);
         if (i == SIZE_MAX || s->beat_count < 2) return false;
         remove_beat_content(s, op->beat);
-        for (size_t t = s->track_count; t > 0; --t)
-            if (!s->tracks[t - 1].key_count) remove_track(s, t - 1);
+        for (size_t e = 0; e < s->entity_count; ++e) {
+            Fl_Animation *a = (Fl_Animation *)fl_entity_animation(&s->entities[e]);
+            for (size_t t = a ? a->timeline.track_count : 0; t > 0; --t)
+                if (!a->timeline.tracks[t - 1].key_count) remove_track(s, &a->timeline.tracks[t - 1]);
+        }
         Fl_Beat *beats = (Fl_Beat *)s->beats;
         free((void *)beats[i].name);
         memmove(beats + i, beats + i + 1, (s->beat_count - i - 1) * sizeof(*beats));
@@ -350,9 +373,10 @@ bool fl_timeline_apply(const Fl_Project *p, Fl_Scene *s, const Fl_Op *op, uint64
         }
         if (!t) {
             Fl_Keyframe *keys = malloc(4 * sizeof(*keys));
-            if (!keys || !grow_tracks(s, 1)) { free(keys); return false; }
-            t = (Fl_Track *)&s->tracks[s->track_count++];
-            *t = (Fl_Track){(*next_id)++, op->entity, op->property, keys, 0, 4};
+            if (!keys) return false;
+            t = add_track(s, op->entity, op->property);
+            if (!t) {free(keys); return false;}
+            t->id = (*next_id)++; t->keys = keys; t->key_capacity = 4;
         } else if (!grow_keys(t)) return false;
         value.id = (*next_id)++;
         t->keys[t->key_count++] = value;
@@ -366,12 +390,15 @@ bool fl_timeline_apply(const Fl_Project *p, Fl_Scene *s, const Fl_Op *op, uint64
         Fl_Track *t = (Fl_Track *)owner;
         size_t index = (size_t)(key - t->keys);
         memmove(t->keys + index, t->keys + index + 1, (t->key_count - index - 1) * sizeof(*t->keys));
-        if (!--t->key_count) remove_track(s, (size_t)(t - s->tracks));
+        if (!--t->key_count) remove_track(s, t);
         return true;
     }
-    case FL_OP_TRACK_REMOVE:
-        for (size_t i = 0; i < s->track_count; ++i) if (s->tracks[i].id == op->track) { remove_track(s, i); return true; }
+    case FL_OP_TRACK_REMOVE: {
+        Fl_TrackIterator it = {.scene = s};
+        for (const Fl_Track *t; (t = fl_scene_track_next(&it));)
+            if (t->id == op->track) {remove_track(s, t); return true;}
         return false;
+    }
     case FL_OP_CLIP_ADD: case FL_OP_CLIP_UPDATE: {
         if (!op->clip_record || !clip_valid(p, s, op->clip_record)) return false;
         if (op->kind == FL_OP_CLIP_UPDATE) {
@@ -411,25 +438,34 @@ static Fl_Keyframe *key_at(const Fl_Scene *s, Fl_Track *t, Fl_Tick tick)
     return NULL;
 }
 
-bool fl_timeline_reserve(Fl_Scene *s, const Fl_KeyWrite *writes, size_t count, uint64_t next_id, size_t *track_mark)
+/* Discard uncommitted tracks after reservation failure. */
+static void rollback_tracks(Fl_Scene *s)
 {
-    *track_mark = s->track_count;
-    if (count > (UINT64_MAX - next_id) / 2 || !grow_tracks(s, count)) return false;
-    for (size_t i = 0; i < count; ++i) {
-        if (!fl_property_value_valid(writes[i].property, writes[i].value)) { fl_timeline_rollback(s, *track_mark); return false; }
-        Fl_Track *t = (Fl_Track *)fl_scene_track(s, writes[i].entity, writes[i].property);
-        if (!t) {
-            t = (Fl_Track *)&s->tracks[s->track_count++];
-            *t = (Fl_Track){0, writes[i].entity, writes[i].property, NULL, 0, 0};
+    for (size_t e = 0; e < s->entity_count; ++e) {
+        Fl_Animation *a = (Fl_Animation *)fl_entity_animation(&s->entities[e]);
+        for (size_t i = a ? a->timeline.track_count : 0; i > 0; --i) {
+            if (!a->timeline.tracks[i - 1].id) {
+                bool last = a->timeline.track_count == 1;
+                remove_track(s, &a->timeline.tracks[i - 1]);
+                if (last) break;
+            }
         }
-        if (!grow_keys(t)) { fl_timeline_rollback(s, *track_mark); return false; }
     }
-    return true;
 }
 
-void fl_timeline_rollback(Fl_Scene *s, size_t track_mark)
+bool fl_timeline_reserve(Fl_Scene *s, const Fl_KeyWrite *writes, size_t count, uint64_t next_id)
 {
-    while (s->track_count > track_mark) { Fl_Track *t = (Fl_Track *)&s->tracks[--s->track_count]; free(t->keys); }
+    if (count > (UINT64_MAX - next_id) / 2) return false;
+    for (size_t i = 0; i < count; ++i) {
+        if (!fl_property_value_valid(writes[i].property, writes[i].value)) { rollback_tracks(s); return false; }
+        Fl_Track *t = (Fl_Track *)fl_scene_track(s, writes[i].entity, writes[i].property);
+        if (!t) {
+            t = add_track(s, writes[i].entity, writes[i].property);
+            if (!t) {rollback_tracks(s); return false;}
+        }
+        if (!grow_keys(t)) { rollback_tracks(s); return false; }
+    }
+    return true;
 }
 
 void fl_timeline_commit(Fl_Scene *s, const Fl_KeyWrite *writes, size_t count, Fl_Tick tick, uint64_t *next_id)
@@ -444,11 +480,6 @@ void fl_timeline_commit(Fl_Scene *s, const Fl_KeyWrite *writes, size_t count, Fl
         memcpy(added.value, writes[i].value, sizeof(added.value));
         t->keys[t->key_count++] = added;
     }
-}
-
-void fl_timeline_prune(Fl_Scene *s)
-{
-    for (size_t i = s->track_count; i > 0; --i) if (!fl_scene_entity(s, s->tracks[i - 1].entity)) remove_track(s, i - 1);
 }
 
 size_t fl_timeline_asset_uses(const Fl_Scene *s, Fl_Id asset)
@@ -467,10 +498,10 @@ bool fl_timeline_valid(const Fl_Project *p, const Fl_Scene *s, uint64_t next_id)
         total += b->duration;
     }
     if (s->beat_count && total != s->duration) return false;
-    for (size_t i = 0; i < s->track_count; ++i) {
-        const Fl_Track *t = &s->tracks[i];
+    Fl_TrackIterator tracks = {.scene = s};
+    for (const Fl_Track *track; (track = fl_scene_track_next(&tracks));) {
+        const Fl_Track *t = track;
         if (!t->id || t->id >= next_id || !fl_scene_entity(s, t->entity) || t->property < 0 || t->property >= FL_PROP_COUNT || !t->key_count) return false;
-        for (size_t j = 0; j < i; ++j) if (s->tracks[j].entity == t->entity && s->tracks[j].property == t->property) return false;
         for (size_t k = 0; k < t->key_count; ++k) {
             const Fl_Keyframe *key = &t->keys[k];
             if (!key->id || key->id >= next_id || key->ease < 0 || key->ease >= FL_EASE_COUNT || !anchor_valid(s, &key->at) ||
@@ -484,8 +515,10 @@ bool fl_timeline_valid(const Fl_Project *p, const Fl_Scene *s, uint64_t next_id)
 
 size_t fl_timeline_id_count(const Fl_Scene *s)
 {
-    size_t n = s->beat_count + s->track_count + s->clip_count;
-    for (size_t i = 0; i < s->track_count; ++i) n += s->tracks[i].key_count;
+    size_t n = s->beat_count + fl_scene_track_count(s) + s->clip_count;
+    Fl_TrackIterator it = {.scene = s};
+    for (const Fl_Track *t; (t = fl_scene_track_next(&it));) n += t->key_count;
+    for (size_t e=0;e<s->entity_count;++e) {const Fl_Animation *a=fl_entity_animation(&s->entities[e]);if (a) n+=fl_animation_id_count(a);}
     return n;
 }
 
@@ -493,20 +526,21 @@ void fl_timeline_ids(const Fl_Scene *s, Fl_Id *ids)
 {
     size_t n = 0;
     for (size_t i = 0; i < s->beat_count; ++i) ids[n++] = s->beats[i].id;
-    for (size_t i = 0; i < s->track_count; ++i) {
-        ids[n++] = s->tracks[i].id;
-        for (size_t k = 0; k < s->tracks[i].key_count; ++k) ids[n++] = s->tracks[i].keys[k].id;
+    Fl_TrackIterator tracks = {.scene = s};
+    for (const Fl_Track *track; (track = fl_scene_track_next(&tracks));) {
+        ids[n++] = track->id;
+        for (size_t k = 0; k < track->key_count; ++k) ids[n++] = track->keys[k].id;
     }
     for (size_t i = 0; i < s->clip_count; ++i) ids[n++] = s->clips[i].id;
+    for (size_t e=0;e<s->entity_count;++e) {const Fl_Animation *a=fl_entity_animation(&s->entities[e]);if (a) {fl_animation_ids(a,ids+n);n+=fl_animation_id_count(a);}}
 }
 
 void fl_timeline_free(Fl_Scene *s)
 {
     for (size_t i = 0; i < s->beat_count; ++i) free((void *)s->beats[i].name);
-    for (size_t i = 0; i < s->track_count; ++i) free(s->tracks[i].keys);
-    free((void *)s->beats); free((void *)s->tracks); free((void *)s->clips);
-    s->beats = NULL; s->tracks = NULL; s->clips = NULL;
-    s->beat_count = s->track_count = s->track_capacity = s->clip_count = 0;
+    free((void *)s->beats); free((void *)s->clips);
+    s->beats = NULL; s->clips = NULL;
+    s->beat_count = s->clip_count = 0;
 }
 
 /* Encode an anchor as kind, beat, end, offset. */
@@ -529,16 +563,6 @@ void fl_timeline_save(const Fl_Scene *s, Fl_Binary *b)
         fl_binary_u64(b, s->beats[i].id); fl_binary_string(b, s->beats[i].name);
         fl_binary_u64(b, s->beats[i].duration); fl_binary_u64(b, s->beats[i].auto_advance);
     }
-    fl_binary_u64(b, s->track_count);
-    for (size_t i = 0; i < s->track_count; ++i) {
-        const Fl_Track *t = &s->tracks[i];
-        fl_binary_u64(b, t->id); fl_binary_u64(b, t->entity); fl_binary_u64(b, (uint64_t)t->property); fl_binary_u64(b, t->key_count);
-        for (size_t k = 0; k < t->key_count; ++k) {
-            fl_binary_u64(b, t->keys[k].id); put_anchor(b, &t->keys[k].at);
-            for (int c = 0; c < 4; ++c) put_double(b, t->keys[k].value[c]);
-            fl_binary_u64(b, (uint64_t)t->keys[k].ease);
-        }
-    }
     fl_binary_u64(b, s->clip_count);
     for (size_t i = 0; i < s->clip_count; ++i) {
         const Fl_AudioClip *c = &s->clips[i];
@@ -556,7 +580,7 @@ static size_t get_count(Fl_Binary *b, size_t stride, size_t minimum)
     return (size_t)count;
 }
 
-bool fl_timeline_load(Fl_Scene *s, Fl_Binary *b)
+bool fl_timeline_load(Fl_Scene *s, Fl_Binary *b, bool legacy_tracks)
 {
     size_t beats = get_count(b, sizeof(Fl_Beat), 32);
     Fl_Beat *beat_storage = beats ? calloc(beats, sizeof(*beat_storage)) : NULL;
@@ -570,15 +594,14 @@ bool fl_timeline_load(Fl_Scene *s, Fl_Binary *b)
         beat->auto_advance = flags & 1;
         if (flags > 1) b->failed = true;
     }
-    size_t tracks = b->failed ? 0 : get_count(b, sizeof(Fl_Track), 32);
-    if (tracks && !grow_tracks(s, tracks)) return false;
+    size_t tracks = b->failed || !legacy_tracks ? 0 : get_count(b, sizeof(Fl_Track), 32);
     for (size_t i = 0; !b->failed && i < tracks; ++i) {
-        Fl_Track *t = (Fl_Track *)&s->tracks[s->track_count++];
-        *t = (Fl_Track){0};
-        t->id = fl_binary_get_u64(b); t->entity = fl_binary_get_u64(b);
+        Fl_Id id = fl_binary_get_u64(b), entity = fl_binary_get_u64(b);
         uint64_t property = fl_binary_get_u64(b);
-        t->property = property < FL_PROP_COUNT ? (Fl_AnimProperty)property : FL_PROP_X;
-        if (property >= FL_PROP_COUNT) b->failed = true;
+        if (b->failed || property >= FL_PROP_COUNT || fl_scene_track(s, entity, (Fl_AnimProperty)property)) return false;
+        Fl_Track *t = add_track(s, entity, (Fl_AnimProperty)property);
+        if (!t) return false;
+        t->id = id;
         size_t keys = b->failed ? 0 : get_count(b, sizeof(Fl_Keyframe), 80);
         t->keys = keys ? calloc(keys, sizeof(*t->keys)) : NULL;
         if (keys && !t->keys) return false;
@@ -610,9 +633,10 @@ bool fl_timeline_repair(Fl_Scene *s, uint64_t *next_id, bool *changed)
 {
     *changed = false;
     size_t count = s->clip_count;
-    for (size_t t = 0; t < s->track_count; ++t) {
-        if (s->tracks[t].key_count > SIZE_MAX - count) return false;
-        count += s->tracks[t].key_count;
+    Fl_TrackIterator count_tracks = {.scene = s};
+    for (const Fl_Track *track; (track = fl_scene_track_next(&count_tracks));) {
+        if (track->key_count > SIZE_MAX - count) return false;
+        count += track->key_count;
     }
     if (count == s->clip_count) return true;
     if (count > SIZE_MAX / sizeof(Fl_Tick)) return false;
@@ -621,8 +645,9 @@ bool fl_timeline_repair(Fl_Scene *s, uint64_t *next_id, bool *changed)
     size_t at = 0;
     bool repair = !s->beat_count;
     Fl_Tick length = fl_scene_length(s), maximum = length;
-    for (size_t t = 0; t < s->track_count; ++t) for (size_t k = 0; k < s->tracks[t].key_count; ++k) {
-        const Fl_TimeAnchor *anchor = &s->tracks[t].keys[k].at;
+    Fl_TrackIterator it = {.scene = s};
+    for (const Fl_Track *track; (track = fl_scene_track_next(&it));) for (size_t k = 0; k < track->key_count; ++k) {
+        const Fl_TimeAnchor *anchor = &track->keys[k].at;
         Fl_Tick time = fl_anchor_resolve(s, anchor), start, end;
         times[at++] = time < 0 ? 0 : time;
         if (time > maximum) maximum = time;
@@ -641,8 +666,9 @@ bool fl_timeline_repair(Fl_Scene *s, uint64_t *next_id, bool *changed)
     last->duration += (uint64_t)(maximum - length);
     sync_duration(s);
     at = 0;
-    for (size_t t = 0; t < s->track_count; ++t) for (size_t k = 0; k < s->tracks[t].key_count; ++k)
-        s->tracks[t].keys[k].at = fl_anchor_at(s, times[at++]);
+    it = (Fl_TrackIterator){.scene = s};
+    for (const Fl_Track *track; (track = fl_scene_track_next(&it));) for (size_t k = 0; k < track->key_count; ++k)
+        track->keys[k].at = fl_anchor_at(s, times[at++]);
     for (size_t c = 0; c < s->clip_count; ++c) {
         Fl_AudioClip *clip = (Fl_AudioClip *)&s->clips[c];
         if (clip->start.kind == FL_ANCHOR_BEAT && clip->start.beat == last->id && clip->start.end) {
