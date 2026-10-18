@@ -3,13 +3,24 @@
 #include "fl_history.h"
 #include "schema/fl_widgets.h"
 #include "time/fl_scene_state.h"
+#include "render/fl_frame.h"
 
 #define FL_AGENT_MAX_OPS 2000u
 #define FL_AGENT_MAX_REFS 512u
 
+#define FL_AGENT_MAX_FRAMES 6u
+
+/* PNG frames produced by a tool, handed to the transport after the call returns. */
+typedef struct Fl_AgentFrames {
+    unsigned char *png[FL_AGENT_MAX_FRAMES];
+    size_t size[FL_AGENT_MAX_FRAMES];
+    size_t count;
+} Fl_AgentFrames;
+
 struct Fl_Agent {
     Fl_AgentHost host;
     Fl_History *history;
+    Fl_AgentFrames frames;
     void *bindings;             /* tool registrations handed to the MCP core */
 };
 

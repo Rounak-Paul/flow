@@ -33,7 +33,7 @@ Tools need an open project. With the project launcher showing they return `no_pr
 | `evaluate_scene` | Resolved values of every entity at a time, after keyframes and Lua, plus script errors |
 | `apply_ops` | Atomic batch of operations. Created objects get `"as": "$name"` and can be referenced by later operations. `expect` refuses the batch if a scene changed since it was read; `dry_run` validates without applying |
 | `undo` / `redo` | Revert or repeat the newest changeset; refused (`conflict`) if anything else edited the project since |
-| `render_frame` | PNG of a scene at a time (seconds), without editor grid or selection. The editor briefly shows that scene and time, then restores the user's view |
+| `render_frame` | Renders a scene at one time or up to six (`times`) offscreen on the GPU and returns PNG images at any width (default 1024, up to 8.8 megapixels). Independent of the editor window: no grid or selection, nothing on screen changes |
 | `get_editor_state` / `set_editor_state` | Read or set the shown scene, playhead and selection |
 | `import_asset` | Copy a local image, audio, video or font file (absolute path) into the project; not part of undo |
 | `save_project` | Write now; Flow also autosaves after changes |
@@ -54,9 +54,10 @@ Units: times in seconds, rotation in degrees, colours `#RRGGBB[AA]`, positions i
 - A failing operation applies nothing and reports `op_index`, a stable `code` and a message naming the problem. Unknown fields are errors, not ignored.
 - History keeps up to 64 changesets. After any edit made outside the history (in the GUI, an asset import, a rename), earlier entries can no longer be undone and are dropped when the next changeset starts.
 - Calls run on the editor's UI thread and time out after 30 s. Closing the project fails in-flight calls cleanly.
-- `render_frame` needs the Scene panel visible and playback stopped, and returns one image per call.
+- Renders come from the same GPU scene renderer the editor viewport uses (`src/editor/fl_scene_renderer.c`), drawn into an offscreen image, so shapes, blending, text and images match what you see. Text is rasterized at the output resolution, so large renders are sharper than the viewport.
+- Scenes have no background property yet: the backdrop is a fixed dark blue, so cover it with a full-canvas rectangle when you want another colour.
 - Scripts are `on_evaluate(self, time)` only; see `docs/lua-scripting.md`.
 
 ## Internals
 
-`src/engine/agent/`: `fl_mcp` (JSON-RPC and tool registry, hand-off to the owner thread), `fl_mcp_http` (CivetWeb transport), `fl_agent*` (document tools and the operation executor), `fl_history` (changeset undo/redo over scene snapshots, `fl_project_snapshot/restore`). `src/editor/fl_mcp_service.c` wires the endpoint to the editor and implements the editor-only tools. Vendored: `vendors/civetweb` (MIT), `vendors/cjson` (MIT).
+`src/engine/agent/`: `fl_mcp` (JSON-RPC and tool registry, hand-off to the owner thread), `fl_mcp_http` (CivetWeb transport), `fl_agent*` (document tools and the operation executor), `fl_history` (changeset undo/redo over scene snapshots, `fl_project_snapshot/restore`). `src/editor/fl_scene_renderer` is the GPU renderer shared by the viewport and `render_frame`. `src/editor/fl_mcp_service.c` wires the endpoint to the editor and implements the editor-state tools. Vendored: `vendors/civetweb` (MIT), `vendors/cjson` (MIT).

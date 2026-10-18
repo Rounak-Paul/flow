@@ -1,6 +1,7 @@
 #pragma once
 #include "fl_mcp.h"
 #include "project/fl_project.h"
+#include "render/fl_frame.h"
 
 /*
  * Agent authoring surface: the document tools exposed over MCP. Everything an agent can do is a typed
@@ -11,6 +12,8 @@ typedef struct Fl_Agent Fl_Agent;
 
 typedef struct Fl_AgentHost {
     Fl_Project *(*project)(void *user_data);    /* currently open project, or NULL */
+    /* Render scene at tick, width pixels wide, into out (released with fl_frame_free). NULL disables render_frame. */
+    bool (*render)(void *user_data, const Fl_Project *project, const Fl_Scene *scene, Fl_Tick tick, uint32_t width, Fl_Frame *out);
     void *user_data;
 } Fl_AgentHost;
 

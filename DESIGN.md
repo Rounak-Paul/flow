@@ -597,7 +597,7 @@ Implemented tools (details in `docs/mcp.md`):
 | `get_project`, `get_scene`, `evaluate_scene` | Scenes and assets; a scene's full contents; resolved values at a time |
 | `apply_ops` | Atomic, undoable batch of typed operations with temporary ids, revision preconditions and dry run |
 | `undo`, `redo` | Whole-changeset history, refused when the document changed in between |
-| `render_frame` | PNG of a scene at a time, as the editor draws it |
+| `render_frame` | Offscreen GPU render of a scene at one or more times, returned as PNGs |
 | `get_editor_state`, `set_editor_state` | Scene, playhead and selection shown to the user |
 | `import_asset`, `save_project` | Asset import and explicit save |
 

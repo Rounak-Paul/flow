@@ -371,5 +371,4 @@ bool fl_workspace_toggle_panel(Fl_Workspace *workspace, const char *id)
 }
 
 Fl_SceneEdit *fl_workspace_edit(const Fl_Workspace *workspace) { return workspace ? workspace->edit : NULL; }
-Fl_ScenePanel *fl_workspace_scene_panel(const Fl_Workspace *workspace) { return workspace ? workspace->scene : NULL; }
 Fl_Playback *fl_workspace_playback(const Fl_Workspace *workspace) { return workspace ? workspace->playback : NULL; }

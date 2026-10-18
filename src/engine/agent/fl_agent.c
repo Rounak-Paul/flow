@@ -1,5 +1,6 @@
 #include "fl_agent_internal.h"
 #include "core/fl_log.h"
+#include "media/fl_png.h"
 #include "platform/fl_fs.h"
 #include "project/fl_asset_import.h"
 #include <math.h>
@@ -33,13 +34,21 @@ Fl_Agent *fl_agent_create(const Fl_AgentHost *host)
     if (!a) return NULL;
     a->host = *host;
     a->history = fl_history_create(HISTORY_ENTRIES, HISTORY_BYTES);
-    if (!a->history) {free(a); return NULL;}
+    if (!a->history) {fl_agent_destroy(a); return NULL;}
     return a;
+}
+
+/* Free frames a tool left for the transport. */
+static void drop_frames(Fl_Agent *a)
+{
+    for (size_t i = 0; i < a->frames.count; ++i) free(a->frames.png[i]);
+    a->frames.count = 0;
 }
 
 void fl_agent_destroy(Fl_Agent *a)
 {
     if (!a) return;
+    drop_frames(a);
     fl_history_destroy(a->history); free(a->bindings); free(a);
 }
 
@@ -245,6 +254,58 @@ static cJSON *tool_save_project(Fl_Agent *a, const cJSON *args, cJSON **error)
     return o;
 }
 
+static cJSON *tool_render_frame(Fl_Agent *a, const cJSON *args, cJSON **error)
+{
+    static const char *const keys[] = {"scene", "time", "times", "width", NULL};
+    Fl_Fail fail; Fl_Project *p; double width = 1024, seconds[FL_AGENT_MAX_FRAMES] = {0}, number;
+    size_t count = 1; bool present;
+    if (!agent_only_keys(args, &fail, "render_frame", keys) || !agent_get_number(args, "width", false, &width, NULL, &fail, "render_frame") ||
+        !agent_get_number(args, "time", false, &number, &present, &fail, "render_frame")) {*error = fl_fail_json(&fail); return NULL;}
+    if (present) seconds[0] = number;
+    const cJSON *times = cJSON_GetObjectItemCaseSensitive(args, "times");
+    if (times) {
+        if (present || !cJSON_IsArray(times) || !cJSON_GetArraySize(times) || (unsigned)cJSON_GetArraySize(times) > FL_AGENT_MAX_FRAMES) {
+            fl_fail(&fail, "invalid_argument", "render_frame: give either \"time\" or \"times\" (1..%u numbers)", FL_AGENT_MAX_FRAMES);
+            *error = fl_fail_json(&fail); return NULL;
+        }
+        count = 0;
+        for (const cJSON *t = times->child; t; t = t->next) {
+            if (!cJSON_IsNumber(t) || !isfinite(t->valuedouble)) {fl_fail(&fail, "invalid_argument", "render_frame: times must be numbers"); *error = fl_fail_json(&fail); return NULL;}
+            seconds[count++] = t->valuedouble;
+        }
+    }
+    const Fl_Scene *s = scene_arg(a, args, &p, &fail, error);
+    if (!s) return NULL;
+    if (!a->host.render) {fl_fail(&fail, "unavailable", "Rendering is not available in this build"); *error = fl_fail_json(&fail); return NULL;}
+    uint32_t w, h;
+    if (width < 16 || width != floor(width) || !fl_frame_dimensions(s, (uint32_t)width, &w, &h)) {
+        fl_fail(&fail, "invalid_argument", "render_frame: width must be a whole number from 16 up to a frame of at most %u pixels", FL_RENDER_MAX_PIXELS);
+        *error = fl_fail_json(&fail); return NULL;
+    }
+    cJSON *o = cJSON_CreateObject(), *list = o ? cJSON_AddArrayToObject(o, "frames") : NULL;
+    drop_frames(a);
+    for (size_t i = 0; list && i < count; ++i) {
+        Fl_Tick tick;
+        if (!agent_seconds_to_ticks(seconds[i], &tick) || tick < 0 || tick > fl_scene_length(s)) {
+            fl_fail(&fail, "invalid_argument", "render_frame: time must be within 0..%g seconds", agent_ticks_to_seconds(fl_scene_length(s)));
+            *error = fl_fail_json(&fail); cJSON_Delete(o); drop_frames(a); return NULL;
+        }
+        Fl_Frame frame;
+        if (!a->host.render(a->host.user_data, p, s, tick, w, &frame)) {fl_fail(&fail, "internal", "the frame could not be rendered"); *error = fl_fail_json(&fail); cJSON_Delete(o); drop_frames(a); return NULL;}
+        size_t size = 0;
+        unsigned char *png = fl_png_encode_region(frame.rgba, frame.width, frame.height, 0, 0, frame.width, frame.height, 0, &size, NULL, NULL);
+        fl_frame_free(&frame);
+        cJSON *item = png ? cJSON_CreateObject() : NULL;
+        if (!item) {free(png); fl_fail(&fail, "internal", "the frame could not be encoded"); *error = fl_fail_json(&fail); cJSON_Delete(o); drop_frames(a); return NULL;}
+        a->frames.png[a->frames.count] = png; a->frames.size[a->frames.count++] = size;
+        cJSON_AddNumberToObject(item, "time", agent_ticks_to_seconds(tick));
+        cJSON_AddNumberToObject(item, "width", w); cJSON_AddNumberToObject(item, "height", h); cJSON_AddNumberToObject(item, "bytes", (double)size);
+        cJSON_AddItemToArray(list, item);
+    }
+    if (o) cJSON_AddNumberToObject(o, "scene", (double)s->id);
+    return o;
+}
+
 #define NO_ARGS "{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}"
 static const ToolDef TOOLS[] = {
     {"get_reference", "Manual for authoring in Flow: units, operation vocabulary, animation model and the Lua scripting API. Read this first.",
@@ -264,6 +325,10 @@ static const ToolDef TOOLS[] = {
      "{\"type\":\"object\",\"properties\":{\"ops\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"object\",\"properties\":{\"op\":{\"type\":\"string\"},\"as\":{\"type\":\"string\"}},\"required\":[\"op\"]}},"
      "\"label\":{\"type\":\"string\",\"description\":\"Short name shown for undo\"},\"expect\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"integer\"}},\"dry_run\":{\"type\":\"boolean\"}},\"required\":[\"ops\"],\"additionalProperties\":false}",
      false, agent_tool_apply_ops},
+    {"render_frame", "Render a scene at one or more times (seconds) offline and return PNG images, exactly as the project would look in the video: no editor grid or selection, any resolution, independent of what the editor is showing. "
+     "Use it to check your work. Give time or times (up to 6, for comparing moments). width is the image width in pixels (default 1024, at most a frame of 8.8 megapixels); height follows the scene's aspect.",
+     "{\"type\":\"object\",\"properties\":{\"scene\":{\"type\":\"integer\"},\"time\":{\"type\":\"number\"},\"times\":{\"type\":\"array\",\"items\":{\"type\":\"number\"},\"maxItems\":6},\"width\":{\"type\":\"integer\"}},\"required\":[\"scene\"],\"additionalProperties\":false}",
+     true, tool_render_frame},
     {"import_asset", "Copy a local image, audio, video or font file (absolute path) into the project and return its asset id. Not part of undo.",
      "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"name\":{\"type\":\"string\"}},\"required\":[\"path\"],\"additionalProperties\":false}", false, tool_import_asset},
     {"undo", "Undo the newest apply_ops changeset. Refused if the project was edited since.", NO_ARGS, false, tool_undo},
@@ -282,6 +347,7 @@ cJSON *fl_agent_call(Fl_Agent *a, const char *tool, const cJSON *arguments, cJSO
         found = true; result = TOOLS[i].run(a, arguments, error); break;
     }
     cJSON_Delete(empty);
+    if (a) drop_frames(a);
     if (!found || (!result && !*error)) {
         Fl_Fail fail;
         if (!found) fl_fail(&fail, "unknown_tool", "No tool named \"%s\"", tool ? tool : ""); else fl_fail(&fail, "internal", "%s failed", tool);
@@ -298,8 +364,15 @@ static void run_tool(Fl_McpCall *call, const cJSON *arguments, void *data)
 {
     const Binding *binding = data;
     cJSON *error = NULL;
-    cJSON *result = binding->def->run(binding->agent, arguments, &error);
-    if (result) fl_mcp_return_json(call, result);
+    Fl_Agent *agent = binding->agent;
+    cJSON *result = binding->def->run(agent, arguments, &error);
+    if (result && agent->frames.count) {
+        Fl_McpImage images[FL_AGENT_MAX_FRAMES];
+        for (size_t i = 0; i < agent->frames.count; ++i) images[i] = (Fl_McpImage){agent->frames.png[i], agent->frames.size[i], "image/png"};
+        fl_mcp_return_images(call, result, images, agent->frames.count);
+        drop_frames(agent);
+    }
+    else if (result) fl_mcp_return_json(call, result);
     else if (error) fl_mcp_return_error_object(call, error);
     else fl_mcp_return_error(call, "internal", "%s failed", binding->def->name);
 }

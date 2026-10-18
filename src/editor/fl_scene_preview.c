@@ -1,43 +1,13 @@
 #include "fl_scene_preview.h"
-#include "fl_gpu_image.h"
+#include "fl_scene_renderer.h"
 #include "fl_canvas_view.h"
 #include "doc/fl_scene_frame.h"
 #include "style.h"
-#include "core/fl_log.h"
-#include "media/fl_media.h"
-#include "platform/fl_paths.h"
-#include "text/fl_text_raster.h"
 #include <ca_gpu.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define KIND_IMAGE 6
-#define IMAGE_MAX_SIDE 8192u
-
-typedef struct Fl_CachedText {
-    Fl_Id entity;
-    unsigned char *text;
-    size_t length;
-    double width,height,font_size;
-    Fl_Typography typography;
-    Fl_GpuImage *image;
-} Fl_CachedText;
-/* Decode request owned by its image entry until the worker finishes. */
-typedef struct Fl_ImageDecode {
-    char path[FL_PATH_MAX];
-    unsigned char *pixels;
-    uint32_t width,height;
-} Fl_ImageDecode;
-typedef enum Fl_ImageState { IMAGE_DECODING, IMAGE_DECODED, IMAGE_READY, IMAGE_FAILED } Fl_ImageState;
-typedef struct Fl_CachedImage {
-    Fl_Id asset;
-    Fl_ImageState state;
-    Fl_JobHandle job;
-    Fl_ImageDecode *decode;
-    Fl_GpuImage *image;
-    bool orphaned;              /* no longer referenced; freed once its decode finishes */
-} Fl_CachedImage;
 struct Fl_ScenePreview {
     Fl_SceneEdit *edit;
     Fl_Fonts *fonts;
@@ -45,92 +15,8 @@ struct Fl_ScenePreview {
     Fl_EventBus *bus;
     Fl_PreviewInvalidateFn invalidate;
     void *invalidate_data;
-    bool clean;                 /* omit editor aids (grid, frame edge, selection) */
-    VkDevice device;
-    VkPipeline pipeline;
-    VkPipelineLayout layout;
-    VkFormat format;
-    Fl_GpuImages *images;
-    Fl_TextRasterizer *rasterizer;
-    Fl_CachedText *texts;
-    size_t text_count;
-    Fl_Id text_scene;
-    uint64_t text_revision, text_generation;
-    Fl_Tick text_tick;
-    Fl_CachedImage *pictures;
-    size_t picture_count, picture_capacity;
-    Fl_Id picture_scene;
-    uint64_t picture_revision;
+    Fl_SceneRenderer *renderer;     /* created with the first frame, when the GPU instance is known */
 };
-
-/* Build a compact solid-colour GPU pipeline on the viewport's native format. */
-static bool create_pipeline(Fl_ScenePreview *p, Ca_Viewport *viewport)
-{
-    if (p->pipeline) return p->format == ca_viewport_format(viewport);
-    Ca_Instance *instance = ca_viewport_instance(viewport); p->device = ca_gpu_device(instance);
-    const char *vs = "#version 450\nlayout(push_constant) uniform P { vec4 a; vec4 b; vec4 fill; vec4 stroke; vec4 params; } p;"
-        "layout(location=0) out vec2 uv;vec2 v[6]=vec2[](vec2(0,0),vec2(1,0),vec2(1,1),vec2(0,0),vec2(1,1),vec2(0,1));"
-        "void main(){uv=v[gl_VertexIndex];vec3 q=vec3(uv,1);gl_Position=vec4(dot(p.a.xyz,q),dot(p.b.xyz,q),0,1);}";
-    const char *fs = "#version 450\nlayout(push_constant) uniform P { vec4 a; vec4 b; vec4 fill; vec4 stroke; vec4 params; } p;"
-        "layout(set=0,binding=0) uniform sampler2D mask;layout(location=0) in vec2 uv;layout(location=0) out vec4 color;"
-        "void main(){float kind=p.params.w;vec2 size=p.params.xy;float sw=p.params.z;"
-        "if(kind==7){vec2 world=uv*vec2(p.a.w,p.b.w)+size;vec2 cell=world/sw;"
-        "vec2 d=abs(fract(cell-.5)-.5)/max(fwidth(cell),vec2(.0001));"
-        "vec2 big=cell/5;vec2 b=abs(fract(big-.5)-.5)/max(fwidth(big),vec2(.0001));"
-        "float minor=(1-min(min(d.x,d.y),1))*smoothstep(2,6,1/max(fwidth(cell.x),fwidth(cell.y)));"
-        "float major=(1-min(min(b.x,b.y),1))*smoothstep(2,6,1/max(fwidth(big.x),fwidth(big.y)));"
-        "color=mix(p.fill,p.stroke,major);color.a*=max(minor,major);return;}"
-        "if(kind==5){color=p.fill;color.a*=texture(mask,uv).r;return;}"
-        "if(kind==6){color=texture(mask,uv);color.a*=p.fill.a;return;}"
-        "if(kind==3||kind==4){float shaft=abs((uv.y-.5)*size.y)-sw*.5;"
-        "float head=max(.72-uv.x,abs(uv.y-.5)-(1-uv.x)/.28*.5);"
-        "float cover=1-smoothstep(-fwidth(shaft),fwidth(shaft),shaft);"
-        "if(kind==4){cover*=1-smoothstep(.79,.8,uv.x);cover=max(cover,1-smoothstep(-fwidth(head),fwidth(head),head));}color=p.stroke;color.a*=cover;return;}"
-        "float edge;if(kind==2){vec2 q=(uv-.5)*2;edge=(length(q)-1)*min(size.x,size.y)*.5;}"
-        "else{vec2 q=abs((uv-.5)*size)-size*.5;edge=max(q.x,q.y);}"
-        "float aa=max(fwidth(edge),.001);float cover=1-smoothstep(-aa,aa,edge);"
-        "float border=sw>0 ? smoothstep(-sw-aa,-sw+aa,edge) : 0;"
-        "color=mix(p.fill,p.stroke,border);color.a*=cover;}";
-    VkShaderModule vert = ca_shader_compile(instance, vs, VK_SHADER_STAGE_VERTEX_BIT);
-    VkShaderModule frag = ca_shader_compile(instance, fs, VK_SHADER_STAGE_FRAGMENT_BIT);
-    VkPushConstantRange range = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 80};
-    VkDescriptorSetLayout mask_layout=fl_gpu_images_layout(p->images);
-    VkPipelineLayoutCreateInfo layout = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount=1, .pSetLayouts=&mask_layout, .pushConstantRangeCount = 1, .pPushConstantRanges = &range};
-    bool ok = vert && frag && vkCreatePipelineLayout(p->device, &layout, NULL, &p->layout) == VK_SUCCESS;
-    VkPipelineShaderStageCreateInfo stages[2] = {
-        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vert, .pName = "main"},
-        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = frag, .pName = "main"}};
-    VkPipelineVertexInputStateCreateInfo vertex = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-    VkPipelineInputAssemblyStateCreateInfo assembly = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
-    VkPipelineViewportStateCreateInfo view = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
-    VkPipelineRasterizationStateCreateInfo raster = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE, .lineWidth = 1};
-    VkPipelineMultisampleStateCreateInfo samples = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
-    VkPipelineColorBlendAttachmentState blend = {.blendEnable = VK_TRUE, .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
-        .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, .colorBlendOp = VK_BLEND_OP_ADD,
-        .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE, .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-        .alphaBlendOp = VK_BLEND_OP_ADD, .colorWriteMask = 15};
-    VkPipelineColorBlendStateCreateInfo blends = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, .attachmentCount = 1, .pAttachments = &blend};
-    VkDynamicState states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
-    VkPipelineDynamicStateCreateInfo dynamic = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 2, .pDynamicStates = states};
-    p->format = ca_viewport_format(viewport);
-    VkPipelineRenderingCreateInfo rendering = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO, .colorAttachmentCount = 1, .pColorAttachmentFormats = &p->format};
-    VkGraphicsPipelineCreateInfo pipeline = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &rendering,
-        .stageCount = 2, .pStages = stages, .pVertexInputState = &vertex, .pInputAssemblyState = &assembly,
-        .pViewportState = &view, .pRasterizationState = &raster, .pMultisampleState = &samples,
-        .pColorBlendState = &blends, .pDynamicState = &dynamic, .layout = p->layout};
-    if (ok) ok = vkCreateGraphicsPipelines(p->device, VK_NULL_HANDLE, 1, &pipeline, NULL, &p->pipeline) == VK_SUCCESS;
-    if (vert) vkDestroyShaderModule(p->device, vert, NULL);
-    if (frag) vkDestroyShaderModule(p->device, frag, NULL);
-    if (!ok && p->layout) { vkDestroyPipelineLayout(p->device, p->layout, NULL); p->layout = VK_NULL_HANDLE; }
-    return ok;
-}
-
-/* Decode stored sRGB channels for the linear-light scene target. */
-static float linear_channel(unsigned char value)
-{
-    float v=value/255.0f;
-    return v<=.04045f ? v/12.92f : powf((v+.055f)/1.055f,2.4f);
-}
 
 /* Resolve the saved camera into a viewport-centered output frame. */
 static Fl_CanvasMapping preview_mapping(const Fl_Scene *scene, double w, double h)
@@ -207,215 +93,29 @@ Fl_EditGesture fl_scene_preview_handle(Fl_ScenePreview *p,Ca_Viewport *viewport,
     return FL_GESTURE_MOVE;
 }
 
-/* Return whether two typography requests select the same face. */
-static bool same_typography(const Fl_Typography *a,const Fl_Typography *b)
-{
-    return a->weight==b->weight&&a->italic==b->italic&&!strcmp(a->family,b->family);
-}
-
-/* Rasterize one text entity into a coverage texture using the resolved face. */
-static Fl_GpuImage *rasterize_text(Fl_ScenePreview *p,const Fl_CachedText *entry,const unsigned char *text)
-{
-    Fl_FontMatch match=fl_fonts_match(p->fonts,&entry->typography);
-    Fl_TextStyle style={match.face,entry->font_size,match.synthetic_bold,match.synthetic_italic};
-    uint32_t w,h;
-    unsigned char *mask=fl_text_rasterize(p->rasterizer,&style,text,entry->length,entry->width,entry->height,&w,&h);
-    Fl_GpuImage *image=mask ? fl_gpu_image_create(p->images,FL_GPU_IMAGE_COVERAGE,mask,w,h) : NULL;
-    free(mask);
-    return image;
-}
-
-/* Prepare text masks only when content/box/font changes, preserving them on colour edits. */
-static void prepare_texts(Fl_ScenePreview *p,const Fl_Scene *scene,const Fl_SceneState *state)
-{
-    uint64_t generation=fl_fonts_generation(p->fonts);
-    Fl_Tick tick=state ? state->tick : 0;
-    if (p->text_scene==scene->id&&p->text_revision==scene->revision&&p->text_generation==generation&&p->text_tick==tick) return;
-    bool fonts_changed=p->text_generation!=generation;
-    if (fonts_changed) fl_text_rasterizer_flush(p->rasterizer);
-    size_t count=0;
-    for (size_t i=0;i<scene->entity_count;++i) if (fl_entity_component(&scene->entities[i],FL_COMPONENT_TEXT)) ++count;
-    if (count>SIZE_MAX/sizeof(Fl_CachedText)) return;
-    Fl_CachedText *next=count ? calloc(count,sizeof(*next)) : NULL;
-    if (count&&!next) return;
-    size_t at=0;
-    for (size_t i=0;i<scene->entity_count;++i) {
-        const Fl_Entity *e=&scene->entities[i];const Fl_Component *text=fl_entity_component(e,FL_COMPONENT_TEXT);
-        if (!text) continue;
-        Fl_Transform t;Fl_CachedText *entry=&next[at++];entry->entity=e->id;
-        if (state) t=state->entities[i].transform;
-        else if (!fl_transform_decode(fl_entity_component(e,FL_COMPONENT_TRANSFORM),&t)) continue;
-        entry->length=text->size;entry->width=t.width;entry->height=t.height;
-        entry->font_size=state ? state->entities[i].appearance.font_size : fl_widget_appearance(e).font_size;
-        entry->typography=fl_widget_typography(e);
-        entry->text=text->size ? malloc(text->size) : NULL;
-        if (text->size&&!entry->text) continue;
-        if (text->size) memcpy(entry->text,text->data,text->size);
-        for (size_t j=0;!fonts_changed&&j<p->text_count;++j) {
-            Fl_CachedText *old=&p->texts[j];
-            if (old->entity==e->id&&p->text_scene==scene->id&&old->width==entry->width&&old->height==entry->height&&
-                old->font_size==entry->font_size&&same_typography(&old->typography,&entry->typography)&&old->length==entry->length&&
-                (!text->size||(old->text&&!memcmp(old->text,text->data,text->size)))) {
-                entry->image=old->image;old->image=NULL;break;
-            }
-        }
-        if (!entry->image&&t.width>0&&t.height>0) {
-            entry->image=rasterize_text(p,entry,text->data);
-            if (!entry->image) FL_LOG_ERROR("preview","could not rasterize text entity %llu",(unsigned long long)e->id);
-        }
-    }
-    bool retired=false;
-    for (size_t i=0;i<p->text_count;++i) retired|=p->texts[i].image!=NULL;
-    if (retired) vkDeviceWaitIdle(p->device);
-    for (size_t i=0;i<p->text_count;++i) {fl_gpu_image_destroy(p->texts[i].image);free(p->texts[i].text);}
-    free(p->texts);p->texts=next;p->text_count=count;p->text_scene=scene->id;p->text_revision=scene->revision;p->text_generation=generation;
-    p->text_tick=tick;
-}
-
-/* Worker body: decode one stored image; touches only its request. */
-static void decode_image(void *data)
-{
-    Fl_ImageDecode *d=data;
-    d->pixels=fl_image_decode(d->path,IMAGE_MAX_SIDE,&d->width,&d->height);
-}
-
-/* Release an entry's CPU/GPU storage; callers guarantee its decode finished and GPU reads completed. */
-static void release_picture(Fl_CachedImage *entry)
-{
-    if (entry->decode) fl_image_free(entry->decode->pixels);
-    free(entry->decode);fl_gpu_image_destroy(entry->image);
-    *entry=(Fl_CachedImage){0};
-}
-
-/* Return the cache entry of asset, or NULL. */
-static Fl_CachedImage *find_picture(Fl_ScenePreview *p,Fl_Id asset)
-{
-    for (size_t i=0;i<p->picture_count;++i) if (p->pictures[i].asset==asset&&!p->pictures[i].orphaned) return &p->pictures[i];
-    return NULL;
-}
-
-/* Queue a decode for asset; failures leave a FAILED entry so the placeholder is shown without retry loops. */
-static void request_picture(Fl_ScenePreview *p,const Fl_Asset *asset)
-{
-    if (p->picture_count==p->picture_capacity) {
-        size_t capacity=p->picture_capacity ? p->picture_capacity*2 : 8;
-        Fl_CachedImage *grown=realloc(p->pictures,capacity*sizeof(*grown));
-        if (!grown) return;
-        p->pictures=grown;p->picture_capacity=capacity;
-    }
-    Fl_CachedImage *entry=&p->pictures[p->picture_count++];
-    *entry=(Fl_CachedImage){.asset=asset->id,.state=IMAGE_FAILED};
-    entry->decode=calloc(1,sizeof(*entry->decode));
-    if (!entry->decode||!fl_project_asset_path(fl_scene_edit_project(p->edit),asset,entry->decode->path,sizeof(entry->decode->path))) return;
-    entry->job=fl_job_submit(p->jobs,&(Fl_JobDesc){.fn=decode_image,.data=entry->decode,.priority=FL_JOB_PRIORITY_NORMAL,.notify=true});
-    if (entry->job.generation) entry->state=IMAGE_DECODING;
-}
-
-/* Drop pictures the current scene no longer references; in-flight decodes are orphaned until they finish. */
-static void prepare_pictures(Fl_ScenePreview *p,const Fl_Scene *scene)
-{
-    if (p->picture_scene==scene->id&&p->picture_revision==scene->revision) return;
-    Fl_Project *project=fl_scene_edit_project(p->edit);
-    bool waited=false;
-    for (size_t i=0;i<p->picture_count;) {
-        Fl_CachedImage *entry=&p->pictures[i];
-        bool used=false;
-        for (size_t j=0;!entry->orphaned&&!used&&j<scene->entity_count;++j) {
-            Fl_Id asset;
-            used=fl_image_asset_decode(fl_entity_component(&scene->entities[j],FL_COMPONENT_IMAGE),&asset)&&asset==entry->asset&&
-                 fl_project_asset(project,asset);
-        }
-        if (used) {++i;continue;}
-        if (entry->state==IMAGE_DECODING) {entry->orphaned=true;++i;continue;}
-        if (entry->image&&!waited) {vkDeviceWaitIdle(p->device);waited=true;}
-        release_picture(entry);
-        p->pictures[i]=p->pictures[--p->picture_count];
-    }
-    p->picture_scene=scene->id;p->picture_revision=scene->revision;
-}
-
-/* Request missing decodes and upload finished ones for every image entity, before rendering begins. */
-static void stage_pictures(Fl_ScenePreview *p,const Fl_Scene *scene)
-{
-    Fl_Project *project=fl_scene_edit_project(p->edit);
-    for (size_t i=0;i<scene->entity_count;++i) {
-        Fl_Id id;const Fl_Asset *asset;
-        if (!fl_image_asset_decode(fl_entity_component(&scene->entities[i],FL_COMPONENT_IMAGE),&id)||
-            !(asset=fl_project_asset(project,id))) continue;
-        Fl_CachedImage *entry=find_picture(p,id);
-        if (!entry) {request_picture(p,asset);continue;}
-        if (entry->state!=IMAGE_DECODED) continue;
-        entry->image=entry->decode->pixels ? fl_gpu_image_create(p->images,FL_GPU_IMAGE_SRGBA,entry->decode->pixels,
-                                                                 entry->decode->width,entry->decode->height) : NULL;
-        fl_image_free(entry->decode->pixels);free(entry->decode);entry->decode=NULL;
-        entry->state=entry->image ? IMAGE_READY : IMAGE_FAILED;
-        if (!entry->image) FL_LOG_ERROR("preview","could not load image asset %s",asset->name);
-    }
-}
-
-/* Borrow an image entity's uploaded texture, or VK_NULL_HANDLE while loading or after failure. */
-static VkDescriptorSet picture_descriptor(Fl_ScenePreview *p,const Fl_Entity *e)
-{
-    Fl_Id id;
-    if (!fl_image_asset_decode(fl_entity_component(e,FL_COMPONENT_IMAGE),&id)) return VK_NULL_HANDLE;
-    const Fl_CachedImage *entry=find_picture(p,id);
-    return entry&&entry->state==IMAGE_READY ? fl_gpu_image_descriptor(entry->image) : VK_NULL_HANDLE;
-}
-
-/* Observe decode completion; orphaned entries are freed, others upload at the next render. */
-static bool job_done(const Fl_Event *event,void *data)
-{
-    Fl_ScenePreview *p=data;const Fl_JobDoneEvent *done=event->payload;
-    for (size_t i=0;i<p->picture_count;++i) {
-        Fl_CachedImage *entry=&p->pictures[i];
-        if (entry->state!=IMAGE_DECODING||entry->job.index!=done->job.index||entry->job.generation!=done->job.generation) continue;
-        if (entry->orphaned) {release_picture(entry);p->pictures[i]=p->pictures[--p->picture_count];}
-        else {entry->state=IMAGE_DECODED;if (p->invalidate) p->invalidate(p->invalidate_data);}
-        break;
-    }
-    return false;
-}
-
-/* Record one affine primitive through the shared sampled-mask pipeline. */
-static void draw_primitive(Fl_ScenePreview *p,VkCommandBuffer cmd,const Fl_SceneFrame *frame,Fl_Affine matrix,
-                           double width,double height,Fl_WidgetKind kind,Fl_Appearance appearance,VkDescriptorSet mask)
-{
-    const double *a=matrix.v;
-    float push[20]={(float)(a[0]*width*2/frame->width),(float)(a[1]*height*2/frame->width),(float)((a[2]-frame->x)*2/frame->width-1),0,
-        (float)(a[3]*width*2/frame->height),(float)(a[4]*height*2/frame->height),(float)((a[5]-frame->y)*2/frame->height-1),0,
-        linear_channel(appearance.fill[0]),linear_channel(appearance.fill[1]),linear_channel(appearance.fill[2]),appearance.fill[3]/255.f,
-        linear_channel(appearance.stroke[0]),linear_channel(appearance.stroke[1]),linear_channel(appearance.stroke[2]),appearance.stroke[3]/255.f,
-        (float)width,(float)height,(float)appearance.stroke_width,(float)kind};
-    for (size_t i=0;i<20;++i) if (!isfinite(push[i])) return;
-    vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,p->layout,0,1,&mask,0,NULL);
-    vkCmdPushConstants(cmd,p->layout,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(push),push);
-    vkCmdDraw(cmd,6,1,0,0);
-}
-
 /* Draw the repeating world grid in one bounded full-viewport pass, with a major line every five cells. */
-static void draw_grid(Fl_ScenePreview *p, VkCommandBuffer cmd, const Fl_SceneFrame *frame, VkDescriptorSet white)
+static void draw_grid(Fl_ScenePreview *p, VkCommandBuffer cmd, const Fl_SceneFrame *frame)
 {
     const unsigned char minor[4]=FL_STYLE_CANVAS_GRID_RGBA, major[4]=FL_STYLE_CANVAS_GRID_MAJOR_RGBA;
     double period=FL_SCENE_GRID_SPACING*5;
     float push[20]={2,0,-1,(float)frame->width,0,2,-1,(float)frame->height,
-        linear_channel(minor[0]),linear_channel(minor[1]),linear_channel(minor[2]),minor[3]/255.f,
-        linear_channel(major[0]),linear_channel(major[1]),linear_channel(major[2]),major[3]/255.f,
+        fl_scene_renderer_linear(minor[0]),fl_scene_renderer_linear(minor[1]),fl_scene_renderer_linear(minor[2]),minor[3]/255.f,
+        fl_scene_renderer_linear(major[0]),fl_scene_renderer_linear(major[1]),fl_scene_renderer_linear(major[2]),major[3]/255.f,
         (float)fmod(frame->x,period),(float)fmod(frame->y,period),(float)FL_SCENE_GRID_SPACING,7};
-    vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,p->layout,0,1,&white,0,NULL);
-    vkCmdPushConstants(cmd,p->layout,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(push),push);
-    vkCmdDraw(cmd,6,1,0,0);
+    fl_scene_renderer_push(p->renderer,cmd,push,fl_scene_renderer_white(p->renderer));
 }
 
 void fl_scene_preview_render(Ca_Viewport *viewport,void *data)
 {
     Fl_ScenePreview *p=data;
-    const Fl_Scene *scene=fl_project_scene(fl_scene_edit_project(p->edit),fl_scene_edit_scene(p->edit));
+    Fl_Project *project=fl_scene_edit_project(p->edit);
+    const Fl_Scene *scene=fl_project_scene(project,fl_scene_edit_scene(p->edit));
     const Fl_SceneGeometry *g=fl_scene_edit_geometry(p->edit);
     const Fl_SceneState *state=fl_scene_edit_state(p->edit);
     if (state&&scene&&(state->scene!=scene->id||state->count!=scene->entity_count)) state=NULL;
-    p->device=ca_gpu_device(ca_viewport_instance(viewport));
-    if (!p->images) p->images=fl_gpu_images_create(ca_viewport_instance(viewport));
-    if (p->images&&scene) {prepare_texts(p,scene,state);prepare_pictures(p,scene);stage_pictures(p,scene);}
+    if (!p->renderer) p->renderer=fl_scene_renderer_create(&(Fl_SceneRendererDesc){.instance=ca_viewport_instance(viewport),.fonts=p->fonts,
+        .jobs=p->jobs,.bus=p->bus,.invalidate=p->invalidate,.invalidate_data=p->invalidate_data});
+    if (p->renderer&&scene) fl_scene_renderer_prepare(p->renderer,project,scene,state,1,false);
     uint32_t w=ca_viewport_width(viewport),h=ca_viewport_height(viewport);
     VkCommandBuffer cmd=ca_viewport_cmd(viewport);
     VkRenderingAttachmentInfo attachment={.sType=VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
@@ -428,55 +128,28 @@ void fl_scene_preview_render(Ca_Viewport *viewport,void *data)
     ca_viewport_screen_rect(viewport,&logical_x,&logical_y,&logical_w,&logical_h);
     Fl_CanvasMapping map=preview_mapping(scene,logical_w,logical_h);
     Fl_SceneFrame target=map.target, frame=map.world;
-    if (g&&map.scale>0&&p->images&&create_pipeline(p,viewport)) {
-        VkRect2D area={{0,0},{w,h}};
-        VkViewport view={0,0,(float)w,(float)h,0,1};
-        vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,p->pipeline);vkCmdSetViewport(cmd,0,1,&view);vkCmdSetScissor(cmd,0,1,&area);
-        VkDescriptorSet white=fl_gpu_images_white(p->images);
-        Fl_Affine background=fl_affine_identity(); background.v[2]=target.x; background.v[5]=target.y;
-        Fl_Appearance board={.fill=FL_STYLE_CANVAS_TARGET_RGBA};
-        draw_primitive(p,cmd,&frame,background,target.width,target.height,FL_WIDGET_RECTANGLE,board,white);
-        if (!p->clean) draw_grid(p,cmd,&frame,white);
-        const Fl_Appearance placeholder={.fill=FL_STYLE_IMAGE_PLACEHOLDER_RGBA,
-            .stroke=FL_STYLE_IMAGE_PLACEHOLDER_STROKE_RGBA,.stroke_width=FL_STYLE_IMAGE_PLACEHOLDER_STROKE};
-        for (size_t i=0;i<g->count;++i) {
-            size_t index=g->order[i];const Fl_ResolvedEntity *v=&g->entities[index];const Fl_Entity *e=&scene->entities[index];
-            if (!v->visible||v->kind==FL_WIDGET_GROUP||v->opacity<=0) continue;
-            Fl_Appearance look=state ? state->entities[index].appearance : fl_widget_appearance(e);
-            look.fill[3]=(unsigned char)lround(look.fill[3]*v->opacity);
-            look.stroke[3]=(unsigned char)lround(look.stroke[3]*v->opacity);
-            Fl_Appearance picture={.fill={255,255,255,(unsigned char)lround(255*v->opacity)}};
-            VkDescriptorSet mask=white;
-            if (v->kind==FL_WIDGET_TEXT) {
-                mask=VK_NULL_HANDLE;
-                if (p->text_scene==scene->id) for (size_t j=0;j<p->text_count;++j)
-                    if (p->texts[j].entity==e->id) mask=fl_gpu_image_descriptor(p->texts[j].image);
-            } else if (v->kind==FL_WIDGET_IMAGE) {
-                mask=picture_descriptor(p,e);
-                if (mask) draw_primitive(p,cmd,&frame,v->world,v->local.width,v->local.height,(Fl_WidgetKind)KIND_IMAGE,picture,mask);
-                else draw_primitive(p,cmd,&frame,v->world,v->local.width,v->local.height,FL_WIDGET_RECTANGLE,placeholder,white);
-                continue;
-            }
-            if (mask) draw_primitive(p,cmd,&frame,v->world,v->local.width,v->local.height,v->kind,look,mask);
-        }
+    if (g&&map.scale>0&&p->renderer&&fl_scene_renderer_begin(p->renderer,cmd,ca_viewport_format(viewport),w,h)) {
+        fl_scene_renderer_background(p->renderer,cmd,&frame,&target);
+        draw_grid(p,cmd,&frame);
+        fl_scene_renderer_entities(p->renderer,cmd,&frame,scene,state,g);
+        VkDescriptorSet white=fl_scene_renderer_white(p->renderer);
         double logical_scale=map.scale;
-        if (!p->clean) {
-            Fl_Appearance frame_edge={.stroke=FL_STYLE_CANVAS_FRAME_RGBA,.stroke_width=1/map.scale};
-            draw_primitive(p,cmd,&frame,background,target.width,target.height,FL_WIDGET_RECTANGLE,frame_edge,white);
-            Fl_Appearance outline={.stroke=FL_STYLE_GIZMO_RGBA,.font_size=48};
-            for (size_t i=0;i<g->count;++i) {
-                const Fl_ResolvedEntity *v=&g->entities[i];
-                if (!v->visible||!fl_scene_edit_contains(p->edit,scene->entities[i].id)) continue;
-                double local_scale=fmax(hypot(v->world.v[0],v->world.v[3]),hypot(v->world.v[1],v->world.v[4]));
-                outline.stroke_width=FL_STYLE_OUTLINE_WIDTH/(logical_scale*fmax(local_scale,1e-9));
-                draw_primitive(p,cmd,&frame,v->world,v->local.width,v->local.height,FL_WIDGET_RECTANGLE,outline,white);
-            }
-            Fl_Appearance handle={.fill=FL_STYLE_GIZMO_RGBA,.font_size=48};double size=FL_STYLE_HANDLE_SIZE/logical_scale;
-            for (unsigned i=0;i<5;++i) {
-                double x,y;if (!handle_point(p,scene,g,i,logical_scale,&x,&y)) break;
-                Fl_Affine matrix=fl_affine_identity();matrix.v[2]=x-size*.5;matrix.v[5]=y-size*.5;
-                draw_primitive(p,cmd,&frame,matrix,size,size,FL_WIDGET_RECTANGLE,handle,white);
-            }
+        Fl_Appearance frame_edge={.stroke=FL_STYLE_CANVAS_FRAME_RGBA,.stroke_width=1/map.scale};
+        Fl_Affine origin=fl_affine_identity(); origin.v[2]=target.x; origin.v[5]=target.y;
+        fl_scene_renderer_primitive(p->renderer,cmd,&frame,origin,target.width,target.height,FL_WIDGET_RECTANGLE,frame_edge,white);
+        Fl_Appearance outline={.stroke=FL_STYLE_GIZMO_RGBA,.font_size=48};
+        for (size_t i=0;i<g->count;++i) {
+            const Fl_ResolvedEntity *v=&g->entities[i];
+            if (!v->visible||!fl_scene_edit_contains(p->edit,scene->entities[i].id)) continue;
+            double local_scale=fmax(hypot(v->world.v[0],v->world.v[3]),hypot(v->world.v[1],v->world.v[4]));
+            outline.stroke_width=FL_STYLE_OUTLINE_WIDTH/(logical_scale*fmax(local_scale,1e-9));
+            fl_scene_renderer_primitive(p->renderer,cmd,&frame,v->world,v->local.width,v->local.height,FL_WIDGET_RECTANGLE,outline,white);
+        }
+        Fl_Appearance handle={.fill=FL_STYLE_GIZMO_RGBA,.font_size=48};double size=FL_STYLE_HANDLE_SIZE/logical_scale;
+        for (unsigned i=0;i<5;++i) {
+            double x,y;if (!handle_point(p,scene,g,i,logical_scale,&x,&y)) break;
+            Fl_Affine matrix=fl_affine_identity();matrix.v[2]=x-size*.5;matrix.v[5]=y-size*.5;
+            fl_scene_renderer_primitive(p->renderer,cmd,&frame,matrix,size,size,FL_WIDGET_RECTANGLE,handle,white);
         }
     }
     vkCmdEndRendering(cmd);
@@ -488,23 +161,11 @@ Fl_ScenePreview *fl_scene_preview_create(const Fl_ScenePreviewDesc *desc)
     Fl_ScenePreview *p=calloc(1,sizeof(*p));if (!p) return NULL;
     p->edit=desc->edit;p->fonts=desc->fonts;p->jobs=desc->jobs;p->bus=desc->bus;
     p->invalidate=desc->invalidate;p->invalidate_data=desc->invalidate_data;
-    p->rasterizer=fl_text_rasterizer_create();
-    if (!p->rasterizer||!fl_event_subscribe(p->bus,&(Fl_SubscribeDesc){.type=fl_jobs_done_event(p->jobs),.fn=job_done,
-        .user_data=p,.owner=p}).generation) {fl_text_rasterizer_destroy(p->rasterizer);free(p);return NULL;}
     return p;
 }
-void fl_scene_preview_set_clean(Fl_ScenePreview *p, bool clean) {if (p) p->clean = clean;}
-
 void fl_scene_preview_destroy(Fl_ScenePreview *p)
 {
     if (!p) return;
-    fl_event_unsubscribe_owner(p->bus,p);
-    for (size_t i=0;i<p->picture_count;++i) if (p->pictures[i].state==IMAGE_DECODING) fl_job_wait(p->jobs,p->pictures[i].job);
-    if (p->device) vkDeviceWaitIdle(p->device);
-    for (size_t i=0;i<p->picture_count;++i) release_picture(&p->pictures[i]);
-    for (size_t i=0;i<p->text_count;++i) {fl_gpu_image_destroy(p->texts[i].image);free(p->texts[i].text);}
-    free(p->pictures);free(p->texts);
-    if (p->pipeline) vkDestroyPipeline(p->device,p->pipeline,NULL);
-    if (p->layout) vkDestroyPipelineLayout(p->device,p->layout,NULL);
-    fl_gpu_images_destroy(p->images);fl_text_rasterizer_destroy(p->rasterizer);free(p);
+    fl_scene_renderer_destroy(p->renderer);
+    free(p);
 }

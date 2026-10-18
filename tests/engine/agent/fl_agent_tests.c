@@ -13,6 +13,19 @@
 #include <string.h>
 
 static Fl_Project *g_project;
+
+/* Stand-in for the editor's GPU renderer: a gradient of the requested size, so the tool plumbing is testable headless. */
+static bool fake_render(void *user, const Fl_Project *project, const Fl_Scene *scene, Fl_Tick tick, uint32_t width, Fl_Frame *out)
+{
+    (void)user; (void)project; (void)tick;
+    uint32_t w, h;
+    if (!fl_frame_dimensions(scene, width, &w, &h)) return false;
+    out->rgba = malloc((size_t)w * h * 4);
+    if (!out->rgba) return false;
+    for (size_t i = 0; i < (size_t)w * h; ++i) {out->rgba[i * 4] = (unsigned char)i; out->rgba[i * 4 + 1] = 40; out->rgba[i * 4 + 2] = 90; out->rgba[i * 4 + 3] = 255;}
+    out->width = w; out->height = h;
+    return true;
+}
 static Fl_Project *host_project(void *user) {(void)user; return g_project;}
 
 /* Parse literal JSON text; the tests build every request this way. */
@@ -219,6 +232,17 @@ static void test_protocol(Fl_Agent *agent)
     CHECK(cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(res, "isError")));
     CHECK(cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(res, "content")) == 1);
     cJSON_Delete(r); free(reply);
+    char render[256];
+    snprintf(render, sizeof(render), "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"tools/call\",\"params\":{\"name\":\"render_frame\",\"arguments\":{\"scene\":%llu,\"times\":[0,1],\"width\":320}}}",
+             (unsigned long long)fl_project_scene_at(g_project, 0)->id);
+    reply = fl_mcp_handle(mcp, render, strlen(render));
+    r = json(reply ? reply : "null");
+    res = cJSON_GetObjectItemCaseSensitive(r, "result");
+    const cJSON *content = cJSON_GetObjectItemCaseSensitive(res, "content"), *block;
+    int images = 0;
+    cJSON_ArrayForEach(block, content) images += !strcmp(cJSON_GetObjectItemCaseSensitive(block, "type")->valuestring, "image");
+    CHECK(cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(res, "isError")) && images == 2 && cJSON_GetArraySize(content) == 3);
+    cJSON_Delete(r); free(reply);
     const char *call_bad = "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"get_scene\",\"arguments\":{\"scene\":99999}}}";
     reply = fl_mcp_handle(mcp, call_bad, strlen(call_bad));
     r = json(reply ? reply : "null");
@@ -386,13 +410,13 @@ int main(int argc, char **argv)
     CHECK(fl_fs_join(manifest, sizeof(manifest), directory, "project.flow")); fl_fs_remove(manifest);
     g_project = fl_project_create(directory, "Agent", NULL);
     CHECK(g_project != NULL); if (!g_project) return 1;
-    Fl_Agent *agent = fl_agent_create(&(Fl_AgentHost){host_project, NULL});
+    Fl_Agent *agent = fl_agent_create(&(Fl_AgentHost){host_project, fake_render, NULL});
     CHECK(agent != NULL); if (!agent) return 1;
     Fl_Id scene = fl_project_scene_at(g_project, 0)->id;
     test_authoring(agent, scene);
     test_scene_history(agent, directory);
     test_protocol(agent);
-    Fl_Agent *http_agent = fl_agent_create(&(Fl_AgentHost){host_project, NULL});
+    Fl_Agent *http_agent = fl_agent_create(&(Fl_AgentHost){host_project, fake_render, NULL});
     CHECK(http_agent != NULL);
     test_http(http_agent);
     fl_agent_destroy(http_agent);
@@ -400,5 +424,6 @@ int main(int argc, char **argv)
     test_timeout_and_png();
     fl_agent_destroy(agent);
     fl_project_destroy(g_project);
+
     return FLOW_TEST_RESULT("fl_agent_tests");
 }

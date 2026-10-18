@@ -181,20 +181,24 @@ static char *base64(const unsigned char *bytes, size_t size)
     *w = 0; return out;
 }
 
-void fl_mcp_return_image(Fl_McpCall *call, cJSON *value, const unsigned char *bytes, size_t size, const char *mime_type)
+void fl_mcp_return_images(Fl_McpCall *call, cJSON *value, const Fl_McpImage *images, size_t count)
 {
-    cJSON *content = cJSON_CreateArray(), *image = cJSON_CreateObject(), *meta = value ? text_block(value) : NULL;
-    char *encoded = base64(bytes, size);
+    cJSON *content = cJSON_CreateArray(), *meta = value ? text_block(value) : NULL;
     cJSON_Delete(value);
-    if (!content || !image || !encoded) {
-        free(encoded); cJSON_Delete(content); cJSON_Delete(image); cJSON_Delete(meta);
-        fl_mcp_return_error(call, "internal", "out of memory encoding image"); return;
-    }
-    cJSON_AddStringToObject(image, "type", "image");
-    cJSON_AddStringToObject(image, "data", encoded); free(encoded);
-    cJSON_AddStringToObject(image, "mimeType", mime_type);
+    if (!content) {cJSON_Delete(meta); fl_mcp_return_error(call, "internal", "out of memory"); return;}
     if (meta) cJSON_AddItemToArray(content, meta);
-    cJSON_AddItemToArray(content, image);
+    for (size_t i = 0; i < count; ++i) {
+        char *encoded = base64(images[i].bytes, images[i].size);
+        cJSON *item = encoded ? cJSON_CreateObject() : NULL;
+        if (!item) {
+            free(encoded); cJSON_Delete(content);
+            fl_mcp_return_error(call, "internal", "out of memory encoding image"); return;
+        }
+        cJSON_AddStringToObject(item, "type", "image");
+        cJSON_AddStringToObject(item, "data", encoded); free(encoded);
+        cJSON_AddStringToObject(item, "mimeType", images[i].mime_type);
+        cJSON_AddItemToArray(content, item);
+    }
     finish(call, envelope(content, false));
 }
 

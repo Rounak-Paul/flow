@@ -376,7 +376,7 @@ static bool start_ui(Fl_Editor *editor)
         FL_LOG_ERROR(LOG_TAG, "failed to register event bus pump");
         return false;
     }
-    editor->mcp = fl_mcp_service_create(editor->bus, editor->instance);
+    editor->mcp = fl_mcp_service_create(editor->bus, editor->instance, editor->fonts, editor->jobs);
     return true;
 }
 

@@ -27,7 +27,5 @@ bool fl_scene_preview_point(Fl_ScenePreview *preview, Ca_Viewport *viewport, dou
                             bool allow_outside, double *scene_x, double *scene_y);
 /* Return a handle gesture at scene x/y, or FL_GESTURE_MOVE when no handle is hit. */
 Fl_EditGesture fl_scene_preview_handle(Fl_ScenePreview *preview, Ca_Viewport *viewport, double x, double y);
-/* Omit editor aids (grid, frame edge, selection outlines and handles) so the canvas shows the plain render. */
-void fl_scene_preview_set_clean(Fl_ScenePreview *preview, bool clean);
 /* Wait for decoding and GPU work, then release renderer-owned resources before edit/instance destruction. */
 void fl_scene_preview_destroy(Fl_ScenePreview *preview);

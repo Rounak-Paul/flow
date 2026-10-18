@@ -22,9 +22,3 @@ void fl_scene_panel_teardown(void *data);
 bool fl_scene_panel_drop_target(Fl_ScenePanel *panel, double screen_x, double screen_y, Fl_SceneDropTarget *out);
 /* Drop a widget into this panel using global screen coordinates; false outside valid targets. */
 bool fl_scene_panel_drop_widget(Fl_ScenePanel *panel, Fl_WidgetKind kind, double screen_x, double screen_y);
-
-/* Window-space rectangle (logical pixels) of the active scene's output frame inside the canvas viewport, or
-   false while the canvas is not on screen. */
-bool fl_scene_panel_output_rect(const Fl_ScenePanel *panel, double *x, double *y, double *width, double *height);
-/* Show the plain render without editor aids on the canvas, and redraw it; used while a frame is captured. */
-void fl_scene_panel_set_clean(Fl_ScenePanel *panel, bool clean);

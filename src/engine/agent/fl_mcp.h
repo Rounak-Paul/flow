@@ -62,5 +62,7 @@ void fl_mcp_return_json(Fl_McpCall *call, cJSON *value);
 void fl_mcp_return_error(Fl_McpCall *call, const char *code, const char *format, ...);
 /* Complete a call with a pre-built error object {code,message,...}. Consumes error. */
 void fl_mcp_return_error_object(Fl_McpCall *call, cJSON *error);
-/* Complete a call with a JSON value and an image. Consumes value (may be NULL). */
-void fl_mcp_return_image(Fl_McpCall *call, cJSON *value, const unsigned char *bytes, size_t size, const char *mime_type);
+/* One encoded image attached to a result. */
+typedef struct Fl_McpImage { const unsigned char *bytes; size_t size; const char *mime_type; } Fl_McpImage;
+/* Complete a call with a JSON value followed by images. Consumes value (may be NULL); image bytes are copied. */
+void fl_mcp_return_images(Fl_McpCall *call, cJSON *value, const Fl_McpImage *images, size_t count);
