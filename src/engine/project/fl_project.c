@@ -1,6 +1,7 @@
 #include "fl_project.h"
 #include "fl_timeline_internal.h"
 #include "schema/fl_widgets.h"
+#include "time/fl_scene_state.h"
 #include "doc/fl_binary.h"
 #include "core/fl_sha256.h"
 #include "core/fl_thread.h"
@@ -327,11 +328,24 @@ static bool descendant(const Fl_Scene *s, Fl_Id candidate, Fl_Id ancestor)
     return false;
 }
 
+/* Compare a proposed channel with its evaluated value at tick, ignoring numerical roundoff. */
+static bool value_changed(const Fl_Scene *scene, const Fl_Track *track, Fl_Tick tick, const double value[4])
+{
+    double current[4];
+    if (!fl_track_sample(scene, track, tick, current)) return true;
+    int channels = track->property == FL_PROP_FILL || track->property == FL_PROP_STROKE ? 4 : 1;
+    for (int c = 0; c < channels; ++c) {
+        if (channels == 4) current[c] = lround(current[c]);
+        if (fabs(current[c] - value[c]) > 1e-12 * fmax(1, fmax(fabs(current[c]), fabs(value[c])))) return true;
+    }
+    return false;
+}
+
 /* Split keyed configure components: animated channels become key writes and keep their base values.
    Rewritten components point at the caller's scratch buffers. Returns the number of writes. */
 static size_t keyed_components(const Fl_Scene *s, const Fl_Entity *e, Fl_Component *components, size_t count,
                                unsigned char transform[56], unsigned char appearance[24], unsigned char opacity[8],
-                               Fl_KeyWrite *writes)
+                               Fl_KeyWrite *writes, Fl_Tick tick)
 {
     size_t n = 0;
     for (size_t i = 0; i < count; ++i) {
@@ -371,7 +385,10 @@ static size_t keyed_components(const Fl_Scene *s, const Fl_Entity *e, Fl_Compone
             fl_opacity_encode(fl_widget_opacity(e), opacity); c->data = opacity;
         }
     }
-    return n;
+    size_t kept = 0;
+    for (size_t i = 0; i < n; ++i) if (value_changed(s, fl_scene_track(s, e->id, writes[i].property), tick, writes[i].value))
+        writes[kept++] = writes[i];
+    return kept;
 }
 
 bool fl_project_apply(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
@@ -381,6 +398,8 @@ bool fl_project_apply(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
     Fl_Scene *s = (Fl_Scene *)fl_project_scene(p, op->scene);
     Fl_Entity *e = (Fl_Entity *)fl_scene_entity(s, op->entity);
     Fl_Id created = 0;
+    if (op->keyed && (op->kind == FL_OP_TRANSFORMS || op->kind == FL_OP_ENTITY_CONFIGURE) &&
+        (!s || op->tick < 0 || op->tick > fl_scene_length(s))) return false;
     if (s && s->revision == UINT64_MAX && op->kind != FL_OP_SCENE_REMOVE && op->kind != FL_OP_SCENE_MOVE) return false;
     switch (op->kind) {
     case FL_OP_SCENE_ADD: {
@@ -529,7 +548,7 @@ bool fl_project_apply(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
         if (op->keyed && op->component_count) {
             memcpy(keyed, op->components, op->component_count * sizeof(*keyed));
             components = keyed;
-            write_count = keyed_components(s, e, keyed, op->component_count, transform_bytes, appearance_bytes, opacity_bytes, writes);
+            write_count = keyed_components(s, e, keyed, op->component_count, transform_bytes, appearance_bytes, opacity_bytes, writes, op->tick);
         }
         Fl_Entity prepared = {.name = copy_string(op->name)};
         Fl_Component *merged = NULL;
@@ -565,7 +584,9 @@ bool fl_project_apply(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
                 const double now[7] = {current.x, current.y, current.width, current.height, current.rotation, current.scale_x, current.scale_y};
                 for (int c = 0; c < 7; ++c) {
                     if (!fl_scene_track(s, edit->entity, (Fl_AnimProperty)(FL_PROP_X + c))) continue;
-                    writes[write_count++] = (Fl_KeyWrite){edit->entity, (Fl_AnimProperty)(FL_PROP_X + c), {*next[c], 0, 0, 0}};
+                    Fl_KeyWrite write = {edit->entity, (Fl_AnimProperty)(FL_PROP_X + c), {*next[c], 0, 0, 0}};
+                    if (value_changed(s, fl_scene_track(s, edit->entity, write.property), op->tick, write.value))
+                        writes[write_count++] = write;
                     *next[c] = now[c];
                 }
             }
@@ -618,7 +639,7 @@ bool fl_project_apply(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
         char *name = copy_string(op->name); if (!name) return false;
         free((void *)a->name); a->name = name; break;
     }
-    case FL_OP_BEAT_ADD: case FL_OP_BEAT_REMOVE: case FL_OP_BEAT_UPDATE: case FL_OP_BEAT_MOVE:
+    case FL_OP_BEAT_ADD: case FL_OP_BEAT_REMOVE: case FL_OP_BEAT_UPDATE: case FL_OP_BEAT_MOVE: case FL_OP_BEAT_SPLIT:
     case FL_OP_KEY_SET: case FL_OP_KEY_REMOVE: case FL_OP_TRACK_REMOVE:
     case FL_OP_CLIP_ADD: case FL_OP_CLIP_UPDATE: case FL_OP_CLIP_REMOVE:
         if (!fl_timeline_apply(p, s, op, &p->next_id, &created)) return false;
@@ -629,7 +650,8 @@ bool fl_project_apply(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
         Fl_Beat *last = s->beat_count ? (Fl_Beat *)&s->beats[s->beat_count - 1] : NULL;
         uint64_t others = last ? s->duration - last->duration : 0;
         if (last && op->duration <= others) return false;
-        if (last) last->duration = op->duration - others;
+        if (last && !fl_timeline_apply(p, s, &(Fl_Op){.kind = FL_OP_BEAT_UPDATE, .beat = last->id,
+            .name = last->name, .beat_duration = op->duration - others, .auto_advance = last->auto_advance}, &p->next_id, &created)) return false;
         s->width = op->width; s->height = op->height; s->duration = op->duration; break;
     }
     default: return false;
@@ -930,6 +952,11 @@ Fl_Project *fl_project_open(const char *directory, Fl_EventBus *bus)
     bool ok = !b.failed && b.cursor == b.size && p->name && p->name[0] && p->next_id && validate_project(p);
     free(b.data);
     if (!ok) { fl_project_destroy(p); return NULL; }
+    for (size_t i = 0; i < p->count; ++i) {
+        bool changed;
+        if (!fl_timeline_repair(&p->scenes[i], &p->next_id, &changed)) {fl_project_destroy(p); return NULL;}
+        p->dirty |= changed;
+    }
     sweep_asset_store(p);
     return p;
 }

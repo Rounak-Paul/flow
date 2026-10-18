@@ -30,7 +30,8 @@ struct Fl_TimelinePanel {
     Fl_AnimProperty property;
     Fl_AnimProperty properties[FL_PROP_COUNT];
     size_t property_count;
-    Fl_Tick drag_origin, drag_applied;
+    Fl_Tick drag_origin, drag_applied, drag_time;
+    bool drag_moved;
     Ca_Window *rename_window;
     Ca_TextInput *rename_input;
     Fl_Id rename_beat;
@@ -79,6 +80,12 @@ static void invalidate(Fl_TimelinePanel *p)
 static Fl_Project *project_of(const Fl_TimelinePanel *p) { return fl_scene_edit_project(p->edit); }
 static const Fl_Scene *scene_of(const Fl_TimelinePanel *p) { return fl_project_scene(project_of(p), fl_scene_edit_scene(p->edit)); }
 
+/* Input coordinates are resolved pixels; timeline zoom is expressed in logical pixels. */
+static float panel_scale(const Fl_TimelinePanel *p)
+{
+    return p->window ? ca_instance_get_scale(ca_window_instance(p->window)) : 1;
+}
+
 /* Convert between ticks and lane pixels. */
 static float x_of(const Fl_TimelinePanel *p, Fl_Tick tick)
 {
@@ -86,7 +93,7 @@ static float x_of(const Fl_TimelinePanel *p, Fl_Tick tick)
 }
 static Fl_Tick tick_of(const Fl_TimelinePanel *p, double x)
 {
-    return (Fl_Tick)llround((x - FL_STYLE_TL_PAD) / p->zoom * FL_TICKS_PER_SECOND);
+    return (Fl_Tick)llround((x / panel_scale(p) - FL_STYLE_TL_PAD) / p->zoom * FL_TICKS_PER_SECOND);
 }
 
 /* Format a scene time as m:ss.cc. */
@@ -136,7 +143,7 @@ static void sync_playhead(Fl_TimelinePanel *p)
 /* Snap tick to beat edges or the playhead when within FL_STYLE_TL_SNAP pixels. */
 static Fl_Tick snap(const Fl_TimelinePanel *p, const Fl_Scene *s, Fl_Tick tick)
 {
-    Fl_Tick limit = (Fl_Tick)(FL_STYLE_TL_SNAP / p->zoom * FL_TICKS_PER_SECOND), best = tick, distance = limit + 1;
+    Fl_Tick limit = (Fl_Tick)(FL_STYLE_TL_SNAP / (p->zoom * panel_scale(p)) * FL_TICKS_PER_SECOND), best = tick, distance = limit + 1;
     Fl_Tick edge = 0, candidates[2] = {0, fl_scene_edit_time(p->edit)};
     for (int i = 0; i < 2; ++i) if (llabs(candidates[i] - tick) < distance) { distance = llabs(candidates[i] - tick); best = candidates[i]; }
     for (size_t i = 0; i < s->beat_count; ++i) {
@@ -176,7 +183,12 @@ static void add_beat(Ca_Button *b, void *data)
     char name[32]; snprintf(name, sizeof(name), "Beat %zu", (s->beat_count ? s->beat_count : 1) + 1);
     Fl_Id id;
     if (apply(p, (Fl_Op){.kind = FL_OP_BEAT_ADD, .scene = s->id, .name = name, .position = position,
-                         .beat_duration = FL_STYLE_TL_BEAT_DEFAULT}, &id)) p->selected_beat = id;
+                         .beat_duration = FL_STYLE_TL_BEAT_DEFAULT}, &id)) {
+        p->selected_beat = id; p->selected_key = p->selected_clip = 0;
+        Fl_Tick start;
+        if (fl_scene_beat_range(scene_of(p), id, &start, NULL)) fl_playback_seek(p->playback, start);
+        invalidate(p);
+    }
 }
 
 /* Report whether this entity exposes the property in the authoring UI. */
@@ -303,16 +315,34 @@ static void item_drag_start(const Ca_DragEvent *event, void *data)
     (void)event; Fl_TimelineItem *it = data; Fl_TimelinePanel *p = it->panel;
     const Fl_Scene *s = scene_of(p);
     if (!s) return;
-    p->drag_origin = 0;
+    p->drag_origin = 0; p->drag_moved = false; p->drag_time = fl_scene_edit_time(p->edit);
     if (it->kind == ITEM_KEY) {
         const Fl_Keyframe *k = fl_scene_key(s, it->id, NULL);
         if (k) {p->drag_origin = fl_anchor_resolve(s, &k->at); p->selected_key = k->id;}
     } else if (it->kind == ITEM_BEAT_EDGE) {
-        for (size_t i = 0; i < s->beat_count; ++i) if (s->beats[i].id == it->id) p->drag_origin = (Fl_Tick)s->beats[i].duration;
+        for (size_t i = 0; i < s->beat_count; ++i) if (s->beats[i].id == it->id) {p->drag_origin = (Fl_Tick)s->beats[i].duration; p->selected_beat = it->id;}
     } else if (it->kind == ITEM_CLIP) {
         for (size_t i = 0; i < s->clip_count; ++i) if (s->clips[i].id == it->id) p->drag_origin = fl_anchor_resolve(s, &s->clips[i].start);
     }
     p->drag_applied = p->drag_origin;
+}
+
+/* Resize snapping uses original boundaries, excluding the edge being dragged. */
+static Fl_Tick snap_resize(const Fl_TimelinePanel *p, const Fl_Scene *s, Fl_Id beat, Fl_Tick tick)
+{
+    Fl_Tick limit = (Fl_Tick)(FL_STYLE_TL_SNAP / (p->zoom * panel_scale(p)) * FL_TICKS_PER_SECOND);
+    Fl_Tick best = tick, distance = limit + 1, edge = 0, shift = 0;
+    Fl_Tick candidates[] = {0, p->drag_time};
+    for (size_t i = 0; i < 2; ++i) if (llabs(candidates[i] - tick) < distance) {
+        distance = llabs(candidates[i] - tick); best = candidates[i];
+    }
+    for (size_t i = 0; i < s->beat_count; ++i) {
+        edge += (Fl_Tick)s->beats[i].duration;
+        if (s->beats[i].id == beat) {shift = p->drag_origin - (Fl_Tick)s->beats[i].duration; continue;}
+        Fl_Tick candidate = edge + shift;
+        if (llabs(candidate - tick) < distance) {distance = llabs(candidate - tick); best = candidate;}
+    }
+    return distance <= limit ? best : tick;
 }
 
 /* Live drag: move keys and clips (snapped) or resize beats. */
@@ -320,14 +350,19 @@ static void item_drag(const Ca_DragEvent *event, void *data)
 {
     Fl_TimelineItem *it = data; Fl_TimelinePanel *p = it->panel;
     const Fl_Scene *s = scene_of(p);
-    if (!s || fabsf(event->dx) < FL_STYLE_WIDGET_DRAG_THRESHOLD) return;
-    Fl_Tick target = p->drag_origin + (Fl_Tick)llround(event->dx / p->zoom * FL_TICKS_PER_SECOND);
+    if (!s) return;
+    float dx = event->dx / panel_scale(p);
+    bool at_origin = fabsf(dx) < FL_STYLE_WIDGET_DRAG_THRESHOLD;
+    if (at_origin && !p->drag_moved) return;
+    if (!at_origin) p->drag_moved = true;
+    Fl_Tick target = p->drag_origin + (at_origin ? 0 : (Fl_Tick)llround(dx / p->zoom * FL_TICKS_PER_SECOND));
     if (it->kind == ITEM_BEAT_EDGE) {
         Fl_Tick start;
         if (!fl_scene_beat_range(s, it->id, &start, NULL)) return;
-        Fl_Tick end = snap(p, s, start + target);
+        Fl_Tick end = at_origin ? start + target : snap_resize(p, s, it->id, start + target);
         target = end - start < FL_STYLE_TL_BEAT_MIN ? FL_STYLE_TL_BEAT_MIN : end - start;
-    } else target = snap(p, s, target < 0 ? 0 : target);
+    } else if (!at_origin) target = snap(p, s, target < 0 ? 0 : target);
+    if (it->kind == ITEM_KEY && target > fl_scene_length(s)) target = fl_scene_length(s);
     if (target == p->drag_applied) return;
     if (it->kind == ITEM_KEY) {
         const Fl_Track *t;
@@ -340,7 +375,7 @@ static void item_drag(const Ca_DragEvent *event, void *data)
     } else if (it->kind == ITEM_BEAT_EDGE) {
         for (size_t i = 0; i < s->beat_count; ++i) if (s->beats[i].id == it->id &&
             apply(p, (Fl_Op){.kind = FL_OP_BEAT_UPDATE, .scene = s->id, .beat = it->id, .name = s->beats[i].name,
-                             .beat_duration = (uint64_t)target, .scale_keys = true, .auto_advance = s->beats[i].auto_advance}, NULL)) { p->drag_applied = target; break; }
+                             .beat_duration = (uint64_t)target, .auto_advance = s->beats[i].auto_advance}, NULL)) { p->drag_applied = target; break; }
     } else if (it->kind == ITEM_CLIP) {
         for (size_t i = 0; i < s->clip_count; ++i) if (s->clips[i].id == it->id) {
             Fl_AudioClip clip = s->clips[i];
@@ -356,7 +391,9 @@ static void item_drag_end(const Ca_DragEvent *event, void *data)
 {
     Fl_TimelineItem *it = data; Fl_TimelinePanel *p = it->panel;
     const Fl_Scene *s = scene_of(p);
-    if (!s || hypotf(event->dx, event->dy) >= FL_STYLE_WIDGET_DRAG_THRESHOLD) return;
+    if (!s) return;
+    if (it->kind == ITEM_KEY || it->kind == ITEM_BEAT_EDGE || it->kind == ITEM_CLIP) item_drag(event, data);
+    if (p->drag_moved || hypotf(event->dx, event->dy) / panel_scale(p) >= FL_STYLE_WIDGET_DRAG_THRESHOLD) return;
     Fl_Tick start;
     p->selected_key = p->selected_beat = p->selected_clip = 0;
     if (it->kind == ITEM_KEY) {
@@ -412,10 +449,9 @@ static void beat_menu(int index, void *data)
     if (index == 0) rename_beat(p, &s->beats[at]);
     else if (index == 1 && now > start && now < end) {
         char name[160]; snprintf(name, sizeof(name), "%s b", s->beats[at].name);
-        Fl_Id scene = s->id;
-        if (apply(p, (Fl_Op){.kind = FL_OP_BEAT_UPDATE, .scene = scene, .beat = it->id, .name = s->beats[at].name,
-                             .beat_duration = (uint64_t)(now - start), .auto_advance = s->beats[at].auto_advance}, NULL))
-            apply(p, (Fl_Op){.kind = FL_OP_BEAT_ADD, .scene = scene, .name = name, .position = at + 1, .beat_duration = (uint64_t)(end - now)}, NULL);
+        Fl_Id id;
+        if (apply(p, (Fl_Op){.kind = FL_OP_BEAT_SPLIT, .scene = s->id, .beat = it->id,
+            .name = name, .tick = now}, &id)) {p->selected_beat = id; invalidate(p);}
     } else if (index == 2) apply(p, (Fl_Op){.kind = FL_OP_BEAT_REMOVE, .scene = s->id, .beat = it->id}, NULL);
 }
 
@@ -701,7 +737,7 @@ void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
 
     ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_TL_ROW, .width = content});
     Fl_Tick at = 0;
-    static const char *beat_items[] = {"Rename", "Split at playhead", "Delete"};
+    static const char *beat_items[] = {"Rename", "Split at playhead", "Delete beat and its keys"};
     for (size_t i = 0; i < s->beat_count; ++i) {
         const Fl_Beat *b = &s->beats[i];
         float x = x_of(p, at), w = x_of(p, at + (Fl_Tick)b->duration) - x;

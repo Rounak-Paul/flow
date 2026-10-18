@@ -10,6 +10,45 @@ void fl_playback_pause(Fl_Playback *playback) {playback->playing = false;}
 void fl_playback_toggle(Fl_Playback *playback) {playback->playing = !playback->playing;}
 void fl_playback_seek(Fl_Playback *playback, Fl_Tick tick) {fl_scene_edit_set_time(playback->edit, tick);}
 
+/* Verify ordered insertion, resize snapping, release handling and split ownership. */
+static void check_beat_interactions(Fl_TimelinePanel *panel)
+{
+    Fl_SceneEdit *edit = panel->edit;
+    Fl_Id scene = scene_of(panel)->id, original = scene_of(panel)->beats[0].id;
+    fl_scene_edit_set_time(edit, 0);
+    add_beat(NULL, panel); Fl_Id added = panel->selected_beat;
+    add_beat(NULL, panel);
+    CHECK(scene_of(panel)->beats[1].id == added && scene_of(panel)->beats[2].id == panel->selected_beat);
+    fl_scene_edit_set_time(edit, 0);
+    panel->zoom = FL_STYLE_TL_ZOOM_MIN;
+    Fl_TimelineItem edge = {panel, ITEM_BEAT_EDGE, original};
+    item_drag_start(NULL, &edge);
+    item_drag(&(Ca_DragEvent){.dx = 5}, &edge);
+    CHECK(scene_of(panel)->beats[0].duration == 5 * FL_TICKS_PER_SECOND + 75000);
+    item_drag_end(&(Ca_DragEvent){.dx = 0}, &edge);
+    CHECK(scene_of(panel)->beats[0].duration == 5 * FL_TICKS_PER_SECOND);
+    item_drag_start(NULL, &edge);
+    item_drag_end(&(Ca_DragEvent){.dx = 8}, &edge);
+    CHECK(scene_of(panel)->beats[0].duration == 6 * FL_TICKS_PER_SECOND);
+    CHECK(fl_project_apply(project_of(panel), &(Fl_Op){.kind = FL_OP_BEAT_UPDATE, .scene = scene,
+        .beat = original, .name = "First", .beat_duration = 5 * FL_TICKS_PER_SECOND}, NULL));
+    Fl_Id entity, key;
+    CHECK(fl_widget_create(project_of(panel), scene, 0, FL_WIDGET_RECTANGLE, 0, 0, &entity));
+    CHECK(fl_project_apply(project_of(panel), &(Fl_Op){.kind = FL_OP_KEY_SET, .scene = scene, .entity = entity,
+        .property = FL_PROP_X, .anchor = {FL_ANCHOR_BEAT, original, false, 4 * FL_TICKS_PER_SECOND}, .value = {10}}, &key));
+    fl_scene_edit_set_time(edit, 2 * FL_TICKS_PER_SECOND);
+    Fl_TimelineItem beat = {panel, ITEM_BEAT, original};
+    beat_menu(1, &beat);
+    const Fl_Scene *s = scene_of(panel);
+    const Fl_Keyframe *after = fl_scene_key(s, key, NULL);
+    CHECK(fl_anchor_resolve(s, &after->at) == 4 * FL_TICKS_PER_SECOND);
+    CHECK(after->at.beat == s->beats[1].id && after->at.offset == 2 * FL_TICKS_PER_SECOND);
+    Fl_TimelineItem key_item = {panel, ITEM_KEY, key};
+    item_drag_start(NULL, &key_item);
+    item_drag_end(&(Ca_DragEvent){.dx = 10000}, &key_item);
+    CHECK(fl_anchor_resolve(scene_of(panel), &fl_scene_key(scene_of(panel), key, NULL)->at) == fl_scene_length(scene_of(panel)));
+}
+
 /* Exercise property-scoped authoring, selection cleanup, upsert and navigation. */
 int main(int argc, char **argv)
 {
@@ -69,6 +108,7 @@ int main(int argc, char **argv)
     CHECK(fl_scene_track(scene_of(panel), rectangle, FL_PROP_FILL)->key_count == 1);
     CHECK(fl_project_apply(project, &(Fl_Op){.kind = FL_OP_ENTITY_REMOVE, .scene = scene, .entity = rectangle}, NULL));
     CHECK(panel->selected_key == 0);
+    check_beat_interactions(panel);
     fl_timeline_panel_destroy(panel); fl_scene_edit_destroy(edit); fl_project_destroy(project);
     CHECK(fl_event_bus_destroy(bus)); fl_fs_remove(path);
     return FLOW_TEST_RESULT("fl_timeline_panel_tests");

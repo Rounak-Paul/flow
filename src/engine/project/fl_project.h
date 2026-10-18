@@ -112,7 +112,7 @@ typedef enum Fl_OpKind {
     FL_OP_ASSET_ADD, FL_OP_ASSET_REMOVE, FL_OP_ASSET_RENAME,
     FL_OP_BEAT_ADD, FL_OP_BEAT_REMOVE, FL_OP_BEAT_UPDATE, FL_OP_BEAT_MOVE,
     FL_OP_KEY_SET, FL_OP_KEY_REMOVE, FL_OP_TRACK_REMOVE,
-    FL_OP_CLIP_ADD, FL_OP_CLIP_UPDATE, FL_OP_CLIP_REMOVE
+    FL_OP_CLIP_ADD, FL_OP_CLIP_UPDATE, FL_OP_CLIP_REMOVE, FL_OP_BEAT_SPLIT
 } Fl_OpKind;
 /* One local transform replacement in an atomic selection gesture. */
 typedef struct Fl_TransformEdit { Fl_Id entity; Fl_Transform transform; } Fl_TransformEdit;
@@ -131,15 +131,17 @@ typedef struct Fl_Op {
     size_t transform_count;
     Fl_Id asset;                        /* asset remove/rename target */
     const Fl_Asset *asset_record;       /* FL_OP_ASSET_ADD: copied record; its id is ignored */
-    /* Timeline. Beats: add (position, name, duration, auto_advance), remove (beat; anchors on it become
-       absolute), update (beat, name, duration, auto_advance), move (beat, position).
-       Keys: set (entity, property, key: 0 creates, or updates the key already at the anchor's time; anchor, value, ease),
+    /* Timeline. Beats: add (position, name, duration, auto_advance),
+       remove (beat; removes its keys, preserves audio start times),
+       update (beat, name, duration, auto_advance; duration changes scale owned keys), move (beat, position),
+       split (beat, tick strictly inside beat, name for the new right beat; preserves anchored times).
+       Keys: set (entity, property, key: 0 upserts at anchor time; anchor, value, ease).
+       Keys stay within scene/beat bounds; absolute inputs attach to their containing beat.
        remove (key); track remove (track).
        Clips: add/update (clip_record; update targets clip), remove (clip). */
     Fl_Id beat, key, track, clip;
     uint64_t beat_duration;
     bool auto_advance;
-    bool scale_keys; /* BEAT_UPDATE: scale in-beat key offsets with its duration; audio is not stretched. */
     Fl_AnimProperty property;
     Fl_TimeAnchor anchor;
     double value[4];
@@ -155,7 +157,8 @@ typedef struct Fl_ProjectChange { Fl_Project *project; Fl_OpKind kind; Fl_Id sce
 
 /* Create a new project directory exclusively; existing project files are never replaced. */
 Fl_Project *fl_project_create(const char *directory, const char *name, Fl_EventBus *bus);
-/* Open and validate a binary project, acquiring its exclusive process lock. */
+/* Open and validate a binary project with its exclusive process lock. Old orphaned key timing
+   is repaired in memory and marked dirty; the final beat extends to preserve existing key times. */
 Fl_Project *fl_project_open(const char *directory, Fl_EventBus *bus);
 /* Free the project and release the lock. Does not implicitly save. NULL is safe. */
 void fl_project_destroy(Fl_Project *project);

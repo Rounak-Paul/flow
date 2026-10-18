@@ -9,7 +9,7 @@
 
 enum { NAME,X,Y,WIDTH,HEIGHT,ROTATION,SCALE_X,SCALE_Y,FILL,STROKE,STROKE_WIDTH,FONT_SIZE,CONTENT,FONT_FILTER,OPACITY,FIELD_COUNT };
 #define WEIGHT_OPTIONS 32
-typedef struct Fl_InspectorField { struct Fl_Inspector *owner; char *value; } Fl_InspectorField;
+typedef struct Fl_InspectorField { struct Fl_Inspector *owner; char *value; bool dirty; } Fl_InspectorField;
 typedef struct Fl_FontChoice { struct Fl_Inspector *owner; size_t family; uint64_t generation; } Fl_FontChoice;
 struct Fl_Inspector {
     Fl_SceneEdit *edit;
@@ -22,6 +22,7 @@ struct Fl_Inspector {
     uint64_t revision;
     size_t selection_count;
     Fl_InspectorField fields[FIELD_COUNT];
+    double loaded_numbers[FIELD_COUNT];
     Fl_Typography typography;
     Fl_Id image;
     Fl_FontChoice choices[FL_STYLE_FONT_LIST_LIMIT];
@@ -50,7 +51,7 @@ static void status(Fl_Inspector *p,const char *message)
 static void edited(Ca_TextInput *input,void *data)
 {
     Fl_InspectorField *field=data;
-    if (field_set(field,ca_input_text(input))) {field->owner->dirty=true;status(field->owner,"Unsaved changes");}
+    if (field_set(field,ca_input_text(input))) {field->dirty=true;field->owner->dirty=true;status(field->owner,"Unsaved changes");}
 }
 /* Capture visibility in the same draft as transform/style edits. */
 static void visibility_changed(Ca_Checkbox *checkbox,void *data)
@@ -133,15 +134,19 @@ static void apply(Ca_Button *button,void *data)
     if (!entity||scene->revision!=p->revision) {status(p,"Scene changed. Revert to reload before applying.");return;}
     double values[7];
     for (size_t i=0;i<7;++i) if (!number(p->fields[X+i].value,&values[i])) {status(p,"Enter finite numbers for every transform field.");return;}
+    for (size_t i=0;i<7;++i) if (!p->fields[X+i].dirty) values[i]=p->loaded_numbers[X+i];
     Fl_Transform transform={values[0],values[1],values[2],values[3],values[4]*3.14159265358979323846/180,values[5],values[6]};
     if (transform.width<0||transform.height<0) {status(p,"Width and height must be non-negative.");return;}
     const Fl_WidgetDef *def=fl_widget_for_entity(entity);Fl_Appearance appearance=fl_widget_appearance(entity);
     if ((def&&def->has_fill&&!color(p->fields[FILL].value,appearance.fill))||
         (def&&def->has_stroke&&(!color(p->fields[STROKE].value,appearance.stroke)||!number(p->fields[STROKE_WIDTH].value,&appearance.stroke_width)))||
         (def&&def->has_text&&!number(p->fields[FONT_SIZE].value,&appearance.font_size))) {status(p,"Check colour and appearance values.");return;}
+    if (!p->fields[STROKE_WIDTH].dirty) appearance.stroke_width=p->loaded_numbers[STROKE_WIDTH];
+    if (!p->fields[FONT_SIZE].dirty) appearance.font_size=p->loaded_numbers[FONT_SIZE];
     if (!p->fields[NAME].value||!p->fields[NAME].value[0]) {status(p,"Name cannot be empty.");return;}
     double opacity;
     if (!number(p->fields[OPACITY].value,&opacity)||opacity<0||opacity>1) {status(p,"Opacity is between 0 and 1.");return;}
+    if (!p->fields[OPACITY].dirty) opacity=p->loaded_numbers[OPACITY];
     unsigned char bytes[56],style[24],typography[3+FL_TYPOGRAPHY_FAMILY_MAX],image[8],alpha[8];
     fl_transform_encode(&transform,bytes);fl_appearance_encode(&appearance,style);fl_opacity_encode(opacity,alpha);
     Fl_Component components[6]={{FL_COMPONENT_TRANSFORM,1,56,bytes},{FL_COMPONENT_OPACITY,1,8,alpha}};size_t count=2;
@@ -203,11 +208,13 @@ static bool load(Fl_Inspector *p,const Fl_Scene *scene,const Fl_Entity *entity)
     double values[7]={transform.x,transform.y,transform.width,transform.height,transform.rotation*180/3.14159265358979323846,transform.scale_x,transform.scale_y};
     if (!field_set(&p->fields[NAME],entity->name)) return false;
     char text[96];
-    for (size_t i=0;i<7;++i) {snprintf(text,sizeof(text),"%.9g",values[i]);if (!field_set(&p->fields[X+i],text)) return false;}
+    for (size_t i=0;i<7;++i) {p->loaded_numbers[X+i]=values[i];snprintf(text,sizeof(text),"%.9g",values[i]);if (!field_set(&p->fields[X+i],text)) return false;}
     Fl_Appearance a=now ? now->appearance : fl_widget_appearance(entity);
-    snprintf(text,sizeof(text),"%.4g",now ? now->opacity : fl_widget_opacity(entity));if (!field_set(&p->fields[OPACITY],text)) return false;
+    p->loaded_numbers[OPACITY]=now ? now->opacity : fl_widget_opacity(entity);
+    snprintf(text,sizeof(text),"%.4g",p->loaded_numbers[OPACITY]);if (!field_set(&p->fields[OPACITY],text)) return false;
     snprintf(text,sizeof(text),"#%02X%02X%02X%02X",a.fill[0],a.fill[1],a.fill[2],a.fill[3]);if (!field_set(&p->fields[FILL],text)) return false;
     snprintf(text,sizeof(text),"#%02X%02X%02X%02X",a.stroke[0],a.stroke[1],a.stroke[2],a.stroke[3]);if (!field_set(&p->fields[STROKE],text)) return false;
+    p->loaded_numbers[STROKE_WIDTH]=a.stroke_width;p->loaded_numbers[FONT_SIZE]=a.font_size;
     snprintf(text,sizeof(text),"%.9g",a.stroke_width);if (!field_set(&p->fields[STROKE_WIDTH],text)) return false;
     snprintf(text,sizeof(text),"%.9g",a.font_size);if (!field_set(&p->fields[FONT_SIZE],text)) return false;
     const Fl_Component *content=fl_entity_component(entity,FL_COMPONENT_TEXT);
@@ -216,6 +223,7 @@ static bool load(Fl_Inspector *p,const Fl_Scene *scene,const Fl_Entity *entity)
     copy[content ? content->size : 0]=0;free(p->fields[CONTENT].value);p->fields[CONTENT].value=copy;
     p->typography=fl_widget_typography(entity);
     p->image=0;fl_image_asset_decode(fl_entity_component(entity,FL_COMPONENT_IMAGE),&p->image);
+    for (size_t i=0;i<FIELD_COUNT;++i) p->fields[i].dirty=false;
     p->visible=entity->visible;p->scene=scene->id;p->entity=entity->id;p->revision=scene->revision;p->refresh=false;return true;
 }
 /* Emit one labelled retained draft field with its stable callback binding. */

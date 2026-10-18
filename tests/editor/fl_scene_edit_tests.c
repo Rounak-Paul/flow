@@ -12,6 +12,30 @@ static Fl_Transform read_transform(Fl_Project *p,Fl_Id scene,Fl_Id entity)
 /* Compare transform results with a tolerance appropriate to affine composition. */
 static bool near(double a,double b) {return fabs(a-b)<1e-8;}
 
+/* A moving playhead cannot turn one drag into keys on every frame/channel. */
+static void check_keyed_gesture(Fl_Project *p, Fl_SceneEdit *edit, Fl_Id scene)
+{
+    Fl_Id entity;
+    CHECK(fl_widget_create(p, scene, 0, FL_WIDGET_RECTANGLE, 0, 0, &entity));
+    CHECK(fl_scene_edit_select(edit, scene, entity, false));
+    const double initial[] = {0, 0, 320, 180};
+    for (int property = 0; property < 4; ++property)
+        CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_KEY_SET, .scene = scene, .entity = entity,
+            .property = (Fl_AnimProperty)property, .anchor = fl_anchor_at(fl_project_scene(p, scene), 0), .value = {initial[property]}}, NULL));
+    fl_scene_edit_set_time(edit, FL_TICKS_PER_SECOND);
+    CHECK(fl_scene_edit_begin(edit, FL_GESTURE_MOVE, 0, 0));
+    CHECK(fl_scene_edit_update(edit, 10, 0));
+    fl_scene_edit_set_time(edit, 2 * FL_TICKS_PER_SECOND);
+    CHECK(fl_scene_edit_update(edit, 20, 0));
+    fl_scene_edit_end(edit, false);
+    const Fl_Scene *s = fl_project_scene(p, scene);
+    const Fl_Track *x = fl_scene_track(s, entity, FL_PROP_X);
+    CHECK(x->key_count == 2 && fl_anchor_resolve(s, &x->keys[1].at) == FL_TICKS_PER_SECOND && x->keys[1].value[0] == 20);
+    CHECK(fl_scene_track(s, entity, FL_PROP_Y)->key_count == 1);
+    CHECK(fl_scene_track(s, entity, FL_PROP_WIDTH)->key_count == 1);
+    CHECK(fl_scene_track(s, entity, FL_PROP_HEIGHT)->key_count == 1);
+}
+
 /* Exercise parent-aware gestures, cancellation, multi-selection and atomic failure. */
 int main(int argc,char **argv)
 {
@@ -50,6 +74,7 @@ int main(int argc,char **argv)
     t=read_transform(p,scene,parent);CHECK(t.x==before.x&&t.width==before.width);
     CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_ENTITY_REMOVE,.scene=scene,.entity=parent},NULL));CHECK(fl_scene_edit_count(edit)==0);
     CHECK(fl_scene_edit_insert(edit,FL_WIDGET_TEXT,0,100,200));CHECK(fl_scene_edit_count(edit)==1);
+    check_keyed_gesture(p,edit,scene);
     CHECK(fl_project_save(p));fl_scene_edit_destroy(edit);fl_project_destroy(p);CHECK(fl_event_bus_destroy(bus));fl_fs_remove(path);
     return FLOW_TEST_RESULT("fl_scene_edit_tests");
 }

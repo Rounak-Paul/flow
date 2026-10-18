@@ -31,3 +31,6 @@ void fl_timeline_save(const Fl_Scene *scene, Fl_Binary *stream);
 bool fl_timeline_load(Fl_Scene *scene, Fl_Binary *stream);
 /* Validate one keyframe value for property. */
 bool fl_property_value_valid(Fl_AnimProperty property, const double value[4]);
+
+/* Repair old key ownership, extending the final beat to preserve key times; reports revision changes. */
+bool fl_timeline_repair(Fl_Scene *scene, uint64_t *next_id, bool *changed);

@@ -13,7 +13,7 @@ struct Fl_SceneEdit {
     Fl_EventBus *bus;
     Fl_EventType selection_event, time_event;
     Fl_Id scene;
-    Fl_Tick time;
+    Fl_Tick time, gesture_tick;
     Fl_SceneState state;
     Fl_Id *selection;
     size_t count;
@@ -166,6 +166,7 @@ bool fl_scene_edit_begin(Fl_SceneEdit *edit, Fl_EditGesture mode, double x, doub
         }
         ++edit->target_count;
     }
+    edit->gesture_tick = edit->time;
     edit->gesture = mode; edit->start_x = x; edit->start_y = y;
     return edit->target_count != 0;
 }
@@ -213,7 +214,7 @@ bool fl_scene_edit_update(Fl_SceneEdit *edit, double x, double y)
     if (!changed) return true;
     edit->applying = true;
     bool ok = fl_project_apply(edit->project, &(Fl_Op){.kind=FL_OP_TRANSFORMS,.scene=edit->scene,
-        .transforms=edit->updates,.transform_count=edit->target_count,.keyed=true,.tick=edit->time},NULL);
+        .transforms=edit->updates,.transform_count=edit->target_count,.keyed=true,.tick=edit->gesture_tick},NULL);
     edit->applying = false;
     if (ok) for (size_t i=0;i<edit->target_count;++i) edit->targets[i].applied=edit->updates[i].transform;
     return ok;

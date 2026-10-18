@@ -47,7 +47,11 @@ Fl_Tick fl_anchor_resolve(const Fl_Scene *s, const Fl_TimeAnchor *a)
 {
     if (!a) return 0;
     Fl_Tick start, end;
-    if (a->kind == FL_ANCHOR_BEAT && fl_scene_beat_range(s, a->beat, &start, &end)) return (a->end ? end : start) + a->offset;
+    if (a->kind == FL_ANCHOR_BEAT && fl_scene_beat_range(s, a->beat, &start, &end)) {
+        Fl_Tick base = a->end ? end : start;
+        if (a->offset > 0 && base > INT64_MAX - a->offset) return INT64_MAX;
+        return base + a->offset;
+    }
     return a->offset;
 }
 
@@ -121,6 +125,7 @@ static void sync_duration(Fl_Scene *s)
 /* Sum of beat durations if beat index skip were replaced by duration; false on overflow. */
 static bool length_fits(const Fl_Scene *s, size_t skip, uint64_t duration)
 {
+    if (duration > (uint64_t)TICK_LIMIT) return false;
     uint64_t total = duration;
     for (size_t i = 0; i < s->beat_count; ++i) {
         if (i == skip) continue;
@@ -149,19 +154,34 @@ static void scale_beat_keys(Fl_Scene *s, Fl_Id beat, uint64_t before, uint64_t a
     }
 }
 
-/* Rewrite anchors on beat as absolute times so removing it keeps their timing. */
-static void detach_anchors(Fl_Scene *s, Fl_Id beat)
+/* Reassign a split beat's anchor while preserving its resolved time and edge semantics. */
+static void split_anchor(Fl_TimeAnchor *at, Fl_Id beat, Fl_Id right, Fl_Tick left_duration, Fl_Tick right_duration)
 {
-    for (size_t i = 0; i < s->track_count; ++i) {
-        Fl_Track *t = (Fl_Track *)&s->tracks[i];
-        for (size_t j = 0; j < t->key_count; ++j)
-            if (t->keys[j].at.kind == FL_ANCHOR_BEAT && t->keys[j].at.beat == beat)
-                t->keys[j].at = (Fl_TimeAnchor){FL_ANCHOR_ABSOLUTE, 0, false, fl_anchor_resolve(s, &t->keys[j].at)};
+    if (at->kind != FL_ANCHOR_BEAT || at->beat != beat) return;
+    if (at->end) {
+        if (at->offset >= -right_duration) at->beat = right;
+        else at->offset += right_duration;
+    } else if (at->offset >= left_duration) {
+        at->beat = right; at->offset -= left_duration;
+    }
+}
+
+/* Delete animation owned by this beat; preserve audio starts as absolute times. */
+static void remove_beat_content(Fl_Scene *s, Fl_Id beat)
+{
+    for (size_t i = s->track_count; i > 0; --i) {
+        Fl_Track *track = (Fl_Track *)&s->tracks[i - 1];
+        size_t kept = 0;
+        for (size_t k = 0; k < track->key_count; ++k) {
+            const Fl_Keyframe *key = &track->keys[k];
+            if (key->at.kind != FL_ANCHOR_BEAT || key->at.beat != beat) track->keys[kept++] = *key;
+        }
+        track->key_count = kept;
     }
     for (size_t i = 0; i < s->clip_count; ++i) {
-        Fl_AudioClip *c = (Fl_AudioClip *)&s->clips[i];
-        if (c->start.kind == FL_ANCHOR_BEAT && c->start.beat == beat)
-            c->start = (Fl_TimeAnchor){FL_ANCHOR_ABSOLUTE, 0, false, fl_anchor_resolve(s, &c->start)};
+        Fl_AudioClip *clip = (Fl_AudioClip *)&s->clips[i];
+        if (clip->start.kind == FL_ANCHOR_BEAT && clip->start.beat == beat)
+            clip->start = (Fl_TimeAnchor){FL_ANCHOR_ABSOLUTE, 0, false, fl_anchor_resolve(s, &clip->start)};
     }
 }
 
@@ -227,7 +247,9 @@ static void remove_track(Fl_Scene *s, size_t i)
 static bool key_op_valid(const Fl_Scene *s, const Fl_Op *op)
 {
     return fl_scene_entity(s, op->entity) && op->property >= 0 && op->property < FL_PROP_COUNT &&
-           op->ease >= 0 && op->ease < FL_EASE_COUNT && anchor_valid(s, &op->anchor) && fl_property_value_valid(op->property, op->value);
+           op->ease >= 0 && op->ease < FL_EASE_COUNT && anchor_valid(s, &op->anchor) &&
+           fl_anchor_resolve(s, &op->anchor) >= 0 && fl_anchor_resolve(s, &op->anchor) <= fl_scene_length(s) &&
+           fl_property_value_valid(op->property, op->value);
 }
 
 bool fl_timeline_apply(const Fl_Project *p, Fl_Scene *s, const Fl_Op *op, uint64_t *next_id, Fl_Id *created)
@@ -236,7 +258,8 @@ bool fl_timeline_apply(const Fl_Project *p, Fl_Scene *s, const Fl_Op *op, uint64
     switch (op->kind) {
     case FL_OP_BEAT_ADD: {
         size_t needed = s->beat_count ? 1 : 2;
-        if (!op->name || !op->name[0] || !op->beat_duration || op->position > s->beat_count ||
+        if (!op->name || !op->name[0] || !op->beat_duration || op->beat_duration > (uint64_t)TICK_LIMIT ||
+            (!s->beat_count && s->duration > (uint64_t)TICK_LIMIT - op->beat_duration) || op->position > s->beat_count ||
             *next_id > UINT64_MAX - needed || !length_fits(s, SIZE_MAX, op->beat_duration + (s->beat_count ? 0 : s->duration))) return false;
         char *name = copy_text(op->name), *first = s->beat_count ? NULL : copy_text("Beat 1");
         if (!name || (!s->beat_count && !first) || !reserve_beats(s, needed)) { free(name); free(first); return false; }
@@ -247,10 +270,33 @@ bool fl_timeline_apply(const Fl_Project *p, Fl_Scene *s, const Fl_Op *op, uint64
         sync_duration(s);
         return true;
     }
+    case FL_OP_BEAT_SPLIT: {
+        size_t i = beat_index(s, op->beat);
+        Fl_Tick start, end;
+        if (i == SIZE_MAX || !op->name || !op->name[0] || *next_id == UINT64_MAX ||
+            !fl_scene_beat_range(s, op->beat, &start, &end) || op->tick <= start || op->tick >= end) return false;
+        char *name = copy_text(op->name);
+        if (!name || !reserve_beats(s, 1)) {free(name); return false;}
+        Fl_Tick left = op->tick - start, right = end - op->tick;
+        Fl_Beat *beat = (Fl_Beat *)&s->beats[i];
+        Fl_Id id = (*next_id)++;
+        bool auto_advance = beat->auto_advance;
+        for (size_t t = 0; t < s->track_count; ++t)
+            for (size_t k = 0; k < s->tracks[t].key_count; ++k)
+                split_anchor(&s->tracks[t].keys[k].at, op->beat, id, left, right);
+        for (size_t c = 0; c < s->clip_count; ++c)
+            split_anchor(&((Fl_AudioClip *)s->clips)[c].start, op->beat, id, left, right);
+        beat->duration = (uint64_t)left;
+        place_beat(s, i + 1, (Fl_Beat){id, name, (uint64_t)right, auto_advance});
+        *created = id;
+        return true;
+    }
     case FL_OP_BEAT_REMOVE: {
         size_t i = beat_index(s, op->beat);
         if (i == SIZE_MAX || s->beat_count < 2) return false;
-        detach_anchors(s, op->beat);
+        remove_beat_content(s, op->beat);
+        for (size_t t = s->track_count; t > 0; --t)
+            if (!s->tracks[t - 1].key_count) remove_track(s, t - 1);
         Fl_Beat *beats = (Fl_Beat *)s->beats;
         free((void *)beats[i].name);
         memmove(beats + i, beats + i + 1, (s->beat_count - i - 1) * sizeof(*beats));
@@ -264,7 +310,7 @@ bool fl_timeline_apply(const Fl_Project *p, Fl_Scene *s, const Fl_Op *op, uint64
         char *name = copy_text(op->name);
         if (!name) return false;
         Fl_Beat *b = (Fl_Beat *)&s->beats[i];
-        if (op->scale_keys) scale_beat_keys(s, b->id, b->duration, op->beat_duration);
+        scale_beat_keys(s, b->id, b->duration, op->beat_duration);
         free((void *)b->name);
         b->name = name; b->duration = op->beat_duration; b->auto_advance = op->auto_advance;
         sync_duration(s);
@@ -281,7 +327,13 @@ bool fl_timeline_apply(const Fl_Project *p, Fl_Scene *s, const Fl_Op *op, uint64
     }
     case FL_OP_KEY_SET: {
         if (!key_op_valid(s, op)) return false;
-        Fl_Keyframe value = {0, op->anchor, {op->value[0], op->value[1], op->value[2], op->value[3]}, op->ease};
+        Fl_TimeAnchor anchor = op->anchor;
+        if (anchor.kind == FL_ANCHOR_ABSOLUTE) anchor = fl_anchor_at(s, anchor.offset);
+        else {
+            Fl_Tick start, end, time = fl_anchor_resolve(s, &anchor);
+            if (!fl_scene_beat_range(s, anchor.beat, &start, &end) || time < start || time > end) return false;
+        }
+        Fl_Keyframe value = {0, anchor, {op->value[0], op->value[1], op->value[2], op->value[3]}, op->ease};
         if (op->key) {
             const Fl_Track *owner;
             Fl_Keyframe *key = (Fl_Keyframe *)fl_scene_key(s, op->key, &owner);
@@ -551,4 +603,56 @@ bool fl_timeline_load(Fl_Scene *s, Fl_Binary *b)
         c->fade_in = fl_binary_get_u64(b); c->fade_out = fl_binary_get_u64(b);
     }
     return !b->failed;
+}
+
+/* Recover old orphaned key timing without deleting keys or changing nonnegative key times. */
+bool fl_timeline_repair(Fl_Scene *s, uint64_t *next_id, bool *changed)
+{
+    *changed = false;
+    size_t count = s->clip_count;
+    for (size_t t = 0; t < s->track_count; ++t) {
+        if (s->tracks[t].key_count > SIZE_MAX - count) return false;
+        count += s->tracks[t].key_count;
+    }
+    if (count == s->clip_count) return true;
+    if (count > SIZE_MAX / sizeof(Fl_Tick)) return false;
+    Fl_Tick *times = malloc(count * sizeof(*times));
+    if (!times) return false;
+    size_t at = 0;
+    bool repair = !s->beat_count;
+    Fl_Tick length = fl_scene_length(s), maximum = length;
+    for (size_t t = 0; t < s->track_count; ++t) for (size_t k = 0; k < s->tracks[t].key_count; ++k) {
+        const Fl_TimeAnchor *anchor = &s->tracks[t].keys[k].at;
+        Fl_Tick time = fl_anchor_resolve(s, anchor), start, end;
+        times[at++] = time < 0 ? 0 : time;
+        if (time > maximum) maximum = time;
+        if (anchor->kind != FL_ANCHOR_BEAT || !fl_scene_beat_range(s, anchor->beat, &start, &end) || time < start || time > end)
+            repair = true;
+    }
+    if (!repair) {free(times); return true;}
+    if (maximum > TICK_LIMIT || s->revision == UINT64_MAX) {free(times); return false;}
+    for (size_t c = 0; c < s->clip_count; ++c) times[at++] = fl_anchor_resolve(s, &s->clips[c].start);
+    if (!s->beat_count) {
+        char *name = copy_text("Beat 1");
+        if (*next_id == UINT64_MAX || !name || !reserve_beats(s, 1)) {free(name); free(times); return false;}
+        place_beat(s, 0, (Fl_Beat){(*next_id)++, name, (uint64_t)length, false});
+    }
+    Fl_Beat *last = (Fl_Beat *)&s->beats[s->beat_count - 1];
+    last->duration += (uint64_t)(maximum - length);
+    sync_duration(s);
+    at = 0;
+    for (size_t t = 0; t < s->track_count; ++t) for (size_t k = 0; k < s->tracks[t].key_count; ++k)
+        s->tracks[t].keys[k].at = fl_anchor_at(s, times[at++]);
+    for (size_t c = 0; c < s->clip_count; ++c) {
+        Fl_AudioClip *clip = (Fl_AudioClip *)&s->clips[c];
+        if (clip->start.kind == FL_ANCHOR_BEAT && clip->start.beat == last->id && clip->start.end) {
+            clip->start.end = false;
+            Fl_Tick start;
+            fl_scene_beat_range(s, last->id, &start, NULL);
+            clip->start.offset = times[at] - start;
+        }
+        ++at;
+    }
+    free(times); ++s->revision; *changed = true;
+    return true;
 }
