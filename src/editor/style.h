@@ -48,7 +48,19 @@
 #define FL_COLOR_CONTROL        "rgba(255, 255, 255, 0.035)"
 #define FL_COLOR_CONTROL_HOVER  "rgba(255, 255, 255, 0.07)"
 #define FL_COLOR_CONTROL_PRESS  "rgba(255, 255, 255, 0.02)"
-#define FL_COLOR_TAB_ACTIVE     "rgba(255, 255, 255, 0.05)"
+/* Sunken tab track: dark floor, deep inner shadow, lit lower lip. */
+#define FL_COLOR_TAB_GUTTER_TOP "rgba(0, 0, 0, 0.85)"
+#define FL_COLOR_TAB_GUTTER_BOTTOM "rgba(0, 0, 0, 0.55)"
+#define FL_COLOR_TAB_GUTTER_SHADE "rgba(0, 0, 0, 0.95)"
+#define FL_COLOR_TAB_GUTTER_EDGE "rgba(0, 0, 0, 0.9)"
+#define FL_COLOR_TAB_GUTTER_LIP "rgba(255, 255, 255, 0.10)"
+/* Raised glass tab: bright sheen, specular top rim, dark underside, cast shadow. */
+#define FL_COLOR_TAB_PILL_TOP   "rgba(255, 255, 255, 0.115)"
+#define FL_COLOR_TAB_PILL_BOTTOM "rgba(255, 255, 255, 0.022)"
+#define FL_COLOR_TAB_PILL_RIM   "rgba(255, 255, 255, 0.10)"
+#define FL_COLOR_TAB_PILL_SPECULAR "rgba(255, 255, 255, 0.32)"
+#define FL_COLOR_TAB_PILL_UNDER "rgba(0, 0, 0, 0.55)"
+#define FL_COLOR_TAB_PILL_CAST  "rgba(0, 0, 0, 0.6)"
 
 /* Text, from most to least prominent. */
 #define FL_COLOR_TEXT_BRIGHT    "#eef2fa"
@@ -79,6 +91,13 @@
 #define FL_COLOR_SCROLL_THUMB   "rgba(190, 205, 235, 0.22)"
 #define FL_COLOR_SCROLL_ACTIVE  "rgba(210, 222, 245, 0.50)"
 
+/* Motion: the tab pill's slide and how gel-like it is (0 = rigid), and the
+   hover/selection fade shared by controls. */
+#define FL_MOTION_TAB_SLIDE     "0.42s"
+#define FL_MOTION_TAB_EASE      "cubic-bezier(0.34, 1.56, 0.64, 1)"
+#define FL_MOTION_TAB_STRETCH   "1"
+#define FL_MOTION_FADE          "background-color 0.16s ease-out"
+
 /* Spacing scale. */
 #define FL_SPACE_XS             "2px"
 #define FL_SPACE_SM             "4px"
@@ -95,7 +114,7 @@
 /* Blur strengths (logical pixels) and the gutter between floating panels. */
 #define FL_BLUR_PANEL           "28px"
 #define FL_BLUR_FLOAT           "40px"
-#define FL_PANEL_GAP            "5px"
+#define FL_PANEL_GAP            "8px"
 
 /* Type scale (logical pixels; causality applies the UI scale). */
 #define FL_FONT_XS              "10px"
@@ -106,7 +125,7 @@
 
 /* Chrome metrics. */
 #define FL_TITLEBAR_HEIGHT      "34px"
-#define FL_TAB_BAR_HEIGHT       "36px"
+#define FL_TAB_BAR_HEIGHT       "28px"
 #define FL_SCROLLBAR_WIDTH      "8px"
 
 /* =====================================================================
@@ -227,27 +246,39 @@
     ".ca-dock-host {"                                                            \
     "  padding: " FL_PANEL_GAP "; background: transparent;"                      \
     "}"                                                                          \
+    "splitter { gap: " FL_PANEL_GAP "; }"                                        \
     ".ca-dock-group {"                                                           \
-    "  margin: " FL_PANEL_GAP "; border-radius: " FL_RADIUS_LG ";"               \
+    "  border-radius: " FL_RADIUS_LG ";"                                         \
     "  background: linear-gradient(to bottom, " FL_COLOR_GLASS_TOP ", " FL_COLOR_GLASS_BOTTOM ");" \
     "  border: 1px solid " FL_COLOR_GLASS_BORDER ";"                             \
     "}"                                                                          \
     ".ca-dock-group.ca-dock-empty { background: " FL_COLOR_FIELD "; }" \
     ".ca-dock-content { background: transparent; }"                              \
     ".ca-dock-tabs {"                                                            \
-    "  height: " FL_TAB_BAR_HEIGHT "; gap: " FL_SPACE_SM ";"                     \
-    "  padding: " FL_SPACE_SM " " FL_SPACE_MD ";"                                \
-    "  background: " FL_COLOR_GLASS_BAR "; font-size: " FL_FONT_SM ";"           \
-    "  border-bottom: 1px solid " FL_COLOR_GLASS_BORDER ";"                      \
-    "}"                                                                          \
-    ".ca-dock-tab {"                                                             \
-    "  padding: 0px " FL_SPACE_LG "; color: " FL_COLOR_TEXT_MUTED ";"            \
+    "  height: " FL_TAB_BAR_HEIGHT "; gap: " FL_SPACE_XS ";"                     \
+    "  padding: " FL_SPACE_SM "; margin: " FL_SPACE_SM ";" \
+    "  flex-shrink: 0;"                                                          \
+    "  background: linear-gradient(to bottom, " FL_COLOR_TAB_GUTTER_TOP ", " FL_COLOR_TAB_GUTTER_BOTTOM ");" \
+    "  box-shadow: inset 0px 3px 8px " FL_COLOR_TAB_GUTTER_SHADE ";"             \
+    "  border: 1px solid " FL_COLOR_TAB_GUTTER_EDGE ";"                          \
+    "  border-top-color: " FL_COLOR_TAB_GUTTER_EDGE "; border-bottom-color: " FL_COLOR_TAB_GUTTER_LIP ";" \
+    "  font-size: " FL_FONT_SM ";"                                               \
     "  border-radius: " FL_RADIUS_PILL ";"                                       \
     "}"                                                                          \
-    ".ca-dock-tab:hover { color: " FL_COLOR_TEXT_BRIGHT "; background: " FL_COLOR_HOVER "; }" \
-    ".ca-dock-tab.active, .ca-dock-tab.active:hover {"                           \
-    "  color: " FL_COLOR_TEXT_BRIGHT "; background: " FL_COLOR_TAB_ACTIVE ";"     \
-    "  border: 1px solid " FL_COLOR_GLASS_BORDER ";"                             \
+    ".ca-dock-tab {"                                                             \
+    "  padding: 0px " FL_SPACE_LG "; color: " FL_COLOR_TEXT_MUTED "; flex-shrink: 0;" \
+    "  border-radius: " FL_RADIUS_PILL ";"                                       \
+    "}"                                                                          \
+    ".ca-dock-tab:hover { color: " FL_COLOR_TEXT_BRIGHT "; }"                    \
+    ".ca-dock-tab.active, .ca-dock-tab.active:hover { color: " FL_COLOR_TEXT_BRIGHT "; background: transparent; }" \
+    ".ca-dock-tab-indicator {"                                                   \
+    "  border-radius: " FL_RADIUS_PILL ";"                                       \
+    "  background: linear-gradient(to bottom, " FL_COLOR_TAB_PILL_TOP ", " FL_COLOR_TAB_PILL_BOTTOM ");" \
+    "  border: 1px solid " FL_COLOR_TAB_PILL_RIM ";"                             \
+    "  border-top-color: " FL_COLOR_TAB_PILL_SPECULAR "; border-bottom-color: " FL_COLOR_TAB_PILL_UNDER ";" \
+    "  box-shadow: 0px 1px 3px " FL_COLOR_TAB_PILL_CAST ";"                      \
+    "  transition: left " FL_MOTION_TAB_SLIDE " " FL_MOTION_TAB_EASE ";"         \
+    "  transition-stretch: " FL_MOTION_TAB_STRETCH ";"                           \
     "}"                                                                          \
     ".ca-dock-target {"                                                          \
     "  background: " FL_COLOR_FLOATING "; border: 1px solid " FL_COLOR_GLASS_BORDER ";" \
@@ -537,3 +568,9 @@
     ".fl-tl-key-text { font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MUTED "; }" \
     ".fl-tl-key-text.selected { color: " FL_COLOR_ACCENT "; }" \
     ".fl-tl-playhead { background: " FL_COLOR_ACCENT "; z-index: 2; glow-radius: 6px; glow-color: " FL_COLOR_ACCENT_GLOW "; }"
+
+/* Motion: hover and selection fades shared by interactive controls. */
+#define FL_STYLE_CSS_MOTION \
+    ".ca-titlebar-menu-item, .ca-titlebar-control, .ca-popup-btn, .ca-dock-tab, .fl-action, .fl-icon-action, " \
+    ".fl-recent, .fl-entity, .fl-widget-card, .fl-asset-card, .fl-font-row, .fl-chip, .fl-file-row, " \
+    ".fl-scene-card { transition: " FL_MOTION_FADE "; }"
