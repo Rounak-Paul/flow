@@ -1,5 +1,7 @@
 #include "flow_test.h"
 #include "schema/fl_widgets.h"
+#include "components/fl_style.h"
+#include "components/fl_video_clip.h"
 #include "doc/fl_scene_geometry.h"
 #include "platform/fl_fs.h"
 #include "platform/fl_paths.h"
@@ -22,7 +24,7 @@ int main(int argc,char **argv)
     Fl_Id scene=fl_project_scene_at(p,0)->id,ids[FL_WIDGET_COUNT]={0};
     for (int i=0;i<FL_WIDGET_COUNT;++i) {
         const Fl_WidgetDef *def=fl_widget_definition((Fl_WidgetKind)i);CHECK(def);
-        if (i==FL_WIDGET_IMAGE) {CHECK(!fl_widget_create(p,scene,0,FL_WIDGET_IMAGE,0,0,&ids[i]));continue;}
+        if (i==FL_WIDGET_IMAGE||i==FL_WIDGET_VIDEO) {CHECK(!fl_widget_create(p,scene,0,(Fl_WidgetKind)i,0,0,&ids[i]));continue;}
         CHECK(fl_widget_create(p,scene,0,(Fl_WidgetKind)i,i*600,20,&ids[i]));
         const Fl_Entity *e=fl_scene_entity(fl_project_scene(p,scene),ids[i]);
         CHECK(fl_widget_for_entity(e)==def);
@@ -91,10 +93,33 @@ int main(int argc,char **argv)
     CHECK(!fl_project_apply(p,&(Fl_Op){.kind=FL_OP_ASSET_REMOVE,.asset=picture_id},NULL));
     CHECK(fl_scene_geometry_update(&geometry,fl_project_scene(p,scene),NULL));
     CHECK(fl_scene_geometry_pick(&geometry,fl_project_scene(p,scene),30,20,0)==image_entity);
+    /* Style and video components validate, reference assets and map scene time to source time. */
+    Fl_Style look={.radius=24,.gradient=true,.gradient_to={1,2,3,4},.gradient_angle=1.5,.shadow_blur=30,.shadow_x=2,.shadow_y=8,.shadow_color={0,0,0,200},.align=FL_ALIGN_CENTER,.crop={0.25,0.5,0.5,0.25}},decoded_style;
+    unsigned char style_bytes[FL_STYLE_BYTES];fl_style_encode(&look,style_bytes);
+    Fl_Component style_component={FL_COMPONENT_STYLE,1,FL_STYLE_BYTES,style_bytes};
+    CHECK(fl_widget_component_valid(&style_component)&&fl_style_decode(&style_component,&decoded_style)&&decoded_style.radius==24&&decoded_style.align==FL_ALIGN_CENTER&&decoded_style.gradient_to[3]==4&&decoded_style.crop[2]==0.5);
+    look.crop[2]=0.9;fl_style_encode(&look,style_bytes);CHECK(!fl_widget_component_valid(&style_component));look.crop[2]=0.5;fl_style_encode(&look,style_bytes);
+    style_bytes[49]=9;CHECK(!fl_widget_component_valid(&style_component));
+    look.radius=-1;fl_style_encode(&look,style_bytes);CHECK(!fl_widget_component_valid(&style_component));
+    Fl_Asset movie={.name="Movie",.kind=FL_ASSET_VIDEO,.hash={3},.extension="mp4",.size=10,.width=1920,.height=1080,.duration=10*FL_TICKS_PER_SECOND};
+    Fl_Id movie_id,video_entity;
+    CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_ASSET_ADD,.asset_record=&movie},&movie_id));
+    CHECK(!fl_widget_create_video(p,scene,0,font_id,0,0,10,10,NULL)&&!fl_widget_create_video(p,scene,0,picture_id,0,0,10,10,NULL));
+    CHECK(fl_widget_create_video(p,scene,0,movie_id,10,20,640,360,&video_entity));
+    const Fl_Entity *video=fl_scene_entity(fl_project_scene(p,scene),video_entity);
+    Fl_VideoClip clip;CHECK(fl_widget_for_entity(video)->kind==FL_WIDGET_VIDEO&&fl_video_clip_decode(fl_entity_component(video,FL_COMPONENT_VIDEO),&clip));
+    CHECK(clip.asset==movie_id&&clip.rate==1&&!clip.loop&&fl_project_asset_uses(p,movie_id)==1);
+    CHECK(!fl_project_apply(p,&(Fl_Op){.kind=FL_OP_ASSET_REMOVE,.asset=movie_id},NULL));
+    clip=(Fl_VideoClip){.asset=movie_id,.start=2*FL_TICKS_PER_SECOND,.offset=FL_TICKS_PER_SECOND,.rate=2};
+    const uint64_t length=10*FL_TICKS_PER_SECOND;
+    CHECK(fl_video_clip_source_seconds(&clip,0,length)==1&&fl_video_clip_source_seconds(&clip,3*FL_TICKS_PER_SECOND,length)==3&&fl_video_clip_source_seconds(&clip,60*FL_TICKS_PER_SECOND,length)==10);
+    clip.loop=true;CHECK(fabs(fl_video_clip_source_seconds(&clip,8*FL_TICKS_PER_SECOND,length)-3)<1e-9);
+    unsigned char clip_bytes[FL_VIDEO_CLIP_BYTES];clip.rate=0;fl_video_clip_encode(&clip,clip_bytes);
+    Fl_Component clip_component={FL_COMPONENT_VIDEO,1,FL_VIDEO_CLIP_BYTES,clip_bytes};CHECK(!fl_widget_component_valid(&clip_component));
     CHECK(fl_project_save(p));fl_project_destroy(p);p=fl_project_open(argv[1],NULL);CHECK(p);
     text=fl_scene_entity(fl_project_scene(p,scene),ids[FL_WIDGET_TEXT]);typography=fl_widget_typography(text);
     CHECK(!strcmp(typography.family,"Georgia")&&typography.weight==700&&typography.italic);
-    CHECK(fl_project_asset_count(p)==2&&fl_project_asset_uses(p,picture_id)==1);
+    CHECK(fl_project_asset_count(p)==3&&fl_project_asset_uses(p,picture_id)==1&&fl_project_asset_uses(p,movie_id)==1);
     CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_ENTITY_REMOVE,.scene=scene,.entity=image_entity},NULL));
     CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_ASSET_REMOVE,.asset=picture_id},NULL));
     ellipse=fl_scene_entity(fl_project_scene(p,scene),ids[FL_WIDGET_ELLIPSE]);CHECK(fl_widget_for_entity(ellipse)->kind==FL_WIDGET_ELLIPSE);

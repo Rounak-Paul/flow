@@ -44,7 +44,7 @@ struct Fl_TimelinePanel {
 };
 
 static const char *const PROPERTY_NAMES[FL_PROP_COUNT] = {
-    "X", "Y", "Width", "Height", "Rotation", "Scale X", "Scale Y", "Opacity", "Fill", "Stroke", "Stroke width", "Font size"};
+    "X", "Y", "Width", "Height", "Rotation", "Scale X", "Scale Y", "Opacity", "Fill", "Stroke", "Stroke width", "Font size", "Crop X", "Crop Y", "Crop width", "Crop height"};
 
 /* Align fixed headers and labels with the two axes of the key viewport. */
 static void sync_scroll(void *data)
@@ -207,6 +207,7 @@ static bool property_supported(const Fl_Entity *entity, Fl_AnimProperty property
     if (!def) return false;
     if (property == FL_PROP_FILL) return def->has_fill;
     if (property == FL_PROP_STROKE || property == FL_PROP_STROKE_WIDTH) return def->has_stroke;
+    if (property >= FL_PROP_CROP_X) return def->has_image || def->has_video;
     return property == FL_PROP_FONT_SIZE && def->has_text;
 }
 
@@ -228,7 +229,8 @@ static void key_property(Fl_TimelinePanel *p, Fl_Id entity, Fl_AnimProperty prop
     else if (property == FL_PROP_FILL || property == FL_PROP_STROKE) {
         const unsigned char *color = property == FL_PROP_FILL ? v->appearance.fill : v->appearance.stroke;
         for (size_t i = 0; i < 4; ++i) op.value[i] = color[i];
-    } else op.value[0] = property == FL_PROP_STROKE_WIDTH ? v->appearance.stroke_width : v->appearance.font_size;
+    } else if (property >= FL_PROP_CROP_X) op.value[0] = v->crop[property - FL_PROP_CROP_X];
+    else op.value[0] = property == FL_PROP_STROKE_WIDTH ? v->appearance.stroke_width : v->appearance.font_size;
     const Fl_Track *track = fl_scene_track(s, entity, property);
     Fl_Tick previous = INT64_MIN;
     for (size_t i = 0; track && i < track->key_count; ++i) {

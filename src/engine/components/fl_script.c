@@ -38,6 +38,6 @@ bool fl_script_decode(const Fl_Component *c, Fl_Script *out)
 const char *fl_property_name(Fl_AnimProperty property)
 {
     static const char *names[FL_PROP_COUNT] = {"x", "y", "width", "height", "rotation", "scale_x", "scale_y",
-        "opacity", "fill", "stroke", "stroke_width", "font_size"};
+        "opacity", "fill", "stroke", "stroke_width", "font_size", "crop_x", "crop_y", "crop_w", "crop_h"};
     return property >= 0 && property < FL_PROP_COUNT ? names[property] : NULL;
 }

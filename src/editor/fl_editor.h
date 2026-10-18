@@ -36,6 +36,13 @@ typedef struct Fl_LogEvent {
 Fl_Editor *fl_editor_create(void);
 
 /*
+ * Open the project in directory, replacing the project launcher. Call before fl_editor_run.
+ *
+ * Returns  false when the project cannot be opened (for example it is open in another process).
+ */
+bool fl_editor_open_project(Fl_Editor *editor, const char *directory);
+
+/*
  * Run the UI loop until every window is closed.
  *
  * editor   Editor from fl_editor_create.

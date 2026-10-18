@@ -9,6 +9,7 @@ typedef struct Fl_TextStyle {
     const Fl_FontFace *face;
     double size;
     bool synthetic_bold, synthetic_italic;
+    int align;                  /* 0 left, 1 centre, 2 right (Fl_TextAlign) */
 } Fl_TextStyle;
 
 /* Create a rasterizer; NULL on failure. */
@@ -18,7 +19,7 @@ void fl_text_rasterizer_destroy(Fl_TextRasterizer *rasterizer);
 /* Close cached faces, e.g. after the catalogs that own face descriptions changed. */
 void fl_text_rasterizer_flush(Fl_TextRasterizer *rasterizer);
 /*
- * Rasterize UTF-8 text wrapped and clipped to a width x height box into an
+ * Rasterize UTF-8 text, word-wrapped at spaces (long words break) and aligned within a width x height box, into an
  * 8-bit coverage mask. Boxes over 4096 px per side are uniformly downscaled.
  *
  * out_width/out_height  Receive the mask dimensions.

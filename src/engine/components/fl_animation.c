@@ -120,6 +120,8 @@ bool fl_property_value_valid(Fl_AnimProperty property, const double v[4])
         return true;
     case FL_PROP_STROKE_WIDTH: return v[0] >= 0 && v[0] <= 65536;
     case FL_PROP_FONT_SIZE: return v[0] >= 1 && v[0] <= 2048;
+    case FL_PROP_CROP_X: case FL_PROP_CROP_Y: return v[0] >= 0 && v[0] <= 1;
+    case FL_PROP_CROP_W: case FL_PROP_CROP_H: return v[0] >= 0.001 && v[0] <= 1;
     default: return false;
     }
 }

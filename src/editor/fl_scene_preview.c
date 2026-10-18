@@ -98,10 +98,10 @@ static void draw_grid(Fl_ScenePreview *p, VkCommandBuffer cmd, const Fl_SceneFra
 {
     const unsigned char minor[4]=FL_STYLE_CANVAS_GRID_RGBA, major[4]=FL_STYLE_CANVAS_GRID_MAJOR_RGBA;
     double period=FL_SCENE_GRID_SPACING*5;
-    float push[20]={2,0,-1,(float)frame->width,0,2,-1,(float)frame->height,
+    float push[28]={2,0,-1,(float)frame->width,0,2,-1,(float)frame->height,
         fl_scene_renderer_linear(minor[0]),fl_scene_renderer_linear(minor[1]),fl_scene_renderer_linear(minor[2]),minor[3]/255.f,
         fl_scene_renderer_linear(major[0]),fl_scene_renderer_linear(major[1]),fl_scene_renderer_linear(major[2]),major[3]/255.f,
-        (float)fmod(frame->x,period),(float)fmod(frame->y,period),(float)FL_SCENE_GRID_SPACING,7};
+        (float)fmod(frame->x,period),(float)fmod(frame->y,period),(float)FL_SCENE_GRID_SPACING,FL_RENDER_KIND_GRID,0,0,0,0,0,0,0,0};
     fl_scene_renderer_push(p->renderer,cmd,push,fl_scene_renderer_white(p->renderer));
 }
 
@@ -129,7 +129,7 @@ void fl_scene_preview_render(Ca_Viewport *viewport,void *data)
     Fl_CanvasMapping map=preview_mapping(scene,logical_w,logical_h);
     Fl_SceneFrame target=map.target, frame=map.world;
     if (g&&map.scale>0&&p->renderer&&fl_scene_renderer_begin(p->renderer,cmd,ca_viewport_format(viewport),w,h)) {
-        fl_scene_renderer_background(p->renderer,cmd,&frame,&target);
+        fl_scene_renderer_background(p->renderer,cmd,&frame,&target,scene->background);
         draw_grid(p,cmd,&frame);
         fl_scene_renderer_entities(p->renderer,cmd,&frame,scene,state,g);
         VkDescriptorSet white=fl_scene_renderer_white(p->renderer);

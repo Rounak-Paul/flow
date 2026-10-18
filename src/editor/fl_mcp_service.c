@@ -1,4 +1,5 @@
 #include "fl_mcp_service.h"
+#include "fl_exporter.h"
 #include "fl_scene_renderer.h"
 #include "agent/fl_agent.h"
 #include "agent/fl_mcp.h"
@@ -26,6 +27,7 @@ struct Fl_McpService {
     Fl_McpHttp *http;
     Fl_Agent *agent;
     Fl_SceneRenderer *renderer;
+    Fl_Exporter *exporter;
     Fl_Project *project;
     Ca_Window *window;
     Fl_Workspace *workspace;
@@ -147,6 +149,78 @@ static bool require_editor(Fl_McpService *s, Fl_McpCall *call)
     return false;
 }
 
+/* Export tools: start, observe and cancel a video render. */
+static cJSON *export_json(const Fl_ExportStatus *status)
+{
+    static const char *const states[] = {"idle", "running", "done", "failed", "cancelled"};
+    cJSON *o = cJSON_CreateObject();
+    if (!o) return NULL;
+    cJSON_AddStringToObject(o, "state", states[status->state]);
+    cJSON_AddNumberToObject(o, "frames_done", (double)status->frames_done);
+    cJSON_AddNumberToObject(o, "frames_total", (double)status->frames_total);
+    if (status->frames_total) cJSON_AddNumberToObject(o, "progress", (double)status->frames_done / (double)status->frames_total);
+    cJSON_AddNumberToObject(o, "width", status->width); cJSON_AddNumberToObject(o, "height", status->height); cJSON_AddNumberToObject(o, "fps", status->fps);
+    cJSON_AddNumberToObject(o, "elapsed_seconds", status->elapsed_seconds);
+    cJSON_AddStringToObject(o, "path", status->path);
+    if (status->message[0]) cJSON_AddStringToObject(o, "message", status->message);
+    return o;
+}
+
+static void tool_export_video(Fl_McpCall *call, const cJSON *args, void *data)
+{
+    static const char *const keys[] = {"path", "width", "fps", "crf", "scenes", NULL};
+    Fl_McpService *s = data;
+    if (!only_keys(call, args, keys) || !require_editor(s, call)) return;
+    const cJSON *path = cJSON_GetObjectItemCaseSensitive(args, "path"), *scenes = cJSON_GetObjectItemCaseSensitive(args, "scenes");
+    double width = 1920, fps = 60, crf = 0;
+    if (!cJSON_IsString(path) || !path->valuestring[0]) {fl_mcp_return_error(call, "missing_field", "\"path\" is required (a file name goes to the project's exports folder)"); return;}
+    if (!number_arg(call, args, "width", false, &width, NULL) || !number_arg(call, args, "fps", false, &fps, NULL) || !number_arg(call, args, "crf", false, &crf, NULL)) return;
+    if (width < 2 || width > 16384 || width != (uint32_t)width || fps != (uint32_t)fps || crf != (uint32_t)crf || crf < 0) {fl_mcp_return_error(call, "invalid_argument", "width, fps and crf are whole numbers"); return;}
+    Fl_Id ids[256];
+    size_t count = 0;
+    if (scenes) {
+        if (!cJSON_IsArray(scenes) || !cJSON_GetArraySize(scenes) || cJSON_GetArraySize(scenes) > 256) {fl_mcp_return_error(call, "invalid_argument", "\"scenes\" is 1..256 scene ids"); return;}
+        for (const cJSON *id = scenes->child; id; id = id->next) {
+            if (!cJSON_IsNumber(id)) {fl_mcp_return_error(call, "invalid_argument", "scene ids are numbers"); return;}
+            ids[count++] = (Fl_Id)id->valuedouble;
+        }
+    }
+    char full[FL_PATH_MAX], error[256];
+    const char *p = path->valuestring;
+    bool absolute = p[0] == '/' || p[0] == '\\' || (p[1] == ':' && (p[2] == '/' || p[2] == '\\'));
+    char folder[FL_PATH_MAX];
+    if (absolute) snprintf(full, sizeof(full), "%s", p);
+    else if (!fl_fs_join(folder, sizeof(folder), fl_project_directory(s->project), "exports") || !fl_fs_mkdir_p(folder) || !fl_fs_join(full, sizeof(full), folder, p)) {
+        fl_mcp_return_error(call, "invalid_argument", "that path is too long"); return;
+    }
+    if (!fl_exporter_start(s->exporter, s->project, &(Fl_ExportDesc){.path = full, .width = (uint32_t)width, .fps = (uint32_t)fps, .crf = (uint32_t)crf,
+                                                                     .scenes = scenes ? ids : NULL, .scene_count = count}, error, sizeof(error))) {
+        fl_mcp_return_error(call, "export_failed", "%s", error); return;
+    }
+    Fl_ExportStatus status = fl_exporter_status(s->exporter);
+    fl_mcp_return_json(call, export_json(&status));
+}
+
+static void tool_get_export_status(Fl_McpCall *call, const cJSON *args, void *data)
+{
+    static const char *const keys[] = {NULL};
+    Fl_McpService *s = data;
+    if (!only_keys(call, args, keys)) return;
+    Fl_ExportStatus status = fl_exporter_status(s->exporter);
+    fl_mcp_return_json(call, export_json(&status));
+}
+
+static void tool_cancel_export(Fl_McpCall *call, const cJSON *args, void *data)
+{
+    static const char *const keys[] = {NULL};
+    Fl_McpService *s = data;
+    if (!only_keys(call, args, keys)) return;
+    fl_exporter_cancel(s->exporter);
+    Fl_ExportStatus status = fl_exporter_status(s->exporter);
+    fl_mcp_return_json(call, export_json(&status));
+}
+
+
 static void tool_get_editor_state(Fl_McpCall *call, const cJSON *args, void *data)
 {
     static const char *const keys[] = {NULL};
@@ -193,6 +267,7 @@ static void tool_set_editor_state(Fl_McpCall *call, const cJSON *args, void *dat
 void fl_mcp_service_detach(Fl_McpService *s)
 {
     if (!s) return;
+    fl_exporter_abort(s->exporter, "the project was closed during the export");
     s->project = NULL; s->window = NULL; s->workspace = NULL;
     fl_agent_reset(s->agent);
 }
@@ -215,6 +290,7 @@ void fl_mcp_service_destroy(Fl_McpService *s)
     fl_mcp_service_detach(s);
     fl_mcp_destroy(s->mcp);
     fl_agent_destroy(s->agent);
+    fl_exporter_destroy(s->exporter);
     fl_scene_renderer_destroy(s->renderer);
     free(s);
 }
@@ -224,6 +300,13 @@ static bool register_editor_tools(Fl_McpService *s)
 {
     static const char *const empty = "{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}";
     const Fl_McpTool tools[] = {
+        {"export_video", "Render the project's scenes in order to an H.264 MP4 with ffmpeg. path may be a file name (written to the project's exports folder) or an absolute path. "
+         "width defaults to 1920 (height follows the aspect; both must be even), fps to 60, crf 0..51 (default 16, lower is better). scenes optionally lists scene ids. "
+         "It runs in the background: poll get_export_status.",
+         "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"width\":{\"type\":\"integer\"},\"fps\":{\"type\":\"integer\"},\"crf\":{\"type\":\"integer\"},\"scenes\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"}}},\"required\":[\"path\"],\"additionalProperties\":false}",
+         false, tool_export_video, s},
+        {"get_export_status", "Progress of the latest video export: state, frames done and total, elapsed time and output path.", empty, true, tool_get_export_status, s},
+        {"cancel_export", "Stop the running video export.", empty, false, tool_cancel_export, s},
         {"get_editor_state", "The scene, time and selection currently shown in the editor.", empty, true, tool_get_editor_state, s},
         {"set_editor_state", "Show a scene, move the playhead (seconds) or select entities in the editor so the user can follow along.",
          "{\"type\":\"object\",\"properties\":{\"scene\":{\"type\":\"integer\"},\"time\":{\"type\":\"number\"},\"select\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"}}},\"additionalProperties\":false}",
@@ -242,9 +325,10 @@ Fl_McpService *fl_mcp_service_create(Fl_EventBus *bus, Ca_Instance *instance, Fl
     s->task_event = fl_event_type_register(bus, "mcp.task", sizeof(Fl_McpTask));
     unsigned port = PREFERRED_PORT;
     s->renderer = fl_scene_renderer_create(&(Fl_SceneRendererDesc){.instance = instance, .fonts = fonts, .jobs = jobs});
+    s->exporter = s->renderer ? fl_exporter_create(bus, s->renderer) : NULL;
     s->agent = fl_agent_create(&(Fl_AgentHost){current_project, render_scene, s});
-    s->mcp = fl_mcp_create(&(Fl_McpDesc){"flow", FLOW_VERSION, fl_agent_instructions(), post_task, s, 0});
-    bool ok = s->task_event != FL_EVENT_TYPE_INVALID && s->renderer && s->agent && s->mcp && load_config(s, &port) &&
+    s->mcp = fl_mcp_create(&(Fl_McpDesc){"flow", FLOW_VERSION, fl_agent_instructions(), post_task, s, 120000});
+    bool ok = s->task_event != FL_EVENT_TYPE_INVALID && s->renderer && s->exporter && s->agent && s->mcp && load_config(s, &port) &&
         fl_event_subscribe(bus, &(Fl_SubscribeDesc){.type = s->task_event, .fn = run_task, .user_data = s, .owner = s}).generation &&
         fl_agent_register(s->agent, s->mcp) && register_editor_tools(s);
     if (ok) {

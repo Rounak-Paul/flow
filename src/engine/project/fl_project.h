@@ -49,6 +49,9 @@ typedef struct Fl_AudioClip {
     uint64_t fade_in, fade_out; /* ticks */
 } Fl_AudioClip;
 
+/* Scene backdrop colour (sRGB RGBA8) of newly created scenes. */
+#define FL_SCENE_BACKGROUND_DEFAULT {25, 31, 47, 255}
+
 typedef struct Fl_Scene {
     Fl_Id id;
     const char *name;
@@ -57,6 +60,7 @@ typedef struct Fl_Scene {
     uint64_t width, height; /* canvas dimensions; target framing never moves entities */
     uint64_t aspect_width, aspect_height; /* target ratio; both zero use the whole canvas */
     double camera_x, camera_y; /* output camera offset from canvas center, in scene units */
+    unsigned char background[4]; /* backdrop colour, sRGB RGBA8 with opaque alpha */
     const Fl_Entity *entities;
     size_t entity_count;
     const Fl_EntityIndex *identity_index; /* private lookup storage; callers never mutate */
@@ -75,7 +79,7 @@ typedef enum Fl_OpKind {
     FL_OP_ASSET_ADD, FL_OP_ASSET_REMOVE, FL_OP_ASSET_RENAME,
     FL_OP_BEAT_ADD, FL_OP_BEAT_REMOVE, FL_OP_BEAT_UPDATE, FL_OP_BEAT_MOVE,
     FL_OP_KEY_SET, FL_OP_KEY_REMOVE, FL_OP_TRACK_REMOVE,
-    FL_OP_CLIP_ADD, FL_OP_CLIP_UPDATE, FL_OP_CLIP_REMOVE, FL_OP_BEAT_SPLIT, FL_OP_SCENE_ASPECT, FL_OP_SCENE_CAMERA,
+    FL_OP_CLIP_ADD, FL_OP_CLIP_UPDATE, FL_OP_CLIP_REMOVE, FL_OP_BEAT_SPLIT, FL_OP_SCENE_ASPECT, FL_OP_SCENE_CAMERA, FL_OP_SCENE_BACKGROUND,
     FL_OP_RESTORE /* notification kind only: scenes were replaced by fl_project_restore; never a valid operation */
 } Fl_OpKind;
 /* One local transform replacement in an atomic selection gesture. */
@@ -91,6 +95,7 @@ typedef struct Fl_Op {
     uint64_t width, height, duration;
     uint64_t aspect_width, aspect_height; /* FL_OP_SCENE_ASPECT; both zero reset to canvas */
     double camera_x, camera_y; /* FL_OP_SCENE_CAMERA; finite scene-space offsets */
+    unsigned char background[4]; /* FL_OP_SCENE_BACKGROUND; alpha must be 255 */
     const Fl_Component *components; /* add/configure: merge these schemas, preserving others */
     size_t component_count;
     const Fl_TransformEdit *transforms; /* FL_OP_TRANSFORMS only */

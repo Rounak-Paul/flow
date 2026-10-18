@@ -469,6 +469,7 @@ static const char *kind_icon(const Fl_Entity *e, bool open)
     case FL_WIDGET_ELLIPSE: return CA_ICON_NF_FA_CIRCLE;
     case FL_WIDGET_TEXT: return CA_ICON_NF_FA_FONT;
     case FL_WIDGET_IMAGE: return CA_ICON_NF_FA_IMAGE;
+    case FL_WIDGET_VIDEO: return CA_ICON_NF_FA_FILM;
     case FL_WIDGET_LINE: case FL_WIDGET_ARROW: return CA_ICON_NF_FA_ARROW_RIGHT;
     default: return open ? CA_ICON_NF_FA_FOLDER_OPEN : CA_ICON_NF_FA_FOLDER;
     }

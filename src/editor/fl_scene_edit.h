@@ -43,6 +43,6 @@ bool fl_scene_edit_update(Fl_SceneEdit *edit, double x, double y);
 void fl_scene_edit_end(Fl_SceneEdit *edit, bool cancel);
 /* Create a widget at a scene-local point under parent and select it. */
 bool fl_scene_edit_insert(Fl_SceneEdit *edit, Fl_WidgetKind kind, Fl_Id parent, double x, double y);
-/* Create an image of asset fitted inside the scene at a parent-local point (its centre when centred,
-   else its top-left corner) and select it. */
-bool fl_scene_edit_insert_image(Fl_SceneEdit *edit, Fl_Id asset, Fl_Id parent, double x, double y, bool centred);
+/* Create an image or video entity of asset fitted inside the scene at a parent-local point (its centre when
+   centred, else its top-left corner) and select it. */
+bool fl_scene_edit_insert_media(Fl_SceneEdit *edit, Fl_Id asset, Fl_Id parent, double x, double y, bool centred);

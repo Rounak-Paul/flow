@@ -183,13 +183,16 @@ static void query_changed(Ca_TextInput *input, void *data)
     Fl_AssetPanel *p = data; set_text(&p->query, ca_input_text(input)); invalidate(p);
 }
 
-/* Place an image at the active scene's centre. */
+/* True for assets that become an entity on the canvas. */
+static bool visual(Fl_AssetKind kind) { return kind == FL_ASSET_IMAGE || kind == FL_ASSET_VIDEO; }
+
+/* Place an image or video at the active scene's centre. */
 static void add_to_scene(Fl_AssetPanel *p, Fl_Id asset)
 {
     const Fl_Scene *scene = fl_project_scene(fl_scene_edit_project(p->edit), fl_scene_edit_scene(p->edit));
     if (!scene) { status(p, "Create or select a scene first."); return; }
-    if (!fl_scene_edit_insert_image(p->edit, asset, 0, scene->width * .5, scene->height * .5, true))
-        status(p, "The image could not be added to the scene.");
+    if (!fl_scene_edit_insert_media(p->edit, asset, 0, scene->width * .5, scene->height * .5, true))
+        status(p, "The media could not be added to the scene.");
 }
 
 /* Release borrowed rename handles when the utility window closes. */
@@ -292,9 +295,9 @@ static void row_menu(int index, void *data)
     Fl_AssetRow row = *(Fl_AssetRow *)data;
     const Fl_Asset *record = fl_project_asset(fl_scene_edit_project(row.panel->edit), row.asset);
     if (!record) return;
-    bool placeable = record->kind == FL_ASSET_IMAGE || record->kind == FL_ASSET_AUDIO;
+    bool placeable = visual(record->kind) || record->kind == FL_ASSET_AUDIO;
     int action = placeable ? index : index + 1;
-    if (action == 0 && record->kind == FL_ASSET_IMAGE) add_to_scene(row.panel, row.asset);
+    if (action == 0 && visual(record->kind)) add_to_scene(row.panel, row.asset);
     else if (action == 0) fl_timeline_panel_add_clip(row.panel->timeline, row.asset, fl_scene_edit_time(row.panel->edit));
     else if (action == 1) rename_asset(row.panel, row.asset);
     else if (action == 2) delete_asset(row.panel, row.asset);
@@ -308,7 +311,7 @@ static void row_clicked(Ca_Button *button, void *data)
     row->panel->selected = row->asset;
     invalidate(row->panel);
     const Fl_Asset *record = fl_project_asset(fl_scene_edit_project(row->panel->edit), row->asset);
-    if (!ca_button_get_click_pos(button, &x, &y) && record && record->kind == FL_ASSET_IMAGE) add_to_scene(row->panel, row->asset);
+    if (!ca_button_get_click_pos(button, &x, &y) && record && visual(record->kind)) add_to_scene(row->panel, row->asset);
 }
 
 /* Finish dragging an image row onto the scene hierarchy or artboard. */
@@ -320,11 +323,11 @@ static void row_drag_end(const Ca_DragEvent *event, void *data)
     const Fl_Asset *record = fl_project_asset(fl_scene_edit_project(p->edit), row->asset);
     float x, y;
     Fl_SceneDropTarget target;
-    if (!record || (record->kind != FL_ASSET_IMAGE && record->kind != FL_ASSET_AUDIO)) return;
+    if (!record || (!visual(record->kind) && record->kind != FL_ASSET_AUDIO)) return;
     if (!ca_window_mouse_release_position(event->window, 0, &x, &y) && !ca_window_cursor_screen_position(event->window, &x, &y)) return;
     if (record->kind == FL_ASSET_AUDIO) fl_timeline_panel_drop_asset(p->timeline, row->asset, x, y);
     else if (fl_scene_panel_drop_target(p->scene, x, y, &target))
-        fl_scene_edit_insert_image(p->edit, row->asset, target.parent, target.x, target.y, target.at_point);
+        fl_scene_edit_insert_media(p->edit, row->asset, target.parent, target.x, target.y, target.at_point);
 }
 
 /* Place images dropped over the scene once their import finishes; refresh status for every result. */
@@ -338,8 +341,8 @@ static bool imported(const Fl_Event *event, void *data)
         Fl_SceneDropTarget target = p->placements[i].target;
         p->placements[i] = p->placements[--p->placement_count];
         const Fl_Asset *record = fl_project_asset(fl_scene_edit_project(p->edit), result->asset);
-        if (record && record->kind == FL_ASSET_IMAGE && target.scene == fl_scene_edit_scene(p->edit) &&
-            !fl_scene_edit_insert_image(p->edit, result->asset, target.parent, target.x, target.y, target.at_point))
+        if (record && visual(record->kind) && target.scene == fl_scene_edit_scene(p->edit) &&
+            !fl_scene_edit_insert_media(p->edit, result->asset, target.parent, target.x, target.y, target.at_point))
             FL_LOG_WARN("assets", "imported %s but could not place it in the scene", result->name);
         break;
     }
@@ -439,7 +442,7 @@ static void emit_tile(Fl_AssetPanel *p, const Fl_Asset *a)
         snprintf(detail, sizeof(detail), "  %llu x %llu%s", (unsigned long long)a->width, (unsigned long long)a->height, length);
     else snprintf(detail, sizeof(detail), "%s", length);
     snprintf(tip, sizeof(tip), "%s\n%s%s  %s", a->name, label, detail, size);
-    bool image = a->kind == FL_ASSET_IMAGE, placeable = image || a->kind == FL_ASSET_AUDIO;
+    bool image = visual(a->kind), placeable = image || a->kind == FL_ASSET_AUDIO;
     ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_ASSET_TILE, .id = id,
         .on_drag_end = placeable ? row_drag_end : NULL, .drag_data = row, .drag_preview = placeable});
     ca_btn_begin(&(Ca_BtnDesc){.direction = CA_VERTICAL, .on_click = row_clicked, .click_data = row,

@@ -276,17 +276,18 @@ bool fl_scene_edit_insert(Fl_SceneEdit *edit, Fl_WidgetKind kind, Fl_Id parent, 
         fl_scene_edit_select(edit,edit->scene,id,false);
 }
 
-bool fl_scene_edit_insert_image(Fl_SceneEdit *edit, Fl_Id asset, Fl_Id parent, double x, double y, bool centred)
+bool fl_scene_edit_insert_media(Fl_SceneEdit *edit, Fl_Id asset, Fl_Id parent, double x, double y, bool centred)
 {
     const Fl_Scene *scene=edit ? fl_project_scene(edit->project,edit->scene) : NULL;
     const Fl_Asset *record=edit ? fl_project_asset(edit->project,asset) : NULL;
-    if (!scene||!record||record->kind!=FL_ASSET_IMAGE||!isfinite(x)||!isfinite(y)) return false;
+    if (!scene||!record||(record->kind!=FL_ASSET_IMAGE&&record->kind!=FL_ASSET_VIDEO)||!isfinite(x)||!isfinite(y)) return false;
     double w=record->width ? (double)record->width : 320,h=record->height ? (double)record->height : 180;
     double fit=fmin(1.0,fmin(scene->width/w,scene->height/h));
     w*=fit;h*=fit;
     Fl_Id id;
     if (centred) {x-=w*.5;y-=h*.5;}
     if (!snap_insertion(edit,parent,&x,&y)) return false;
-    return fl_widget_create_image(edit->project,edit->scene,parent,asset,x,y,w,h,&id)&&
-        fl_scene_edit_select(edit,edit->scene,id,false);
+    bool created=record->kind==FL_ASSET_VIDEO ? fl_widget_create_video(edit->project,edit->scene,parent,asset,x,y,w,h,&id)
+                                               : fl_widget_create_image(edit->project,edit->scene,parent,asset,x,y,w,h,&id);
+    return created&&fl_scene_edit_select(edit,edit->scene,id,false);
 }

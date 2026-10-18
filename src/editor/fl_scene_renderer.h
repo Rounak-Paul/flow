@@ -41,16 +41,33 @@ void fl_scene_renderer_prepare(Fl_SceneRenderer *renderer, const Fl_Project *pro
                                const Fl_SceneState *state, double text_scale, bool wait);
 /* Bind the primitive pipeline for a colour format and the whole target as viewport/scissor. False when unavailable. */
 bool fl_scene_renderer_begin(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, VkFormat format, uint32_t width, uint32_t height);
-/* Fill target (scene units) with the scene backdrop; frame is the visible world rectangle the target maps into. */
-void fl_scene_renderer_background(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, const Fl_SceneFrame *frame, const Fl_SceneFrame *target);
+/* Fill target (scene units) with the backdrop colour; frame is the visible world rectangle the target maps into. */
+void fl_scene_renderer_background(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, const Fl_SceneFrame *frame, const Fl_SceneFrame *target,
+                                  const unsigned char color[4]);
 /* Draw every visible entity in draw order. geometry and state describe the same scene time. */
 void fl_scene_renderer_entities(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, const Fl_SceneFrame *frame, const Fl_Scene *scene,
                                 const Fl_SceneState *state, const Fl_SceneGeometry *geometry);
+/* Shader kinds beyond the widget kinds, for callers issuing raw push blocks. */
+#define FL_RENDER_KIND_GRID 15
+
+/* Corner rounding and two-colour gradient applied to rectangles, ellipses, images and videos. */
+typedef struct Fl_PrimitiveStyle {
+    double radius;                  /* local pixels */
+    bool gradient;
+    unsigned char gradient_to[4];   /* sRGB RGBA8, blended from the appearance fill */
+    double gradient_angle;          /* radians; 0 runs left to right */
+    double crop[4];                 /* images and videos: visible source region x, y, width, height as fractions */
+} Fl_PrimitiveStyle;
+
 /* Draw one affine primitive (editor aids use this); mask is the sampled coverage/picture descriptor. */
 void fl_scene_renderer_primitive(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, const Fl_SceneFrame *frame, Fl_Affine matrix,
                                  double width, double height, Fl_WidgetKind kind, Fl_Appearance appearance, VkDescriptorSet mask);
-/* Issue a pre-built 20-float push block with mask, for full-target passes such as the editor grid. */
-void fl_scene_renderer_push(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, const float push[20], VkDescriptorSet mask);
+/* As fl_scene_renderer_primitive with a style (NULL for none). */
+void fl_scene_renderer_styled(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, const Fl_SceneFrame *frame, Fl_Affine matrix,
+                              double width, double height, Fl_WidgetKind kind, Fl_Appearance appearance, VkDescriptorSet mask,
+                              const Fl_PrimitiveStyle *style);
+/* Issue a pre-built 28-float push block with mask, for full-target passes such as the editor grid. */
+void fl_scene_renderer_push(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, const float push[28], VkDescriptorSet mask);
 /* Descriptor of the solid white texel used by untextured primitives. */
 VkDescriptorSet fl_scene_renderer_white(const Fl_SceneRenderer *renderer);
 /* Decode an sRGB channel to linear light as the shaders expect. */

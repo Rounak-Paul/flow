@@ -1,5 +1,7 @@
 #include "fl_agent_internal.h"
 #include "components/fl_script.h"
+#include "components/fl_style.h"
+#include "components/fl_video_clip.h"
 #include "components/fl_transform.h"
 #include <math.h>
 #include <stdarg.h>
@@ -171,7 +173,7 @@ bool agent_parse_anchor(const cJSON *v, const Fl_AgentRefs *refs, Fl_TimeAnchor 
     *out = anchor; return true;
 }
 
-static const char *const widget_names[FL_WIDGET_COUNT] = {"group", "rectangle", "ellipse", "line", "arrow", "text", "image"};
+static const char *const widget_names[FL_WIDGET_COUNT] = {"group", "rectangle", "ellipse", "line", "arrow", "text", "image", "video"};
 static const char *const ease_names[FL_EASE_COUNT] = {"linear", "in", "out", "in_out", "hold"};
 
 const char *agent_widget_name(Fl_WidgetKind kind) { return kind >= 0 && kind < FL_WIDGET_COUNT ? widget_names[kind] : "unknown"; }
@@ -340,6 +342,26 @@ static cJSON *entity_json(const Fl_Scene *s, const Fl_Entity *e, bool with_sourc
     }
     Fl_Id asset;
     if (fl_image_asset_decode(fl_entity_component(e, FL_COMPONENT_IMAGE), &asset)) cJSON_AddNumberToObject(o, "asset", (double)asset);
+    Fl_VideoClip clip;
+    if (fl_video_clip_decode(fl_entity_component(e, FL_COMPONENT_VIDEO), &clip)) {
+        cJSON_AddNumberToObject(o, "asset", (double)clip.asset); cJSON_AddNumberToObject(o, "start", agent_ticks_to_seconds(clip.start));
+        cJSON_AddNumberToObject(o, "offset", agent_ticks_to_seconds(clip.offset)); cJSON_AddNumberToObject(o, "rate", clip.rate);
+        cJSON_AddBoolToObject(o, "loop", clip.loop);
+    }
+    Fl_Style style;
+    if (fl_style_decode(fl_entity_component(e, FL_COMPONENT_STYLE), &style)) {
+        if (style.radius > 0) cJSON_AddNumberToObject(o, "radius", style.radius);
+        if (style.gradient) {agent_color_json(o, "fill2", style.gradient_to); cJSON_AddNumberToObject(o, "gradient_angle", style.gradient_angle * RAD_TO_DEG);}
+        if (style.shadow_blur > 0) {
+            cJSON_AddNumberToObject(o, "shadow_blur", style.shadow_blur); cJSON_AddNumberToObject(o, "shadow_x", style.shadow_x);
+            cJSON_AddNumberToObject(o, "shadow_y", style.shadow_y); agent_color_json(o, "shadow_color", style.shadow_color);
+        }
+        if (style.crop[0] != 0 || style.crop[1] != 0 || style.crop[2] != 1 || style.crop[3] != 1) {
+            cJSON *crop = cJSON_AddArrayToObject(o, "crop");
+            for (int i = 0; crop && i < 4; ++i) cJSON_AddItemToArray(crop, cJSON_CreateNumber(style.crop[i]));
+        }
+        if (def && def->has_text) cJSON_AddStringToObject(o, "align", style.align == FL_ALIGN_CENTER ? "center" : style.align == FL_ALIGN_RIGHT ? "right" : "left");
+    }
     Fl_Script script;
     if (fl_script_decode(fl_entity_component(e, FL_COMPONENT_SCRIPT), &script)) {
         cJSON *item = cJSON_AddObjectToObject(o, "script");
@@ -367,6 +389,7 @@ cJSON *agent_scene_json(const Fl_Project *p, const Fl_Scene *s, bool with_source
         cJSON *aspect = cJSON_AddArrayToObject(o, "aspect");
         if (aspect) {cJSON_AddItemToArray(aspect, cJSON_CreateNumber((double)s->aspect_width)); cJSON_AddItemToArray(aspect, cJSON_CreateNumber((double)s->aspect_height));}
     }
+    agent_color_json(o, "background", s->background);
     cJSON *camera = cJSON_AddArrayToObject(o, "camera");
     if (camera) {cJSON_AddItemToArray(camera, cJSON_CreateNumber(s->camera_x)); cJSON_AddItemToArray(camera, cJSON_CreateNumber(s->camera_y));}
     cJSON *beats = cJSON_AddArrayToObject(o, "beat_list");

@@ -19,6 +19,7 @@ Evaluation order per entity: authored base values → keyframe tracks → script
 - `self.transform`: x, y, width, height, rotation (radians), scale_x, scale_y.
 - `self.appearance`: fill/stroke (four-element RGBA arrays, 0–255), stroke_width, font_size.
 - `self.opacity`: 0–1.
+- `self.text`: on text entities, the content. Assign a new string (up to 255 bytes) to change what is drawn, for example a counting number; the stored text is never modified.
 - `self.tick`: integer document time, 120000 ticks/second; `self.duration`: scene length in seconds.
 - `self.entity`: stable hexadecimal entity ID.
 

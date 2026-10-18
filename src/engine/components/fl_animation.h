@@ -3,11 +3,14 @@
 #include "time/fl_time.h"
 #include "doc/fl_binary.h"
 
-/* Animatable entity properties. Colour values are sRGB 0..255 per channel. */
+/* Animatable entity properties. Colour values are sRGB 0..255 per channel; crop values are fractions of the source image. */
 typedef enum Fl_AnimProperty {
     FL_PROP_X, FL_PROP_Y, FL_PROP_WIDTH, FL_PROP_HEIGHT, FL_PROP_ROTATION, FL_PROP_SCALE_X, FL_PROP_SCALE_Y,
-    FL_PROP_OPACITY, FL_PROP_FILL, FL_PROP_STROKE, FL_PROP_STROKE_WIDTH, FL_PROP_FONT_SIZE, FL_PROP_COUNT
+    FL_PROP_OPACITY, FL_PROP_FILL, FL_PROP_STROKE, FL_PROP_STROKE_WIDTH, FL_PROP_FONT_SIZE,
+    FL_PROP_CROP_X, FL_PROP_CROP_Y, FL_PROP_CROP_W, FL_PROP_CROP_H, FL_PROP_COUNT
 } Fl_AnimProperty;
+/* Properties up to here are exposed to Lua; the crop rectangle of images and videos is animation-only. */
+#define FL_PROP_SCRIPTED (FL_PROP_FONT_SIZE + 1)
 /* Interpolation from a keyframe towards the next one. */
 typedef enum Fl_Ease { FL_EASE_LINEAR, FL_EASE_IN, FL_EASE_OUT, FL_EASE_IN_OUT, FL_EASE_HOLD, FL_EASE_COUNT } Fl_Ease;
 typedef struct Fl_Keyframe {

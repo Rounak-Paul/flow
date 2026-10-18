@@ -1,5 +1,7 @@
 #include "fl_agent_internal.h"
 #include "components/fl_script.h"
+#include "components/fl_style.h"
+#include "components/fl_video_clip.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -91,7 +93,7 @@ static bool scene_move(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
 /* Settings that change canvas size, framing and camera; omitted fields keep their value. */
 static bool scene_set(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
 {
-    static const char *const keys[] = {"op", "as", "scene", "width", "height", "aspect", "camera", NULL};
+    static const char *const keys[] = {"op", "as", "scene", "width", "height", "aspect", "camera", "background", NULL};
     (void)result;
     const Fl_Scene *s;
     if (!agent_only_keys(op, f, "scene.set", keys) || !(s = need_scene(x, op, "scene", f, "scene.set"))) return false;
@@ -117,6 +119,14 @@ static bool scene_set(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
         if (!apply(x, &(Fl_Op){.kind = FL_OP_SCENE_ASPECT, .scene = s->id, .aspect_width = w, .aspect_height = h}, NULL))
             return rejected(f, "scene.set", "aspect");
     }
+    const cJSON *background = cJSON_GetObjectItemCaseSensitive(op, "background");
+    if (background) {
+        unsigned char rgba[4];
+        if (!agent_parse_color(background, rgba, f, "scene.set background")) return false;
+        if (rgba[3] != 255) return fl_fail(f, "invalid_argument", "scene.set: the background is opaque; leave out the alpha channel");
+        if (!apply(x, &(Fl_Op){.kind = FL_OP_SCENE_BACKGROUND, .scene = s->id, .background = {rgba[0], rgba[1], rgba[2], 255}}, NULL))
+            return rejected(f, "scene.set", "background");
+    }
     const cJSON *camera = cJSON_GetObjectItemCaseSensitive(op, "camera");
     if (camera) {
         const cJSON *c = cJSON_IsArray(camera) && cJSON_GetArraySize(camera) == 2 ? camera->child : NULL;
@@ -137,7 +147,9 @@ static bool scene_set(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
 static bool configure(Ctx *x, const Fl_Scene *scene, const Fl_Entity *e, const cJSON *props, Fl_Fail *f, const char *ctx)
 {
     static const char *const keys[] = {"name", "visible", "x", "y", "width", "height", "rotation", "scale_x", "scale_y", "opacity",
-        "fill", "stroke", "stroke_width", "text", "font_size", "font_family", "font_weight", "italic", "asset", NULL};
+        "fill", "stroke", "stroke_width", "text", "font_size", "font_family", "font_weight", "italic", "asset",
+        "radius", "fill2", "gradient_angle", "shadow_blur", "shadow_x", "shadow_y", "shadow_color", "align",
+        "start", "offset", "rate", "loop", "crop", NULL};
     if (!agent_object(props, f, ctx) || !agent_only_keys(props, f, ctx, keys)) return false;
     const Fl_WidgetDef *def = fl_widget_for_entity(e);
     Fl_Transform t = {.scale_x = 1, .scale_y = 1};
@@ -147,6 +159,10 @@ static bool configure(Ctx *x, const Fl_Scene *scene, const Fl_Entity *e, const c
     double opacity = fl_widget_opacity(e), number;
     Fl_Id asset = 0;
     fl_image_asset_decode(fl_entity_component(e, FL_COMPONENT_IMAGE), &asset);
+    Fl_VideoClip clip = {.rate = 1};
+    bool has_clip = fl_video_clip_decode(fl_entity_component(e, FL_COMPONENT_VIDEO), &clip);
+    Fl_Style style = fl_entity_style(e);
+    bool style_given = false;
     const Fl_Component *current_text = fl_entity_component(e, FL_COMPONENT_TEXT);
     const char *name = e->name, *text = NULL;
     bool visible = e->visible, present;
@@ -210,17 +226,86 @@ static bool configure(Ctx *x, const Fl_Scene *scene, const Fl_Entity *e, const c
     ty.italic = italic;
     if (!agent_get_number(props, "asset", false, &number, &present, f, ctx)) return false;
     if (present) {
-        if (!def || !def->has_image) return fl_fail(f, "not_applicable", "%s: only image entities show an asset", ctx);
+        if (!def || !(def->has_image || def->has_video)) return fl_fail(f, "not_applicable", "%s: only image and video entities show an asset", ctx);
         const Fl_Asset *record = fl_project_asset(x->project, (Fl_Id)number);
-        if (number < 1 || !record || record->kind != FL_ASSET_IMAGE) return fl_fail(f, "not_found", "%s: asset %.0f is not an image in this project", ctx, number);
-        asset = (Fl_Id)number;
+        Fl_AssetKind wanted = def->has_video ? FL_ASSET_VIDEO : FL_ASSET_IMAGE;
+        if (number < 1 || !record || record->kind != wanted) return fl_fail(f, "not_found", "%s: asset %.0f is not %s in this project", ctx, number, def->has_video ? "a video" : "an image");
+        asset = (Fl_Id)number; clip.asset = asset; has_clip = true;
+    }
+    if (def && def->has_video) {
+        if (!agent_get_seconds(props, "start", false, &clip.start, &present, f, ctx)) return false;
+        if (!agent_get_seconds(props, "offset", false, &clip.offset, &present, f, ctx)) return false;
+        if (clip.offset < 0) return fl_fail(f, "invalid_argument", "%s: offset cannot be negative", ctx);
+        if (!agent_get_number(props, "rate", false, &number, &present, f, ctx)) return false;
+        if (present) {
+            if (!(number > 0 && number <= 16)) return fl_fail(f, "invalid_argument", "%s: rate is greater than 0 and at most 16", ctx);
+            clip.rate = number;
+        }
+        if (!agent_get_bool(props, "loop", &clip.loop, NULL, f, ctx)) return false;
+    } else for (const char *key = "start"; key; key = !strcmp(key, "start") ? "offset" : !strcmp(key, "offset") ? "rate" : !strcmp(key, "rate") ? "loop" : NULL)
+        if (cJSON_GetObjectItemCaseSensitive(props, key)) return fl_fail(f, "not_applicable", "%s: %s needs a video entity", ctx, key);
+    const char *shape_kinds = "rectangle, image or video";
+    if (!agent_get_number(props, "radius", false, &number, &present, f, ctx)) return false;
+    if (present) {
+        if (!def || !(def->kind == FL_WIDGET_RECTANGLE || def->has_image || def->has_video)) return fl_fail(f, "not_applicable", "%s: radius needs a %s", ctx, shape_kinds);
+        if (number < 0 || number > 65536) return fl_fail(f, "invalid_argument", "%s: radius is 0..65536", ctx);
+        style.radius = number; style_given = true;
+    }
+    if ((item = cJSON_GetObjectItemCaseSensitive(props, "fill2"))) {
+        if (!def || !(def->kind == FL_WIDGET_RECTANGLE || def->kind == FL_WIDGET_ELLIPSE)) return fl_fail(f, "not_applicable", "%s: gradients need a rectangle or ellipse", ctx);
+        style.gradient = !cJSON_IsNull(item); style_given = true;
+        if (style.gradient && !agent_parse_color(item, style.gradient_to, f, "fill2")) return false;
+    }
+    if (!agent_get_number(props, "gradient_angle", false, &number, &present, f, ctx)) return false;
+    if (present) {
+        if (!def || !(def->kind == FL_WIDGET_RECTANGLE || def->kind == FL_WIDGET_ELLIPSE)) return fl_fail(f, "not_applicable", "%s: gradients need a rectangle or ellipse", ctx);
+        style.gradient_angle = number * DEG_TO_RAD; style_given = true;
+    }
+    if ((item = cJSON_GetObjectItemCaseSensitive(props, "crop")) && !cJSON_IsNull(item)) {
+        if (!def || !(def->has_image || def->has_video)) return fl_fail(f, "not_applicable", "%s: crop needs an image or video", ctx);
+        const cJSON *c = cJSON_IsArray(item) && cJSON_GetArraySize(item) == 4 ? item->child : NULL;
+        double region[4];
+        for (int i = 0; i < 4; ++i, c = c ? c->next : NULL) {
+            if (!c || !cJSON_IsNumber(c) || !isfinite(c->valuedouble)) return fl_fail(f, "invalid_argument", "%s: crop is [x, y, width, height] as fractions of the source", ctx);
+            region[i] = c->valuedouble;
+        }
+        if (region[0] < 0 || region[1] < 0 || region[2] < 0.001 || region[3] < 0.001 || region[0] + region[2] > 1 + 1e-9 || region[1] + region[3] > 1 + 1e-9)
+            return fl_fail(f, "invalid_argument", "%s: crop must stay inside the source: x, y >= 0, width, height >= 0.001, x + width <= 1, y + height <= 1", ctx);
+        memcpy(style.crop, region, sizeof(region)); style_given = true;
+    }
+    bool shadowable = def && (def->kind == FL_WIDGET_RECTANGLE || def->kind == FL_WIDGET_ELLIPSE || def->has_image || def->has_video);
+    static const char *const shadow_keys[] = {"shadow_blur", "shadow_x", "shadow_y"};
+    double *shadow_fields[] = {&style.shadow_blur, &style.shadow_x, &style.shadow_y};
+    for (size_t i = 0; i < 3; ++i) {
+        if (!agent_get_number(props, shadow_keys[i], false, &number, &present, f, ctx)) return false;
+        if (!present) continue;
+        if (!shadowable) return fl_fail(f, "not_applicable", "%s: %s needs a rectangle, ellipse, image or video", ctx, shadow_keys[i]);
+        if (fabs(number) > 65536 || (i == 0 && (number < 0 || number > 4096))) return fl_fail(f, "invalid_argument", "%s: %s is out of range", ctx, shadow_keys[i]);
+        *shadow_fields[i] = number; style_given = true;
+    }
+    if ((item = cJSON_GetObjectItemCaseSensitive(props, "shadow_color")) && !cJSON_IsNull(item)) {
+        if (!shadowable) return fl_fail(f, "not_applicable", "%s: shadow_color needs a rectangle, ellipse, image or video", ctx);
+        if (!agent_parse_color(item, style.shadow_color, f, "shadow_color")) return false;
+        style_given = true;
+    }
+    const char *align = NULL;
+    if (!agent_get_string(props, "align", false, &align, f, ctx)) return false;
+    if (align) {
+        if (!def || !def->has_text) return fl_fail(f, "not_applicable", "%s: align needs a text entity", ctx);
+        if (!strcmp(align, "left")) style.align = FL_ALIGN_LEFT; else if (!strcmp(align, "center")) style.align = FL_ALIGN_CENTER;
+        else if (!strcmp(align, "right")) style.align = FL_ALIGN_RIGHT; else return fl_fail(f, "invalid_argument", "%s: align is left, center or right", ctx);
+        style_given = true;
+    }
+    if (style.shadow_blur > 0 && !style.shadow_color[3] && style_given) {
+        static const unsigned char black[4] = {0, 0, 0, 160};
+        if (!cJSON_GetObjectItemCaseSensitive(props, "shadow_color")) memcpy(style.shadow_color, black, 4);
     }
 
-    unsigned char transform[56], style[24], typography[3 + FL_TYPOGRAPHY_FAMILY_MAX], image[8], alpha[8];
-    fl_transform_encode(&t, transform); fl_appearance_encode(&a, style); fl_opacity_encode(opacity, alpha);
-    Fl_Component components[6] = {{FL_COMPONENT_TRANSFORM, 1, 56, transform}, {FL_COMPONENT_OPACITY, 1, 8, alpha}};
+    unsigned char transform[56], appearance[24], typography[3 + FL_TYPOGRAPHY_FAMILY_MAX], image[8], alpha[8], style_bytes[FL_STYLE_BYTES], clip_bytes[FL_VIDEO_CLIP_BYTES];
+    fl_transform_encode(&t, transform); fl_appearance_encode(&a, appearance); fl_opacity_encode(opacity, alpha);
+    Fl_Component components[8] = {{FL_COMPONENT_TRANSFORM, 1, 56, transform}, {FL_COMPONENT_OPACITY, 1, 8, alpha}};
     size_t count = 2;
-    if (def && def->kind != FL_WIDGET_GROUP && def->kind != FL_WIDGET_IMAGE) components[count++] = (Fl_Component){FL_COMPONENT_APPEARANCE, 1, 24, style};
+    if (def && def->kind != FL_WIDGET_GROUP && !def->has_image && !def->has_video) components[count++] = (Fl_Component){FL_COMPONENT_APPEARANCE, 1, 24, appearance};
     if (def && def->has_text) {
         size_t size = fl_typography_encode(&ty, typography);
         if (!size) return fl_fail(f, "invalid_argument", "%s: invalid typography", ctx);
@@ -231,6 +316,14 @@ static bool configure(Ctx *x, const Fl_Scene *scene, const Fl_Entity *e, const c
     if (def && def->has_image && asset) {
         fl_image_asset_encode(asset, image);
         components[count++] = (Fl_Component){FL_COMPONENT_IMAGE, 1, 8, image};
+    }
+    if (def && def->has_video && has_clip) {
+        fl_video_clip_encode(&clip, clip_bytes);
+        components[count++] = (Fl_Component){FL_COMPONENT_VIDEO, 1, FL_VIDEO_CLIP_BYTES, clip_bytes};
+    }
+    if (style_given || fl_entity_component(e, FL_COMPONENT_STYLE)) {
+        fl_style_encode(&style, style_bytes);
+        components[count++] = (Fl_Component){FL_COMPONENT_STYLE, 1, FL_STYLE_BYTES, style_bytes};
     }
     return apply(x, &(Fl_Op){.kind = FL_OP_ENTITY_CONFIGURE, .scene = scene->id, .entity = e->id, .name = name, .visible = visible,
                              .components = components, .component_count = count}, NULL) || rejected(f, ctx, "property values");
@@ -243,7 +336,7 @@ static bool entity_create(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
     if (!agent_only_keys(op, f, "entity.create", keys) || !(s = need_scene(x, op, "scene", f, "entity.create")) ||
         !agent_get_string(op, "kind", true, &kind_name, f, "entity.create") || !agent_get_id(op, "parent", &x->refs, false, &parent, f, "entity.create") ||
         !agent_get_id(op, "asset", &x->refs, false, &asset, f, "entity.create")) return false;
-    if (!agent_widget_from_name(kind_name, &kind)) return fl_fail(f, "invalid_argument", "entity.create: kind must be group, rectangle, ellipse, line, arrow, text or image");
+    if (!agent_widget_from_name(kind_name, &kind)) return fl_fail(f, "invalid_argument", "entity.create: kind must be group, rectangle, ellipse, line, arrow, text, image or video");
     if (parent && !fl_scene_entity(s, parent)) return fl_fail(f, "not_found", "entity.create: parent %llu is not in scene %llu", (unsigned long long)parent, (unsigned long long)s->id);
     const cJSON *props = cJSON_GetObjectItemCaseSensitive(op, "props");
     if (props && !agent_object(props, f, "entity.create props")) return false;
@@ -263,6 +356,18 @@ static bool entity_create(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
             if (present) {h = v; fit = 1;}
         }
         if (!(w > 0) || !(h > 0) || !fl_widget_create_image(x->project, s->id, parent, asset, px, py, w * fit, h * fit, &id)) return rejected(f, "entity.create", "image size or position");
+    } else if (kind == FL_WIDGET_VIDEO) {
+        const Fl_Asset *record = fl_project_asset(x->project, asset);
+        if (!record || record->kind != FL_ASSET_VIDEO) return fl_fail(f, "not_found", "entity.create: video entities need \"asset\" to be a video asset id");
+        double w = record->width ? (double)record->width : 1920, h = record->height ? (double)record->height : 1080, fit = fmin(1, fmin((double)s->width / w, (double)s->height / h));
+        if (props) {
+            double v; bool present;
+            if (!agent_get_number(props, "width", false, &v, &present, f, "entity.create")) return false;
+            if (present) {w = v; fit = 1;}
+            if (!agent_get_number(props, "height", false, &v, &present, f, "entity.create")) return false;
+            if (present) {h = v; fit = 1;}
+        }
+        if (!(w > 0) || !(h > 0) || !fl_widget_create_video(x->project, s->id, parent, asset, px, py, w * fit, h * fit, &id)) return rejected(f, "entity.create", "video size or position");
     } else if (!fl_widget_create(x->project, s->id, parent, kind, px, py, &id)) return rejected(f, "entity.create", "position must be finite");
     report_id(result, id);
     if (props && props->child) {
@@ -325,7 +430,7 @@ static bool key_set(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
     if (!agent_only_keys(op, f, "key.set", keys) || !(e = need_entity(x, op, "entity", &s, f, "key.set")) ||
         !agent_get_string(op, "property", true, &property_name, f, "key.set") || !agent_get_string(op, "ease", false, &ease_name, f, "key.set") ||
         !agent_get_id(op, "key", &x->refs, false, &key, f, "key.set")) return false;
-    if (!agent_property_from_name(property_name, &property)) return fl_fail(f, "invalid_argument", "key.set: property must be one of x, y, width, height, rotation, scale_x, scale_y, opacity, fill, stroke, stroke_width, font_size");
+    if (!agent_property_from_name(property_name, &property)) return fl_fail(f, "invalid_argument", "key.set: property must be one of x, y, width, height, rotation, scale_x, scale_y, opacity, fill, stroke, stroke_width, font_size, crop_x, crop_y, crop_w, crop_h");
     if (ease_name && !agent_ease_from_name(ease_name, &ease)) return fl_fail(f, "invalid_argument", "key.set: ease must be linear, in, out, in_out or hold");
     const cJSON *at = cJSON_GetObjectItemCaseSensitive(op, "at"), *value = cJSON_GetObjectItemCaseSensitive(op, "value");
     if (!at) return fl_fail(f, "missing_field", "key.set requires \"at\"");
@@ -341,8 +446,8 @@ static bool key_set(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
         v[0] = property == FL_PROP_ROTATION ? value->valuedouble * DEG_TO_RAD : value->valuedouble;
     }
     const Fl_WidgetDef *def = fl_widget_for_entity(e);
-    bool text_prop = property == FL_PROP_FONT_SIZE, fill = property == FL_PROP_FILL, stroke = property == FL_PROP_STROKE || property == FL_PROP_STROKE_WIDTH;
-    if (def && ((text_prop && !def->has_text) || (fill && !def->has_fill) || (stroke && !def->has_stroke)))
+    bool crop_prop = property >= FL_PROP_CROP_X, text_prop = property == FL_PROP_FONT_SIZE, fill = property == FL_PROP_FILL, stroke = property == FL_PROP_STROKE || property == FL_PROP_STROKE_WIDTH;
+    if (def && ((crop_prop && !(def->has_image || def->has_video)) || (text_prop && !def->has_text) || (fill && !def->has_fill) || (stroke && !def->has_stroke)))
         return fl_fail(f, "not_applicable", "key.set: a %s cannot animate %s", agent_widget_name(def->kind), property_name);
     Fl_Id created = 0;
     if (!apply(x, &(Fl_Op){.kind = FL_OP_KEY_SET, .scene = s->id, .entity = e->id, .key = key, .property = property, .anchor = anchor,

@@ -1,4 +1,5 @@
 #include "flow_test.h"
+#include "fl_exporter.h"
 #include "fl_scene_renderer.h"
 #include "components/fl_script.h"
 #include "core/fl_event.h"
@@ -6,6 +7,7 @@
 #include "media/fl_png.h"
 #include "platform/fl_fs.h"
 #include "platform/fl_paths.h"
+#include "platform/fl_process.h"
 #include "project/fl_asset_import.h"
 #include "schema/fl_widgets.h"
 #include "text/fl_fonts.h"
@@ -167,6 +169,27 @@ int main(int argc, char **argv)
     CHECK(fl_scene_renderer_render(renderer, p, scene, 0, 500, &frame) && frame.width == 500 && frame.height == 500);
     fl_frame_free(&frame);
     CHECK(!fl_scene_renderer_render(renderer, p, scene, -1, 500, &frame) && !fl_scene_renderer_render(renderer, p, scene, 0, 16384, &frame));
+
+    /* Export pipes every frame to ffmpeg and finishes on its own; invalid requests and cancellation leave no file behind. */
+    if (fl_ffmpeg_path()) {
+        Fl_Exporter *exporter = fl_exporter_create(bus, renderer);
+        char output[FL_PATH_MAX], error[128];
+        CHECK(exporter && fl_fs_join(output, sizeof(output), argv[1], "export.mp4"));
+        fl_fs_remove(output);
+        CHECK(!fl_exporter_start(exporter, p, &(Fl_ExportDesc){.path = output, .width = 321, .fps = 10}, error, sizeof(error)) && strstr(error, "even"));
+        CHECK(!fl_exporter_start(exporter, p, &(Fl_ExportDesc){.path = output, .width = 320, .fps = 0}, error, sizeof(error)));
+        CHECK(fl_exporter_start(exporter, p, &(Fl_ExportDesc){.path = output, .width = 320, .fps = 10}, error, sizeof(error)));
+        CHECK(!fl_exporter_start(exporter, p, &(Fl_ExportDesc){.path = output, .width = 320, .fps = 10}, error, sizeof(error)) && strstr(error, "already"));
+        while (fl_exporter_status(exporter).state == FL_EXPORT_RUNNING) fl_event_bus_dispatch(bus);
+        Fl_ExportStatus status = fl_exporter_status(exporter);
+        CHECK(status.state == FL_EXPORT_DONE && status.frames_done == 50 && status.frames_total == 50 && status.width == 320 && status.height == 320);
+        CHECK(fl_fs_file_size(output) > 1000);
+        fl_fs_remove(output);
+        CHECK(fl_exporter_start(exporter, p, &(Fl_ExportDesc){.path = output, .width = 320, .fps = 10}, error, sizeof(error)));
+        fl_exporter_cancel(exporter);
+        CHECK(fl_exporter_status(exporter).state == FL_EXPORT_CANCELLED && !fl_fs_exists(output));
+        fl_exporter_destroy(exporter);
+    }
 
     fl_scene_renderer_destroy(renderer);
     fl_project_destroy(p);

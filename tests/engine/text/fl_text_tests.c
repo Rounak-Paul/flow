@@ -64,7 +64,7 @@ static void test_raster(void)
     const Fl_FontFace *face = fl_font_catalog_match(catalog, "Inter", 400, false);
     const unsigned char text[] = "Flow\nText";
     uint32_t w, h, bw, bh, iw, ih;
-    Fl_TextStyle regular = {face, 32, false, false}, bold = {face, 32, true, false}, italic = {face, 32, false, true};
+    Fl_TextStyle regular = {face, 32, false, false, 0}, bold = {face, 32, true, false, 0}, italic = {face, 32, false, true, 0};
     unsigned char *a = fl_text_rasterize(r, &regular, text, sizeof(text) - 1, 200, 100, &w, &h);
     unsigned char *b = fl_text_rasterize(r, &bold, text, sizeof(text) - 1, 200, 100, &bw, &bh);
     unsigned char *c = fl_text_rasterize(r, &italic, text, sizeof(text) - 1, 200, 100, &iw, &ih);
@@ -84,8 +84,8 @@ static void test_raster(void)
     unsigned char *replaced = fl_text_rasterize(r, &regular, invalid, 3, 100, 50, &w, &h);
     CHECK(replaced != NULL); free(replaced);
     CHECK(!fl_text_rasterize(r, &regular, text, 4, 0, 10, &w, &h));
-    CHECK(!fl_text_rasterize(r, &(Fl_TextStyle){face, 0.5, false, false}, text, 4, 10, 10, &w, &h));
-    CHECK(!fl_text_rasterize(r, &(Fl_TextStyle){NULL, 12, false, false}, text, 4, 10, 10, &w, &h));
+    CHECK(!fl_text_rasterize(r, &(Fl_TextStyle){face, 0.5, false, false, 0}, text, 4, 10, 10, &w, &h));
+    CHECK(!fl_text_rasterize(r, &(Fl_TextStyle){NULL, 12, false, false, 0}, text, 4, 10, 10, &w, &h));
     fl_text_rasterizer_flush(r);
     unsigned char *again = fl_text_rasterize(r, &regular, text, 4, 50, 50, &w, &h);
     CHECK(again != NULL); free(again);
@@ -96,6 +96,56 @@ static void test_raster(void)
 static bool count_changes(const Fl_Event *event, void *data)
 {
     (void)event; ++*(int *)data; return false;
+}
+
+/* Ink columns of one pixel row band. */
+static void ink_columns(const unsigned char *mask, uint32_t w, uint32_t y0, uint32_t y1, uint32_t *first, uint32_t *last)
+{
+    *first = w; *last = 0;
+    for (uint32_t y = y0; y < y1; ++y) for (uint32_t x = 0; x < w; ++x) if (mask[(size_t)y * w + x]) {if (x < *first) *first = x; if (x > *last) *last = x;}
+}
+
+/* Alignment places lines inside the box and wrapping breaks at spaces, never inside a word that fits. */
+static void test_layout(void)
+{
+    Fl_FontCatalog *catalog = fl_font_catalog_from_memory(fl_embedded_inter_regular, fl_embedded_inter_regular_size);
+    Fl_TextRasterizer *r = fl_text_rasterizer_create();
+    CHECK(catalog && r);
+    if (!catalog || !r) {fl_font_catalog_destroy(catalog); fl_text_rasterizer_destroy(r); return;}
+    const Fl_FontFace *face = fl_font_catalog_match(catalog, "Inter", 400, false);
+    const unsigned char text[] = "Align me";
+    uint32_t w, h, first_left, last_left, first_centre, last_centre, first_right, last_right;
+    for (int align = 0; align < 3; ++align) {
+        Fl_TextStyle style = {face, 32, false, false, align};
+        unsigned char *mask = fl_text_rasterize(r, &style, text, sizeof(text) - 1, 400, 60, &w, &h);
+        CHECK(mask != NULL);
+        if (!mask) continue;
+        uint32_t *first = align == 0 ? &first_left : align == 1 ? &first_centre : &first_right, *last = align == 0 ? &last_left : align == 1 ? &last_centre : &last_right;
+        ink_columns(mask, w, 0, h, first, last);
+        free(mask);
+    }
+    CHECK(first_left < 6 && last_left < 200 && last_right > 390 && first_right > 200);
+    CHECK(first_centre > first_left + 80 && last_centre < last_right - 80 && abs((int)(first_centre + last_centre) - 400) < 12);
+    Fl_TextStyle left = {face, 40, false, false, 0};
+    const unsigned char wrap[] = "alpha beta";
+    uint32_t w1, h1, w2, h2;
+    unsigned char *one = fl_text_rasterize(r, &left, wrap, sizeof(wrap) - 1, 600, 120, &w1, &h1);
+    unsigned char *two = fl_text_rasterize(r, &left, wrap, sizeof(wrap) - 1, 130, 120, &w2, &h2);
+    CHECK(one && two);
+    if (one && two) {
+        size_t lower_one = 0, lower_two = 0;
+        for (size_t y = 60; y < 120; ++y) {
+            for (size_t x = 0; x < w1; ++x) lower_one += one[y * w1 + x] != 0;
+            for (size_t x = 0; x < w2; ++x) lower_two += two[y * w2 + x] != 0;
+        }
+        CHECK(h1 == 120 && h2 == 120 && lower_one == 0 && lower_two > 100);
+        uint32_t first, last;
+        ink_columns(two, w2, 60, 120, &first, &last);
+        CHECK(first < 6 && last < 130);
+    }
+    free(one); free(two);
+    fl_text_rasterizer_destroy(r);
+    fl_font_catalog_destroy(catalog);
 }
 
 static void test_service(const char *root)
@@ -175,6 +225,7 @@ int main(int argc, char **argv)
     test_matching();
     test_catalog();
     test_raster();
+    test_layout();
     test_service(argv[1]);
     test_system_scan();
     return FLOW_TEST_RESULT("fl_text_tests");

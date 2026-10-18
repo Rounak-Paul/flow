@@ -3,7 +3,7 @@
 
 typedef enum Fl_WidgetKind {
     FL_WIDGET_GROUP, FL_WIDGET_RECTANGLE, FL_WIDGET_ELLIPSE,
-    FL_WIDGET_LINE, FL_WIDGET_ARROW, FL_WIDGET_TEXT, FL_WIDGET_IMAGE, FL_WIDGET_COUNT
+    FL_WIDGET_LINE, FL_WIDGET_ARROW, FL_WIDGET_TEXT, FL_WIDGET_IMAGE, FL_WIDGET_VIDEO, FL_WIDGET_COUNT
 } Fl_WidgetKind;
 #define FL_TYPOGRAPHY_DEFAULT_FAMILY "Inter"
 #define FL_TYPOGRAPHY_FAMILY_MAX 255
@@ -24,7 +24,7 @@ typedef struct Fl_WidgetDef {
     const char *name, *description;
     Fl_Transform transform;
     Fl_Appearance appearance;
-    bool has_fill, has_stroke, has_text, has_image;
+    bool has_fill, has_stroke, has_text, has_image, has_video;
 } Fl_WidgetDef;
 /* Borrow the immutable definition for kind; NULL for invalid kinds. */
 const Fl_WidgetDef *fl_widget_definition(Fl_WidgetKind kind);
@@ -35,6 +35,9 @@ bool fl_widget_create(Fl_Project *project, Fl_Id scene, Fl_Id parent, Fl_WidgetK
                       double x, double y, Fl_Id *out_id);
 /* Create an image primitive showing an image asset at local x/y with the given size. */
 bool fl_widget_create_image(Fl_Project *project, Fl_Id scene, Fl_Id parent, Fl_Id asset,
+                            double x, double y, double width, double height, Fl_Id *out_id);
+/* Create a video primitive playing a video asset from scene time zero at local x/y with the given size. */
+bool fl_widget_create_video(Fl_Project *project, Fl_Id scene, Fl_Id parent, Fl_Id asset,
                             double x, double y, double width, double height, Fl_Id *out_id);
 /* Validate a component against its schema; unknown type/version pairs remain opaque. */
 bool fl_widget_component_valid(const Fl_Component *component);

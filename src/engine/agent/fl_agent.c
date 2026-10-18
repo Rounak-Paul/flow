@@ -1,6 +1,7 @@
 #include "fl_agent_internal.h"
 #include "core/fl_log.h"
 #include "media/fl_png.h"
+#include "media/fl_video_cache.h"
 #include "platform/fl_fs.h"
 #include "project/fl_asset_import.h"
 #include <math.h>
@@ -213,8 +214,10 @@ static cJSON *tool_import_asset(Fl_Agent *a, const cJSON *args, cJSON **error)
         }
         asset = fl_project_asset(p, id); added = true;
     }
+    bool frames = asset->kind != FL_ASSET_VIDEO || fl_video_cache_prepare(p, asset);
     cJSON *o = agent_asset_json(asset, fl_project_asset_uses(p, asset->id));
     if (o) cJSON_AddBoolToObject(o, "already_in_project", !added);
+    if (o && asset->kind == FL_ASSET_VIDEO) cJSON_AddBoolToObject(o, "frames_ready", frames);
     return o;
 }
 

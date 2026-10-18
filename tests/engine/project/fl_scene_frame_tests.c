@@ -7,6 +7,7 @@
 #include "platform/fl_fs.h"
 #include "platform/fl_paths.h"
 #include <math.h>
+#include <string.h>
 
 /* Check centered crop geometry, bounded validation, no-op revisions and save/reopen persistence. */
 int main(int argc, char **argv)
@@ -70,6 +71,17 @@ int main(int argc, char **argv)
     CHECK(scene->revision==camera_revision);
     CHECK(fl_scene_frame(NULL).width == 0);
     CHECK(fl_scene_frame(&(Fl_Scene){0}).height == 0);
+    const unsigned char default_background[4] = FL_SCENE_BACKGROUND_DEFAULT;
+    CHECK(!memcmp(scene->background, default_background, 4));
+    CHECK(fl_project_apply(project, &(Fl_Op){.kind = FL_OP_SCENE_BACKGROUND, .scene = id, .background = {10, 20, 30, 255}}, NULL));
+    uint64_t background_revision = scene->revision;
+    CHECK(fl_project_apply(project, &(Fl_Op){.kind = FL_OP_SCENE_BACKGROUND, .scene = id, .background = {10, 20, 30, 255}}, NULL) && scene->revision == background_revision);
+    CHECK(!fl_project_apply(project, &(Fl_Op){.kind = FL_OP_SCENE_BACKGROUND, .scene = id, .background = {1, 2, 3, 128}}, NULL));
+    CHECK(fl_project_save(project));
+    fl_project_destroy(project);
+    project = fl_project_open(directory, NULL); CHECK(project);
+    scene = fl_project_scene(project, id);
+    CHECK(scene && scene->background[0] == 10 && scene->background[1] == 20 && scene->background[2] == 30 && scene->background[3] == 255);
     fl_project_destroy(project);
     return FLOW_TEST_RESULT("fl_scene_frame_tests");
 }

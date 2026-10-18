@@ -176,6 +176,64 @@ static void test_authoring(Fl_Agent *agent, Fl_Id scene)
     CHECK(!strcmp(fl_project_scene(g_project, scene)->name, "Edited by hand"));
 }
 
+/* Look properties apply only where they make sense, validate their ranges and round-trip through get_scene. */
+static void test_look(Fl_Agent *agent, Fl_Id scene)
+{
+    cJSON *error = NULL, *result;
+    Fl_Asset movie = {.name = "Clip", .kind = FL_ASSET_VIDEO, .hash = {9}, .extension = "mp4", .size = 10, .width = 1920, .height = 1080, .duration = 10 * FL_TICKS_PER_SECOND};
+    Fl_Asset picture = {.name = "Still", .kind = FL_ASSET_IMAGE, .hash = {8}, .extension = "png", .size = 10, .width = 200, .height = 100};
+    Fl_Id movie_id, picture_id;
+    CHECK(fl_project_apply(g_project, &(Fl_Op){.kind = FL_OP_ASSET_ADD, .asset_record = &movie}, &movie_id));
+    CHECK(fl_project_apply(g_project, &(Fl_Op){.kind = FL_OP_ASSET_ADD, .asset_record = &picture}, &picture_id));
+    char request[2048];
+    snprintf(request, sizeof(request),
+        "{\"ops\":[{\"op\":\"scene.set\",\"scene\":%llu,\"background\":\"#102030\"},"
+        "{\"op\":\"entity.create\",\"scene\":%llu,\"kind\":\"rectangle\",\"props\":{\"name\":\"Card\",\"radius\":20,\"fill2\":\"#ff0000\",\"gradient_angle\":90,\"shadow_blur\":30,\"shadow_y\":10}},"
+        "{\"op\":\"entity.create\",\"scene\":%llu,\"kind\":\"text\",\"props\":{\"name\":\"Caption\",\"align\":\"center\"}},"
+        "{\"op\":\"entity.create\",\"scene\":%llu,\"kind\":\"video\",\"asset\":%llu,\"props\":{\"name\":\"Footage\",\"start\":2,\"offset\":1,\"rate\":2,\"loop\":true,\"radius\":12,\"crop\":[0,0,0.5,0.5]}},"
+        "{\"op\":\"entity.create\",\"scene\":%llu,\"kind\":\"image\",\"asset\":%llu,\"as\":\"$still\"},"
+        "{\"op\":\"key.set\",\"entity\":\"$still\",\"property\":\"crop_w\",\"at\":0,\"value\":1},"
+        "{\"op\":\"key.set\",\"entity\":\"$still\",\"property\":\"crop_w\",\"at\":2,\"value\":0.5}]}",
+        (unsigned long long)scene, (unsigned long long)scene, (unsigned long long)scene, (unsigned long long)scene,
+        (unsigned long long)movie_id, (unsigned long long)scene, (unsigned long long)picture_id);
+    result = call(agent, "apply_ops", request, &error);
+    CHECK(result != NULL);
+    if (!result) {char *text = error ? cJSON_Print(error) : NULL; if (text) fprintf(stderr, "%s\n", text); free(text); cJSON_Delete(error); return;}
+    cJSON_Delete(result);
+    char scene_args[64];
+    snprintf(scene_args, sizeof(scene_args), "{\"scene\":%llu}", (unsigned long long)scene);
+    result = call(agent, "get_scene", scene_args, &error);
+    CHECK(result != NULL);
+    const cJSON *card = entity_named(result, "Card"), *caption = entity_named(result, "Caption"), *footage = entity_named(result, "Footage");
+    CHECK(card && caption && footage);
+    if (card && caption && footage) {
+        CHECK(number(card, "radius") == 20 && number(card, "shadow_blur") == 30 && fabs(number(card, "gradient_angle") - 90) < 1e-9);
+        CHECK(!strcmp(cJSON_GetObjectItemCaseSensitive(card, "fill2")->valuestring, "#ff0000ff"));
+        CHECK(!strcmp(cJSON_GetObjectItemCaseSensitive(caption, "align")->valuestring, "center"));
+        CHECK(number(footage, "start") == 2 && number(footage, "offset") == 1 && number(footage, "rate") == 2 && cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(footage, "loop")));
+        CHECK(number(footage, "asset") == (double)movie_id && cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(footage, "crop")) == 4);
+        CHECK(!strcmp(cJSON_GetObjectItemCaseSensitive(result, "background")->valuestring, "#102030ff"));
+    }
+    cJSON_Delete(result);
+    const char *rejected[][2] = {
+        {"{\"op\":\"entity.create\",\"scene\":%llu,\"kind\":\"text\",\"props\":{\"radius\":5}}", "not_applicable"},
+        {"{\"op\":\"entity.create\",\"scene\":%llu,\"kind\":\"rectangle\",\"props\":{\"align\":\"center\"}}", "not_applicable"},
+        {"{\"op\":\"entity.create\",\"scene\":%llu,\"kind\":\"rectangle\",\"props\":{\"start\":1}}", "not_applicable"},
+        {"{\"op\":\"entity.create\",\"scene\":%llu,\"kind\":\"rectangle\",\"props\":{\"crop\":[0,0,1,1]}}", "not_applicable"},
+        {"{\"op\":\"entity.create\",\"scene\":%llu,\"kind\":\"image\",\"asset\":%llu,\"props\":{\"crop\":[0.5,0,0.8,1]}}", "invalid_argument"},
+        {"{\"op\":\"entity.create\",\"scene\":%llu,\"kind\":\"video\",\"asset\":%llu}", "not_found"},
+        {"{\"op\":\"scene.set\",\"scene\":%llu,\"background\":\"#10203080\"}", "invalid_argument"},
+    };
+    for (size_t i = 0; i < sizeof(rejected) / sizeof(*rejected); ++i) {
+        char op[512];
+        snprintf(op, sizeof(op), rejected[i][0], (unsigned long long)scene, (unsigned long long)picture_id);
+        snprintf(request, sizeof(request), "{\"ops\":[%s]}", op);
+        result = call(agent, "apply_ops", request, &error);
+        CHECK(!result && error && error_code(error, rejected[i][1]));
+        cJSON_Delete(error); error = NULL;
+    }
+}
+
 /* Scene-list changes undo as whole changesets and the restored project saves and reopens. */
 static void test_scene_history(Fl_Agent *agent, const char *directory)
 {
@@ -414,6 +472,7 @@ int main(int argc, char **argv)
     CHECK(agent != NULL); if (!agent) return 1;
     Fl_Id scene = fl_project_scene_at(g_project, 0)->id;
     test_authoring(agent, scene);
+    test_look(agent, scene);
     test_scene_history(agent, directory);
     test_protocol(agent);
     Fl_Agent *http_agent = fl_agent_create(&(Fl_AgentHost){host_project, fake_render, NULL});

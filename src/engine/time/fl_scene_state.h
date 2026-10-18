@@ -7,6 +7,9 @@ typedef struct Fl_EntityState {
     Fl_Transform transform;
     Fl_Appearance appearance;
     double opacity;             /* own opacity, 0..1; geometry multiplies ancestors */
+    double crop[4];             /* visible source region of an image or video: x, y, width, height as fractions */
+    bool text_override;         /* a script replaced the text content */
+    char text[256];             /* the replacement, NUL-terminated, valid when text_override */
 } Fl_EntityState;
 /* Cache of evaluated entity values, indexed like the scene's entities. */
 typedef struct Fl_SceneState {

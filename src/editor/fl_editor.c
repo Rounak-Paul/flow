@@ -421,6 +421,20 @@ Fl_Editor *fl_editor_create(void)
     return editor;
 }
 
+bool fl_editor_open_project(Fl_Editor *editor, const char *directory)
+{
+    if (!editor || !directory || !editor->launcher || editor->project) return false;
+    editor->project = fl_project_open(directory, editor->bus);
+    if (!editor->project) {FL_LOG_ERROR(LOG_TAG, "cannot open project %s", directory); return false;}
+    if (!open_project_window(editor)) {
+        if (editor->window) ca_window_destroy(editor->window);
+        else {fl_project_destroy(editor->project); editor->project = NULL;}
+        return false;
+    }
+    fl_launcher_destroy(editor->launcher); editor->launcher = NULL;
+    return true;
+}
+
 int fl_editor_run(Fl_Editor *editor)
 {
     if (!editor || !editor->instance) return 1;

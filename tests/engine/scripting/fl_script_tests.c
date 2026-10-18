@@ -132,6 +132,23 @@ int main(int argc, char **argv)
     CHECK(script(project,scene_id,box,"function on_evaluate(self,t) local sum=0; for k,v in pairs({c=3,a=1,b=2}) do sum=sum*10+v end; self.transform.x=sum end",true));
     CHECK(sample(&state,scene,box,SECOND)==123);
     CHECK(sample(&state,scene,box,2*SECOND)==123);
+    /* Scripts may replace a text entity's content; the document keeps its own text. */
+    Fl_Id label = 0;
+    CHECK(fl_widget_create(project, scene_id, 0, FL_WIDGET_TEXT, 0, 0, &label));
+    CHECK(script(project, scene_id, label, "function on_evaluate(self, t) self.text = self.text .. ' ' .. math.floor(t) end", true));
+    scene = fl_project_scene(project, scene_id);
+    const size_t label_index = (size_t)(fl_scene_entity(scene, label) - scene->entities);
+    sample(&state, scene, label, 3 * SECOND);
+    CHECK(state.entities[label_index].text_override && !strcmp(state.entities[label_index].text, "Text 3"));
+    const Fl_Component *base_text = fl_entity_component(fl_scene_entity(scene, label), FL_COMPONENT_TEXT);
+    CHECK(base_text->size == 4 && !memcmp(base_text->data, "Text", 4));
+    CHECK(script(project, scene_id, label, "function on_evaluate(self,t) self.text = 5 end", true));
+    sample(&state, scene, label, SECOND);
+    CHECK(strstr(fl_script_runtime_error(state.scripts, label_index), "string") && !state.entities[label_index].text_override);
+    CHECK(script(project, scene_id, label, "function on_evaluate(self, t) self.text = self.text end", true));
+    sample(&state, scene, label, SECOND);
+    CHECK(!state.entities[label_index].text_override);
+    CHECK(fl_project_apply(project, &(Fl_Op){.kind = FL_OP_ENTITY_REMOVE, .scene = scene_id, .entity = label}, NULL));
     /* A corrected source recovers immediately after compilation/runtime/memory errors. */
     CHECK(script(project,scene_id,box,motion,true));
     CHECK(sample(&state,scene,box,SECOND)==145);

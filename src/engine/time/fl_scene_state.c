@@ -1,5 +1,6 @@
 #include "fl_scene_state.h"
 #include "components/fl_animation.h"
+#include "components/fl_style.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -76,6 +77,8 @@ void fl_entity_state_apply(Fl_EntityState *e, Fl_AnimProperty property, const do
     }
     case FL_PROP_STROKE_WIDTH: e->appearance.stroke_width = fmax(0, v[0]); break;
     case FL_PROP_FONT_SIZE: e->appearance.font_size = fmin(2048, fmax(1, v[0])); break;
+    case FL_PROP_CROP_X: case FL_PROP_CROP_Y: e->crop[property - FL_PROP_CROP_X] = fmin(1, fmax(0, v[0])); break;
+    case FL_PROP_CROP_W: case FL_PROP_CROP_H: e->crop[property - FL_PROP_CROP_X] = fmin(1, fmax(0.001, v[0])); break;
     default: break;
     }
 }
@@ -115,6 +118,9 @@ bool fl_scene_state_update(Fl_SceneState *st, const Fl_Scene *s, Fl_Tick tick)
         fl_transform_decode(fl_entity_component(e, FL_COMPONENT_TRANSFORM), &v->transform);
         v->appearance = fl_widget_appearance(e);
         v->opacity = fl_widget_opacity(e);
+        v->text_override = false;
+        const Fl_Style style = fl_entity_style(e);
+        memcpy(v->crop, style.crop, sizeof(v->crop));
     }
     double value[4];
     for (size_t i = 0; i < s->entity_count; ++i) {

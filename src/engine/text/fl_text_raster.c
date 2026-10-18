@@ -90,6 +90,11 @@ static uint32_t next_codepoint(const unsigned char *text, size_t length, size_t 
     return value;
 }
 
+/* One laid-out character: glyph index, advance and the kerning applied before it. */
+typedef struct Fl_Glyph { FT_UInt index; int advance, kern; uint32_t code; } Fl_Glyph;
+/* One wrapped line: glyph range [start, end) and its ink width in pixels. */
+typedef struct Fl_Line { size_t start, end; int width; } Fl_Line;
+
 unsigned char *fl_text_rasterize(Fl_TextRasterizer *r, const Fl_TextStyle *style,
                                  const unsigned char *text, size_t length, double width, double height,
                                  uint32_t *out_width, uint32_t *out_height)
@@ -106,38 +111,82 @@ unsigned char *fl_text_rasterize(Fl_TextRasterizer *r, const Fl_TextStyle *style
     unsigned char *pixels = calloc((size_t)w * h, 1);
     if (!pixels) { FT_Set_Transform(face, NULL, NULL); return NULL; }
     int ascender = (int)(face->size->metrics.ascender >> 6);
-    int pen_x = 0, baseline = ascender, line = (int)(face->size->metrics.height >> 6);
-    if (line < 1) line = 1;
+    int line_height = (int)(face->size->metrics.height >> 6);
+    if (line_height < 1) line_height = 1;
+    Fl_Glyph *glyphs = length ? malloc(length * sizeof(*glyphs)) : NULL;
+    Fl_Line *lines = malloc((length + 1) * sizeof(*lines));
+    size_t glyph_count = 0, line_count = 0;
+    if (!lines || (length && !glyphs)) {free(glyphs); free(lines); free(pixels); FT_Set_Transform(face, NULL, NULL); return NULL;}
     FT_UInt previous = 0;
-    for (size_t cursor = 0; cursor < length && baseline - ascender < (int)h; ) {
+    for (size_t cursor = 0; cursor < length; ) {
         uint32_t code = next_codepoint(text, length, &cursor);
-        if (code == '\n') { pen_x = 0; baseline += line; previous = 0; continue; }
         if (code == '\r') continue;
-        FT_UInt glyph = FT_Get_Char_Index(face, code == '\t' ? ' ' : code);
-        if (!glyph) glyph = FT_Get_Char_Index(face, 0xfffd);
-        if (previous && glyph && FT_HAS_KERNING(face)) {
-            FT_Vector delta;
-            if (!FT_Get_Kerning(face, previous, glyph, FT_KERNING_DEFAULT, &delta)) pen_x += (int)(delta.x >> 6);
-        }
-        if (FT_Load_Glyph(face, glyph, FT_LOAD_NO_BITMAP)) continue;
-        FT_GlyphSlot slot = face->glyph;
-        if (style->synthetic_bold) FT_GlyphSlot_Embolden(slot);
-        if (FT_Render_Glyph(slot, FT_RENDER_MODE_NORMAL)) continue;
-        int advance = (int)(slot->advance.x >> 6) * (code == '\t' ? 4 : 1);
-        if (pen_x && pen_x + advance > (int)w) { pen_x = 0; baseline += line; }
-        int pitch = slot->bitmap.pitch;
-        for (unsigned y = 0; y < slot->bitmap.rows; ++y) {
-            const unsigned char *row = slot->bitmap.buffer + (pitch >= 0 ? y : slot->bitmap.rows - 1 - y) * (size_t)abs(pitch);
-            for (unsigned x = 0; x < slot->bitmap.width; ++x) {
-                int dx = pen_x + slot->bitmap_left + (int)x, dy = baseline - slot->bitmap_top + (int)y;
-                if (dx < 0 || dy < 0 || dx >= (int)w || dy >= (int)h) continue;
-                unsigned alpha = slot->bitmap.pixel_mode == FT_PIXEL_MODE_MONO ? ((row[x / 8] >> (7 - x % 8)) & 1) * 255 : row[x];
-                size_t offset = (size_t)dy * w + (unsigned)dx;
-                pixels[offset] = (unsigned char)(255 - ((255 - pixels[offset]) * (255 - alpha) + 127) / 255);
+        Fl_Glyph g = {.code = code};
+        if (code == '\n') previous = 0;
+        else {
+            g.index = FT_Get_Char_Index(face, code == '\t' ? ' ' : code);
+            if (!g.index) g.index = FT_Get_Char_Index(face, 0xfffd);
+            if (previous && g.index && FT_HAS_KERNING(face)) {
+                FT_Vector delta;
+                if (!FT_Get_Kerning(face, previous, g.index, FT_KERNING_DEFAULT, &delta)) g.kern = (int)(delta.x >> 6);
             }
+            if (!FT_Load_Glyph(face, g.index, FT_LOAD_NO_BITMAP)) {
+                if (style->synthetic_bold) FT_GlyphSlot_Embolden(face->glyph);
+                g.advance = (int)(face->glyph->advance.x >> 6) * (code == '\t' ? 4 : 1);
+            }
+            previous = g.index;
         }
-        pen_x += advance; previous = glyph;
+        glyphs[glyph_count++] = g;
     }
+    /* Greedy word wrap: break after the last space when a word overflows, or inside a word longer than the box. */
+    size_t at = 0;
+    do {
+        size_t start = at, last_space = SIZE_MAX;
+        int pen = 0, width_at_space = 0;
+        bool wrapped = false;
+        Fl_Line line = {.start = start};
+        while (at < glyph_count && glyphs[at].code != '\n') {
+            const Fl_Glyph *g = &glyphs[at];
+            int kern = at == start ? 0 : g->kern;
+            if (at > start && pen + kern + g->advance > (int)w && g->code != ' ') {
+                if (last_space != SIZE_MAX) {
+                    line.end = last_space; line.width = width_at_space; at = last_space + 1; wrapped = true;
+                }
+                break;
+            }
+            pen += kern + g->advance;
+            if (g->code == ' ') {last_space = at; width_at_space = pen - kern - g->advance;}
+            ++at;
+        }
+        if (!wrapped) {line.end = at; line.width = pen;}
+        lines[line_count++] = line;
+        if (!wrapped && at < glyph_count && glyphs[at].code == '\n') ++at;
+    } while (at < glyph_count);
+    int baseline = ascender;
+    for (size_t l = 0; l < line_count && baseline - ascender < (int)h; ++l, baseline += line_height) {
+        int pen_x = style->align == 1 ? ((int)w - lines[l].width) / 2 : style->align == 2 ? (int)w - lines[l].width : 0;
+        for (size_t i = lines[l].start; i < lines[l].end; ++i) {
+            const Fl_Glyph *g = &glyphs[i];
+            if (i > lines[l].start) pen_x += g->kern;
+            if (FT_Load_Glyph(face, g->index, FT_LOAD_NO_BITMAP)) {pen_x += g->advance; continue;}
+            FT_GlyphSlot slot = face->glyph;
+            if (style->synthetic_bold) FT_GlyphSlot_Embolden(slot);
+            if (FT_Render_Glyph(slot, FT_RENDER_MODE_NORMAL)) {pen_x += g->advance; continue;}
+            int pitch = slot->bitmap.pitch;
+            for (unsigned y = 0; y < slot->bitmap.rows; ++y) {
+                const unsigned char *row = slot->bitmap.buffer + (pitch >= 0 ? y : slot->bitmap.rows - 1 - y) * (size_t)abs(pitch);
+                for (unsigned x = 0; x < slot->bitmap.width; ++x) {
+                    int dx = pen_x + slot->bitmap_left + (int)x, dy = baseline - slot->bitmap_top + (int)y;
+                    if (dx < 0 || dy < 0 || dx >= (int)w || dy >= (int)h) continue;
+                    unsigned alpha = slot->bitmap.pixel_mode == FT_PIXEL_MODE_MONO ? ((row[x / 8] >> (7 - x % 8)) & 1) * 255 : row[x];
+                    size_t offset = (size_t)dy * w + (unsigned)dx;
+                    pixels[offset] = (unsigned char)(255 - ((255 - pixels[offset]) * (255 - alpha) + 127) / 255);
+                }
+            }
+            pen_x += g->advance;
+        }
+    }
+    free(glyphs); free(lines);
     FT_Set_Transform(face, NULL, NULL);
     *out_width = w; *out_height = h;
     return pixels;

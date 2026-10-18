@@ -146,7 +146,7 @@ static void state_values(const Fl_EntityState *s, double values[FL_PROP_COUNT][4
     const double channels[] = {s->transform.x, s->transform.y, s->transform.width, s->transform.height,
         s->transform.rotation, s->transform.scale_x, s->transform.scale_y, s->opacity, 0, 0,
         s->appearance.stroke_width, s->appearance.font_size};
-    for (int p = 0; p < FL_PROP_COUNT; ++p) values[p][0] = channels[p];
+    for (int p = 0; p < FL_PROP_SCRIPTED; ++p) values[p][0] = channels[p];
     for (int c = 0; c < 4; ++c) {values[FL_PROP_FILL][c] = s->appearance.fill[c]; values[FL_PROP_STROKE][c] = s->appearance.stroke[c];}
 }
 
@@ -168,20 +168,30 @@ static void push_self(lua_State *L, Fl_ScriptRuntime *r, const double values[FL_
     for (int p = FL_PROP_X; p <= FL_PROP_SCALE_Y; ++p) {push_value(L, p, values[p]); lua_setfield(L, -2, fl_property_name((Fl_AnimProperty)p));}
     lua_setfield(L, self, "transform");
     lua_createtable(L, 0, 4);
-    for (int p = FL_PROP_FILL; p < FL_PROP_COUNT; ++p) {push_value(L, p, values[p]); lua_setfield(L, -2, fl_property_name((Fl_AnimProperty)p));}
+    for (int p = FL_PROP_FILL; p < FL_PROP_SCRIPTED; ++p) {push_value(L, p, values[p]); lua_setfield(L, -2, fl_property_name((Fl_AnimProperty)p));}
     lua_setfield(L, self, "appearance");
     lua_pushnumber(L, values[FL_PROP_OPACITY][0]); lua_setfield(L, self, "opacity");
+    const Fl_Component *text = fl_entity_component(&r->scene->entities[r->entity], FL_COMPONENT_TEXT);
+    if (text) {lua_pushlstring(L, text->size ? (const char *)text->data : "", text->size); lua_setfield(L, self, "text");}
     lua_pushinteger(L, r->tick); lua_setfield(L, self, "tick");
     lua_pushnumber(L, (double)fl_scene_length(r->scene) / FL_TICKS_PER_SECOND); lua_setfield(L, self, "duration");
     char id[24]; snprintf(id, sizeof(id), "%016llx", (unsigned long long)r->scene->entities[r->entity].id);
     lua_pushstring(L, id); lua_setfield(L, self, "entity");
 }
 
+/* Longest replacement text a script can set, in bytes, cut at a character boundary. */
+static size_t text_limit(const char *text, size_t length)
+{
+    size_t n = length < sizeof(((Fl_EntityState *)0)->text) - 1 ? length : sizeof(((Fl_EntityState *)0)->text) - 1;
+    while (n && n < length && ((unsigned char)text[n] & 0xc0) == 0x80) --n;
+    return n;
+}
+
 /* Read all outputs first so invalid/undeclared writes cannot partially affect the frame. */
-static void read_self(lua_State *L, int self, Fl_EntityState *output)
+static void read_self(lua_State *L, int self, Fl_EntityState *output, const Fl_Component *original_text)
 {
     double after[FL_PROP_COUNT][4] = {{0}};
-    for (int p = 0; p < FL_PROP_COUNT; ++p) {
+    for (int p = 0; p < FL_PROP_SCRIPTED; ++p) {
         bool nested = p != FL_PROP_OPACITY;
         if (nested) {
             lua_getfield(L, self, p <= FL_PROP_SCALE_Y ? "transform" : "appearance");
@@ -199,7 +209,21 @@ static void read_self(lua_State *L, int self, Fl_EntityState *output)
         lua_pop(L, nested ? 2 : 1);
         if (!fl_property_value_valid((Fl_AnimProperty)p, after[p])) luaL_error(L, "invalid %s output", fl_property_name((Fl_AnimProperty)p));
     }
-    for (int p=0;p<FL_PROP_COUNT;++p) fl_entity_state_apply(output,(Fl_AnimProperty)p,after[p]);
+    bool replace_text = false;
+    size_t text_size = 0;
+    const char *text = NULL;
+    if (original_text) {
+        lua_getfield(L, self, "text");
+        if (lua_type(L, -1) != LUA_TSTRING) luaL_error(L, "text must be a string");
+        text = lua_tolstring(L, -1, &text_size);
+        replace_text = text_size != original_text->size || (text_size && memcmp(text, original_text->data, text_size));
+    }
+    for (int p=0;p<FL_PROP_SCRIPTED;++p) fl_entity_state_apply(output,(Fl_AnimProperty)p,after[p]);
+    if (replace_text) {
+        size_t n = text_limit(text, text_size);
+        memcpy(output->text, text, n); output->text[n] = 0; output->text_override = true;
+    }
+    if (original_text) lua_pop(L, 1);
 }
 
 /* Compile once per revision, then run on_evaluate in a fresh environment; outputs commit only on success. */
@@ -227,7 +251,7 @@ static int evaluate(lua_State *L)
     lua_getfield(L, env, "on_evaluate"); lua_pushvalue(L, self);
     lua_pushnumber(L, (double)r->tick / FL_TICKS_PER_SECOND); lua_call(L, 2, 0);
     Fl_EntityState result = *r->state;
-    read_self(L, self, &result); *r->state = result;
+    read_self(L, self, &result, fl_entity_component(&r->scene->entities[r->entity], FL_COMPONENT_TEXT)); *r->state = result;
     return 0;
 }
 

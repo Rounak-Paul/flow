@@ -23,7 +23,7 @@
 #endif
 
 #define MANIFEST_VERSION 3
-#define SCENE_VERSION 6
+#define SCENE_VERSION 7
 
 struct Fl_EntityIndex { Fl_Id id; size_t position; };
 
@@ -403,7 +403,7 @@ bool fl_project_apply(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
         created = p->next_id++;
         *beat = (Fl_Beat){p->next_id++, beat_name, 600000, false};
         scenes[p->count] = (Fl_Scene){.id = created, .name = name, .revision = 1, .duration = 600000, .width = 1920, .height = 1080,
-                                      .beats = beat, .beat_count = 1};
+                                      .beats = beat, .beat_count = 1, .background = FL_SCENE_BACKGROUND_DEFAULT};
         saved[p->count++] = 0;
         free(p->scenes); free(p->saved); p->scenes = scenes; p->saved = saved;
         s = NULL; break;
@@ -640,6 +640,10 @@ bool fl_project_apply(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
         if (!s || !isfinite(op->camera_x) || !isfinite(op->camera_y)) return false;
         if (s->camera_x == op->camera_x && s->camera_y == op->camera_y) return true;
         s->camera_x = op->camera_x; s->camera_y = op->camera_y; break;
+    case FL_OP_SCENE_BACKGROUND:
+        if (!s || op->background[3] != 255) return false;
+        if (!memcmp(s->background, op->background, 4)) return true;
+        memcpy(s->background, op->background, 4); break;
     case FL_OP_SCENE_ASPECT:
         if (!s || op->aspect_width > 65536 || op->aspect_height > 65536 ||
             (!op->aspect_width != !op->aspect_height)) return false;
@@ -685,6 +689,7 @@ static void encode_scene(const Fl_Scene *s, Fl_Binary *b)
     fl_binary_u64(b, s->aspect_width); fl_binary_u64(b, s->aspect_height);
     const double camera[2] = {s->camera_x, s->camera_y};
     for (size_t i = 0; i < 2; ++i) { uint64_t bits; memcpy(&bits, &camera[i], sizeof(bits)); fl_binary_u64(b, bits); }
+    for (size_t i = 0; i < 4; ++i) fl_binary_u64(b, s->background[i]);
 }
 
 /* Encode one independently replaceable scene document. */
@@ -911,6 +916,12 @@ static bool decode_scene(Fl_Project *p, Fl_Scene *s, const Fl_Binary *input)
         bits = fl_binary_get_u64(&b); memcpy(&s->camera_y, &bits, sizeof(bits));
         if (!isfinite(s->camera_x) || !isfinite(s->camera_y)) b.failed = true;
     }
+    for (size_t i = 0; !b.failed && i < 4; ++i) {
+        uint64_t channel = fl_binary_get_u64(&b);
+        if (channel > 255) b.failed = true;
+        s->background[i] = (unsigned char)channel;
+    }
+    if (s->background[3] != 255) b.failed = true;
     bool ok = !b.failed && b.cursor == b.size && id == s->id && revision == s->revision &&
               s->name && s->name[0] && s->width && s->width <= 65536 && s->height && s->height <= 65536 &&
               s->duration && s->duration <= INT64_MAX;

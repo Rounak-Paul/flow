@@ -34,9 +34,13 @@ Tools need an open project. With the project launcher showing they return `no_pr
 | `apply_ops` | Atomic batch of operations. Created objects get `"as": "$name"` and can be referenced by later operations. `expect` refuses the batch if a scene changed since it was read; `dry_run` validates without applying |
 | `undo` / `redo` | Revert or repeat the newest changeset; refused (`conflict`) if anything else edited the project since |
 | `render_frame` | Renders a scene at one time or up to six (`times`) offscreen on the GPU and returns PNG images at any width (default 1024, up to 8.8 megapixels). Independent of the editor window: no grid or selection, nothing on screen changes |
+| `export_video` | Renders the project's scenes in order to an H.264 MP4 (BT.709, yuv420p) through ffmpeg: `path` (a file name goes to the project's `exports` folder), `width` (default 1920, height follows the aspect, both even), `fps` (default 60), `crf` (default 16), optional `scenes`. Runs in the background on the same renderer as `render_frame` |
+| `get_export_status` / `cancel_export` | Progress (state, frames done/total, elapsed, output path) of the latest export; stop it |
 | `get_editor_state` / `set_editor_state` | Read or set the shown scene, playhead and selection |
 | `import_asset` | Copy a local image, audio, video or font file (absolute path) into the project; not part of undo |
 | `save_project` | Write now; Flow also autosaves after changes |
+
+Look properties beyond fill and stroke: `radius`, a two-colour gradient (`fill2`, `gradient_angle`), a soft drop shadow (`shadow_blur`, `shadow_x`, `shadow_y`, `shadow_color`), text `align`, a `crop` window and animatable `crop_x/y/w/h` for images and videos (zoom and pan inside a fixed frame), and scene `background`. Video entities (`kind: "video"`, asset from `import_asset`) play from `start` at source `offset` and `rate`; import extracts the frames once with ffmpeg into the project's cache. Lua scripts can replace a text entity's content through `self.text`, for example to count up a number.
 
 Units: times in seconds, rotation in degrees, colours `#RRGGBB[AA]`, positions in scene pixels. Operations: `scene.add/remove/rename/move/set`, `entity.create/set/remove/reparent/reorder`, `key.set/remove`, `track.remove`, `beat.add/update/remove/move/split`, `clip.add/update/remove`, `script.set/remove`.
 
@@ -55,7 +59,7 @@ Units: times in seconds, rotation in degrees, colours `#RRGGBB[AA]`, positions i
 - History keeps up to 64 changesets. After any edit made outside the history (in the GUI, an asset import, a rename), earlier entries can no longer be undone and are dropped when the next changeset starts.
 - Calls run on the editor's UI thread and time out after 30 s. Closing the project fails in-flight calls cleanly.
 - Renders come from the same GPU scene renderer the editor viewport uses (`src/editor/fl_scene_renderer.c`), drawn into an offscreen image, so shapes, blending, text and images match what you see. Text is rasterized at the output resolution, so large renders are sharper than the viewport.
-- Scenes have no background property yet: the backdrop is a fixed dark blue, so cover it with a full-canvas rectangle when you want another colour.
+- Video needs ffmpeg (on PATH, in a common install folder, or named by `FLOW_FFMPEG`); export and video import fail with a clear error without it. Audio is not exported yet.
 - Scripts are `on_evaluate(self, time)` only; see `docs/lua-scripting.md`.
 
 ## Internals

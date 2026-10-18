@@ -77,7 +77,7 @@ bool fl_entity_remove_component(Fl_Entity *e, uint64_t type)
 
 const char *fl_component_name(uint64_t type)
 {
-    static const char *names[] = {NULL, "Transform", "Rectangle", "Text", "Appearance", "Geometry", "Typography", "Image", "Opacity", "Animation", "Lua Script"};
+    static const char *names[] = {NULL, "Transform", "Rectangle", "Text", "Appearance", "Geometry", "Typography", "Image", "Opacity", "Animation", "Lua Script", "Style", "Video"};
     return type < sizeof(names) / sizeof(*names) ? names[type] : NULL;
 }
 

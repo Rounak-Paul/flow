@@ -1,8 +1,7 @@
 #pragma once
 #include "project/fl_project.h"
 
-/* Scene backdrop and missing-image placeholder colours (sRGB RGBA8) shared by every renderer. */
-#define FL_RENDER_BACKGROUND_RGBA {25, 31, 47, 255}
+/* Missing-image placeholder colours (sRGB RGBA8) shared by every renderer. */
 #define FL_RENDER_PLACEHOLDER_FILL_RGBA {38, 44, 54, 255}
 #define FL_RENDER_PLACEHOLDER_STROKE_RGBA {88, 98, 114, 255}
 #define FL_RENDER_PLACEHOLDER_STROKE 2.0

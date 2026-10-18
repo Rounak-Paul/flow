@@ -1,17 +1,20 @@
 #include "fl_widgets.h"
 #include "components/fl_animation.h"
 #include "components/fl_script.h"
+#include "components/fl_style.h"
+#include "components/fl_video_clip.h"
 #include <math.h>
 #include <string.h>
 
 static const Fl_WidgetDef definitions[FL_WIDGET_COUNT] = {
-    {FL_WIDGET_GROUP, "Group", "Organize related entities", {0,0,320,180,0,1,1}, {{91,156,255,255},{230,233,238,255},0,48}, false,false,false,false},
-    {FL_WIDGET_RECTANGLE, "Rectangle", "Filled or outlined rectangle", {0,0,320,180,0,1,1}, {{91,156,255,255},{230,233,238,255},0,48}, true,true,false,false},
-    {FL_WIDGET_ELLIPSE, "Ellipse", "Circle or ellipse", {0,0,240,240,0,1,1}, {{76,195,138,255},{230,233,238,255},0,48}, true,true,false,false},
-    {FL_WIDGET_LINE, "Line", "Straight connector", {0,0,360,32,0,1,1}, {{230,233,238,255},{230,233,238,255},6,48}, false,true,false,false},
-    {FL_WIDGET_ARROW, "Arrow", "Directional connector", {0,0,360,72,0,1,1}, {{232,176,74,255},{232,176,74,255},6,48}, false,true,false,false},
-    {FL_WIDGET_TEXT, "Text", "Editable text block", {0,0,480,160,0,1,1}, {{230,233,238,255},{0,0,0,0},0,48}, true,false,true,false},
-    {FL_WIDGET_IMAGE, "Image", "Picture from the project's assets", {0,0,320,180,0,1,1}, {{255,255,255,255},{0,0,0,0},0,48}, false,false,false,true},
+    {FL_WIDGET_GROUP, "Group", "Organize related entities", {0,0,320,180,0,1,1}, {{91,156,255,255},{230,233,238,255},0,48}, false,false,false,false,false},
+    {FL_WIDGET_RECTANGLE, "Rectangle", "Filled or outlined rectangle", {0,0,320,180,0,1,1}, {{91,156,255,255},{230,233,238,255},0,48}, true,true,false,false,false},
+    {FL_WIDGET_ELLIPSE, "Ellipse", "Circle or ellipse", {0,0,240,240,0,1,1}, {{76,195,138,255},{230,233,238,255},0,48}, true,true,false,false,false},
+    {FL_WIDGET_LINE, "Line", "Straight connector", {0,0,360,32,0,1,1}, {{230,233,238,255},{230,233,238,255},6,48}, false,true,false,false,false},
+    {FL_WIDGET_ARROW, "Arrow", "Directional connector", {0,0,360,72,0,1,1}, {{232,176,74,255},{232,176,74,255},6,48}, false,true,false,false,false},
+    {FL_WIDGET_TEXT, "Text", "Editable text block", {0,0,480,160,0,1,1}, {{230,233,238,255},{0,0,0,0},0,48}, true,false,true,false,false},
+    {FL_WIDGET_IMAGE, "Image", "Picture from the project's assets", {0,0,320,180,0,1,1}, {{255,255,255,255},{0,0,0,0},0,48}, false,false,false,true,false},
+    {FL_WIDGET_VIDEO, "Video", "Video clip from the project's assets", {0,0,320,180,0,1,1}, {{255,255,255,255},{0,0,0,0},0,48}, false,false,false,false,true},
 };
 static const Fl_Typography default_typography = {FL_TYPOGRAPHY_DEFAULT_FAMILY, 400, false};
 
@@ -58,6 +61,7 @@ const Fl_WidgetDef *fl_widget_for_entity(const Fl_Entity *e)
         Fl_WidgetKind kind = (Fl_WidgetKind)geometry->data[0];
         return kind >= FL_WIDGET_ELLIPSE && kind <= FL_WIDGET_ARROW ? fl_widget_definition(kind) : NULL;
     }
+    if (fl_entity_component(e, FL_COMPONENT_VIDEO)) return &definitions[FL_WIDGET_VIDEO];
     if (fl_entity_component(e, FL_COMPONENT_IMAGE)) return &definitions[FL_WIDGET_IMAGE];
     if (fl_entity_component(e, FL_COMPONENT_TEXT)) return &definitions[FL_WIDGET_TEXT];
     if (fl_entity_component(e, FL_COMPONENT_RECTANGLE)) return &definitions[FL_WIDGET_RECTANGLE];
@@ -89,6 +93,8 @@ bool fl_widget_component_valid(const Fl_Component *c)
     case FL_COMPONENT_TYPOGRAPHY: { Fl_Typography t; return fl_typography_decode(c, &t); }
     case FL_COMPONENT_IMAGE: { Fl_Id asset; return fl_image_asset_decode(c, &asset); }
     case FL_COMPONENT_OPACITY: { double opacity; return fl_opacity_decode(c, &opacity); }
+    case FL_COMPONENT_STYLE: { Fl_Style style; return fl_style_decode(c, &style); }
+    case FL_COMPONENT_VIDEO: { Fl_VideoClip clip; return fl_video_clip_decode(c, &clip); }
     default: return true;
     }
 }
@@ -101,7 +107,7 @@ bool fl_widget_create(Fl_Project *p, Fl_Id scene, Fl_Id parent, Fl_WidgetKind ki
     Fl_Transform t = def->transform; t.x = x; t.y = y;
     unsigned char transform[56], appearance[24], geometry = (unsigned char)kind;
     fl_transform_encode(&t, transform); fl_appearance_encode(&def->appearance, appearance);
-    if (kind == FL_WIDGET_IMAGE) return false;
+    if (kind == FL_WIDGET_IMAGE || kind == FL_WIDGET_VIDEO) return false;
     unsigned char typography[3 + FL_TYPOGRAPHY_FAMILY_MAX];
     Fl_Component components[4] = {{FL_COMPONENT_TRANSFORM,1,56,transform}};
     size_t count = 1;
@@ -131,13 +137,28 @@ bool fl_widget_create_image(Fl_Project *p, Fl_Id scene, Fl_Id parent, Fl_Id asse
         .name = record && record->name[0] ? record->name : def->name, .components = components, .component_count = 2}, out_id);
 }
 
+bool fl_widget_create_video(Fl_Project *p, Fl_Id scene, Fl_Id parent, Fl_Id asset,
+                            double x, double y, double width, double height, Fl_Id *out_id)
+{
+    if (out_id) *out_id = 0;
+    if (!asset || !isfinite(x) || !isfinite(y) || !isfinite(width) || !isfinite(height) || width <= 0 || height <= 0) return false;
+    const Fl_WidgetDef *def = &definitions[FL_WIDGET_VIDEO];
+    Fl_Transform t = def->transform; t.x = x; t.y = y; t.width = width; t.height = height;
+    unsigned char transform[56], clip_bytes[FL_VIDEO_CLIP_BYTES];
+    fl_transform_encode(&t, transform);
+    fl_video_clip_encode(&(Fl_VideoClip){.asset = asset, .rate = 1}, clip_bytes);
+    const Fl_Asset *record = fl_project_asset(p, asset);
+    const Fl_Component components[2] = {{FL_COMPONENT_TRANSFORM,1,56,transform}, {FL_COMPONENT_VIDEO,1,FL_VIDEO_CLIP_BYTES,clip_bytes}};
+    return fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ENTITY_ADD, .scene = scene, .parent = parent,
+        .name = record && record->name[0] ? record->name : def->name, .components = components, .component_count = 2}, out_id);
+}
+
 bool fl_component_asset_reference(const Fl_Component *c, Fl_Id *asset, Fl_AssetKind *kind)
 {
-    Fl_Id id;
-    if (!c || c->type != FL_COMPONENT_IMAGE || !fl_image_asset_decode(c, &id)) return false;
-    if (asset) *asset = id;
-    if (kind) *kind = FL_ASSET_IMAGE;
-    return true;
+    Fl_Id id; Fl_VideoClip clip;
+    if (c && fl_image_asset_decode(c, &id)) {if (asset) *asset = id; if (kind) *kind = FL_ASSET_IMAGE; return true;}
+    if (c && fl_video_clip_decode(c, &clip)) {if (asset) *asset = clip.asset; if (kind) *kind = FL_ASSET_VIDEO; return true;}
+    return false;
 }
 
 size_t fl_typography_encode(const Fl_Typography *t, unsigned char *out)
