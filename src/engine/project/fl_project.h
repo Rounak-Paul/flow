@@ -91,7 +91,9 @@ typedef struct Fl_Scene {
     const char *name;
     uint64_t revision;
     uint64_t duration; /* 120000 ticks per second */
-    uint64_t width, height;
+    uint64_t width, height; /* canvas dimensions; target framing never moves entities */
+    uint64_t aspect_width, aspect_height; /* target ratio; both zero use the whole canvas */
+    double camera_x, camera_y; /* output camera offset from canvas center, in scene units */
     const Fl_Entity *entities;
     size_t entity_count;
     const Fl_EntityIndex *identity_index; /* private lookup storage; callers never mutate */
@@ -112,7 +114,7 @@ typedef enum Fl_OpKind {
     FL_OP_ASSET_ADD, FL_OP_ASSET_REMOVE, FL_OP_ASSET_RENAME,
     FL_OP_BEAT_ADD, FL_OP_BEAT_REMOVE, FL_OP_BEAT_UPDATE, FL_OP_BEAT_MOVE,
     FL_OP_KEY_SET, FL_OP_KEY_REMOVE, FL_OP_TRACK_REMOVE,
-    FL_OP_CLIP_ADD, FL_OP_CLIP_UPDATE, FL_OP_CLIP_REMOVE, FL_OP_BEAT_SPLIT
+    FL_OP_CLIP_ADD, FL_OP_CLIP_UPDATE, FL_OP_CLIP_REMOVE, FL_OP_BEAT_SPLIT, FL_OP_SCENE_ASPECT, FL_OP_SCENE_CAMERA
 } Fl_OpKind;
 /* One local transform replacement in an atomic selection gesture. */
 typedef struct Fl_TransformEdit { Fl_Id entity; Fl_Transform transform; } Fl_TransformEdit;
@@ -125,6 +127,8 @@ typedef struct Fl_Op {
     bool visible;
     Fl_Component component;
     uint64_t width, height, duration;
+    uint64_t aspect_width, aspect_height; /* FL_OP_SCENE_ASPECT; both zero reset to canvas */
+    double camera_x, camera_y; /* FL_OP_SCENE_CAMERA; finite scene-space offsets */
     const Fl_Component *components; /* add/configure: merge these schemas, preserving others */
     size_t component_count;
     const Fl_TransformEdit *transforms; /* FL_OP_TRANSFORMS only */

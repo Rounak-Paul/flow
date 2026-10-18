@@ -1,5 +1,7 @@
 #include "fl_scene_preview.h"
 #include "fl_gpu_image.h"
+#include "fl_canvas_view.h"
+#include "doc/fl_scene_frame.h"
 #include "style.h"
 #include "core/fl_log.h"
 #include "media/fl_media.h"
@@ -71,6 +73,12 @@ static bool create_pipeline(Fl_ScenePreview *p, Ca_Viewport *viewport)
     const char *fs = "#version 450\nlayout(push_constant) uniform P { vec4 a; vec4 b; vec4 fill; vec4 stroke; vec4 params; } p;"
         "layout(set=0,binding=0) uniform sampler2D mask;layout(location=0) in vec2 uv;layout(location=0) out vec4 color;"
         "void main(){float kind=p.params.w;vec2 size=p.params.xy;float sw=p.params.z;"
+        "if(kind==7){vec2 world=uv*vec2(p.a.w,p.b.w)+size;vec2 cell=world/sw;"
+        "vec2 d=abs(fract(cell-.5)-.5)/max(fwidth(cell),vec2(.0001));"
+        "vec2 big=cell/5;vec2 b=abs(fract(big-.5)-.5)/max(fwidth(big),vec2(.0001));"
+        "float minor=(1-min(min(d.x,d.y),1))*smoothstep(2,6,1/max(fwidth(cell.x),fwidth(cell.y)));"
+        "float major=(1-min(min(b.x,b.y),1))*smoothstep(2,6,1/max(fwidth(big.x),fwidth(big.y)));"
+        "color=mix(p.fill,p.stroke,major);color.a*=max(minor,major);return;}"
         "if(kind==5){color=p.fill;color.a*=texture(mask,uv).r;return;}"
         "if(kind==6){color=texture(mask,uv);color.a*=p.fill.a;return;}"
         "if(kind==3||kind==4){float shaft=abs((uv.y-.5)*size.y)-sw*.5;"
@@ -123,25 +131,43 @@ static float linear_channel(unsigned char value)
     return v<=.04045f ? v/12.92f : powf((v+.055f)/1.055f,2.4f);
 }
 
-/* Resolve the same letterboxed artboard for rendering, picking and drag placement. */
-static bool artboard(const Fl_Scene *scene,double w,double h,double *x,double *y,double *aw,double *ah)
+/* Resolve the saved camera into a viewport-centered output frame. */
+static Fl_CanvasMapping preview_mapping(const Fl_Scene *scene, double w, double h)
 {
-    if (!scene||w<=0||h<=0) return false;
-    double scale=fmin(w/scene->width,h/scene->height);
-    *aw=floor(scene->width*scale);*ah=floor(scene->height*scale);
-    *x=floor((w-*aw)*.5);*y=floor((h-*ah)*.5);
-    return *aw>0&&*ah>0;
+    return fl_canvas_mapping(fl_scene_frame(scene), w, h, FL_STYLE_ARTBOARD_MARGIN);
 }
 
 bool fl_scene_preview_point(Fl_ScenePreview *p,Ca_Viewport *viewport,double wx,double wy,
                             bool outside,double *sx,double *sy)
 {
+    if (!p || !viewport || !sx || !sy || !isfinite(wx) || !isfinite(wy)) return false;
     const Fl_Scene *scene=fl_project_scene(fl_scene_edit_project(p->edit),fl_scene_edit_scene(p->edit));
     float vx,vy,w,h;ca_viewport_screen_rect(viewport,&vx,&vy,&w,&h);
-    double x,y,aw,ah;
-    if (!artboard(scene,w,h,&x,&y,&aw,&ah)) return false;
-    *sx=(wx-vx-x)*scene->width/aw;*sy=(wy-vy-y)*scene->height/ah;
-    return outside||(*sx>=0&&*sy>=0&&*sx<=scene->width&&*sy<=scene->height);
+    Fl_CanvasMapping map=preview_mapping(scene,w,h);
+    if (map.scale<=0) return false;
+    *sx=map.world.x+(wx-vx)/map.scale; *sy=map.world.y+(wy-vy)/map.scale;
+    return outside||(wx>=vx&&wy>=vy&&wx<=vx+w&&wy<=vy+h);
+}
+
+void fl_scene_preview_pan(Fl_ScenePreview *p, Ca_Viewport *viewport, double dx, double dy)
+{
+    if (!p || !viewport || !isfinite(dx) || !isfinite(dy) || (dx==0&&dy==0)) return;
+    const Fl_Scene *scene=fl_project_scene(fl_scene_edit_project(p->edit),fl_scene_edit_scene(p->edit));
+    float x,y,w,h;ca_viewport_screen_rect(viewport,&x,&y,&w,&h);
+    Fl_CanvasMapping map=preview_mapping(scene,w,h);
+    if (map.scale<=0) return;
+    double px=scene->camera_x-dx/map.scale, py=scene->camera_y-dy/map.scale;
+    if (!isfinite(px) || !isfinite(py)) return;
+    if (!fl_project_apply(fl_scene_edit_project(p->edit), &(Fl_Op){.kind=FL_OP_SCENE_CAMERA,
+        .scene=scene->id,.camera_x=px,.camera_y=py}, NULL)) return;
+    ca_viewport_request_redraw(viewport);
+}
+
+void fl_scene_preview_reset_view(Fl_ScenePreview *p)
+{
+    if (!p) return;
+    fl_project_apply(fl_scene_edit_project(p->edit), &(Fl_Op){.kind=FL_OP_SCENE_CAMERA,
+        .scene=fl_scene_edit_scene(p->edit)}, NULL);
 }
 
 /* Compute scene coordinates of a selected entity's corner/rotation handle. */
@@ -169,9 +195,9 @@ Fl_EditGesture fl_scene_preview_handle(Fl_ScenePreview *p,Ca_Viewport *viewport,
     const Fl_Scene *scene=fl_project_scene(fl_scene_edit_project(p->edit),fl_scene_edit_scene(p->edit));
     const Fl_SceneGeometry *g=fl_scene_edit_geometry(p->edit);float vx,vy,w,h;
     ca_viewport_screen_rect(viewport,&vx,&vy,&w,&h);(void)vx;(void)vy;
-    double ax,ay,aw,ah;
-    if (!g||!artboard(scene,w,h,&ax,&ay,&aw,&ah)) return FL_GESTURE_MOVE;
-    double scale=fmin(aw/scene->width,ah/scene->height);
+    Fl_CanvasMapping map=preview_mapping(scene,w,h);
+    if (!g||map.scale<=0) return FL_GESTURE_MOVE;
+    double scale=map.scale;
     for (unsigned i=0;i<5;++i) {
         double hx,hy;
         if (handle_point(p,scene,g,i,scale,&hx,&hy)&&hypot(x-hx,y-hy)<=FL_STYLE_HANDLE_HIT/scale)
@@ -350,17 +376,31 @@ static bool job_done(const Fl_Event *event,void *data)
 }
 
 /* Record one affine primitive through the shared sampled-mask pipeline. */
-static void draw_primitive(Fl_ScenePreview *p,VkCommandBuffer cmd,const Fl_Scene *scene,Fl_Affine matrix,
+static void draw_primitive(Fl_ScenePreview *p,VkCommandBuffer cmd,const Fl_SceneFrame *frame,Fl_Affine matrix,
                            double width,double height,Fl_WidgetKind kind,Fl_Appearance appearance,VkDescriptorSet mask)
 {
     const double *a=matrix.v;
-    float push[20]={(float)(a[0]*width*2/scene->width),(float)(a[1]*height*2/scene->width),(float)(a[2]*2/scene->width-1),0,
-        (float)(a[3]*width*2/scene->height),(float)(a[4]*height*2/scene->height),(float)(a[5]*2/scene->height-1),0,
+    float push[20]={(float)(a[0]*width*2/frame->width),(float)(a[1]*height*2/frame->width),(float)((a[2]-frame->x)*2/frame->width-1),0,
+        (float)(a[3]*width*2/frame->height),(float)(a[4]*height*2/frame->height),(float)((a[5]-frame->y)*2/frame->height-1),0,
         linear_channel(appearance.fill[0]),linear_channel(appearance.fill[1]),linear_channel(appearance.fill[2]),appearance.fill[3]/255.f,
         linear_channel(appearance.stroke[0]),linear_channel(appearance.stroke[1]),linear_channel(appearance.stroke[2]),appearance.stroke[3]/255.f,
         (float)width,(float)height,(float)appearance.stroke_width,(float)kind};
     for (size_t i=0;i<20;++i) if (!isfinite(push[i])) return;
     vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,p->layout,0,1,&mask,0,NULL);
+    vkCmdPushConstants(cmd,p->layout,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(push),push);
+    vkCmdDraw(cmd,6,1,0,0);
+}
+
+/* Draw the repeating world grid in one bounded full-viewport pass, with a major line every five cells. */
+static void draw_grid(Fl_ScenePreview *p, VkCommandBuffer cmd, const Fl_SceneFrame *frame, VkDescriptorSet white)
+{
+    const unsigned char minor[4]=FL_STYLE_CANVAS_GRID_RGBA, major[4]=FL_STYLE_CANVAS_GRID_MAJOR_RGBA;
+    double period=FL_SCENE_GRID_SPACING*5;
+    float push[20]={2,0,-1,(float)frame->width,0,2,-1,(float)frame->height,
+        linear_channel(minor[0]),linear_channel(minor[1]),linear_channel(minor[2]),minor[3]/255.f,
+        linear_channel(major[0]),linear_channel(major[1]),linear_channel(major[2]),major[3]/255.f,
+        (float)fmod(frame->x,period),(float)fmod(frame->y,period),(float)FL_SCENE_GRID_SPACING,7};
+    vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,p->layout,0,1,&white,0,NULL);
     vkCmdPushConstants(cmd,p->layout,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(push),push);
     vkCmdDraw(cmd,6,1,0,0);
 }
@@ -383,56 +423,57 @@ void fl_scene_preview_render(Ca_Viewport *viewport,void *data)
     VkRenderingInfo info={.sType=VK_STRUCTURE_TYPE_RENDERING_INFO,.renderArea.extent={w,h},.layerCount=1,
         .colorAttachmentCount=1,.pColorAttachments=&attachment};
     vkCmdBeginRendering(cmd,&info);
-    double ax,ay,aw,ah;
-    if (g&&artboard(scene,w,h,&ax,&ay,&aw,&ah)) {
-        VkRect2D area={{(int32_t)ax,(int32_t)ay},{(uint32_t)aw,(uint32_t)ah}};
-        VkClearAttachment clear={.aspectMask=VK_IMAGE_ASPECT_COLOR_BIT,.clearValue.color={.float32=FL_STYLE_ARTBOARD_CLEAR}};
-        VkClearRect rect={.rect=area,.layerCount=1};vkCmdClearAttachments(cmd,1,&clear,1,&rect);
-        if (p->images&&create_pipeline(p,viewport)) {
-            VkViewport view={(float)ax,(float)ay,(float)aw,(float)ah,0,1};
-            vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,p->pipeline);vkCmdSetViewport(cmd,0,1,&view);vkCmdSetScissor(cmd,0,1,&area);
-            VkDescriptorSet white=fl_gpu_images_white(p->images);
-            const Fl_Appearance placeholder={.fill=FL_STYLE_IMAGE_PLACEHOLDER_RGBA,
-                .stroke=FL_STYLE_IMAGE_PLACEHOLDER_STROKE_RGBA,.stroke_width=FL_STYLE_IMAGE_PLACEHOLDER_STROKE};
-            for (size_t i=0;i<g->count;++i) {
-                size_t index=g->order[i];const Fl_ResolvedEntity *v=&g->entities[index];const Fl_Entity *e=&scene->entities[index];
-                if (!v->visible||v->kind==FL_WIDGET_GROUP||v->opacity<=0) continue;
-                Fl_Appearance look=state ? state->entities[index].appearance : fl_widget_appearance(e);
-                look.fill[3]=(unsigned char)lround(look.fill[3]*v->opacity);
-                look.stroke[3]=(unsigned char)lround(look.stroke[3]*v->opacity);
-                Fl_Appearance picture={.fill={255,255,255,(unsigned char)lround(255*v->opacity)}};
-                VkDescriptorSet mask=white;
-                if (v->kind==FL_WIDGET_TEXT) {
-                    mask=VK_NULL_HANDLE;
-                    if (p->text_scene==scene->id) for (size_t j=0;j<p->text_count;++j)
-                        if (p->texts[j].entity==e->id) mask=fl_gpu_image_descriptor(p->texts[j].image);
-                } else if (v->kind==FL_WIDGET_IMAGE) {
-                    mask=picture_descriptor(p,e);
-                    if (mask) draw_primitive(p,cmd,scene,v->world,v->local.width,v->local.height,(Fl_WidgetKind)KIND_IMAGE,picture,mask);
-                    else draw_primitive(p,cmd,scene,v->world,v->local.width,v->local.height,FL_WIDGET_RECTANGLE,placeholder,white);
-                    continue;
-                }
-                if (mask) draw_primitive(p,cmd,scene,v->world,v->local.width,v->local.height,v->kind,look,mask);
+    float logical_x,logical_y,logical_w,logical_h;
+    ca_viewport_screen_rect(viewport,&logical_x,&logical_y,&logical_w,&logical_h);
+    Fl_CanvasMapping map=preview_mapping(scene,logical_w,logical_h);
+    Fl_SceneFrame target=map.target, frame=map.world;
+    if (g&&map.scale>0&&p->images&&create_pipeline(p,viewport)) {
+        VkRect2D area={{0,0},{w,h}};
+        VkViewport view={0,0,(float)w,(float)h,0,1};
+        vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,p->pipeline);vkCmdSetViewport(cmd,0,1,&view);vkCmdSetScissor(cmd,0,1,&area);
+        VkDescriptorSet white=fl_gpu_images_white(p->images);
+        Fl_Affine background=fl_affine_identity(); background.v[2]=target.x; background.v[5]=target.y;
+        Fl_Appearance board={.fill=FL_STYLE_CANVAS_TARGET_RGBA};
+        draw_primitive(p,cmd,&frame,background,target.width,target.height,FL_WIDGET_RECTANGLE,board,white);
+        draw_grid(p,cmd,&frame,white);
+        const Fl_Appearance placeholder={.fill=FL_STYLE_IMAGE_PLACEHOLDER_RGBA,
+            .stroke=FL_STYLE_IMAGE_PLACEHOLDER_STROKE_RGBA,.stroke_width=FL_STYLE_IMAGE_PLACEHOLDER_STROKE};
+        for (size_t i=0;i<g->count;++i) {
+            size_t index=g->order[i];const Fl_ResolvedEntity *v=&g->entities[index];const Fl_Entity *e=&scene->entities[index];
+            if (!v->visible||v->kind==FL_WIDGET_GROUP||v->opacity<=0) continue;
+            Fl_Appearance look=state ? state->entities[index].appearance : fl_widget_appearance(e);
+            look.fill[3]=(unsigned char)lround(look.fill[3]*v->opacity);
+            look.stroke[3]=(unsigned char)lround(look.stroke[3]*v->opacity);
+            Fl_Appearance picture={.fill={255,255,255,(unsigned char)lround(255*v->opacity)}};
+            VkDescriptorSet mask=white;
+            if (v->kind==FL_WIDGET_TEXT) {
+                mask=VK_NULL_HANDLE;
+                if (p->text_scene==scene->id) for (size_t j=0;j<p->text_count;++j)
+                    if (p->texts[j].entity==e->id) mask=fl_gpu_image_descriptor(p->texts[j].image);
+            } else if (v->kind==FL_WIDGET_IMAGE) {
+                mask=picture_descriptor(p,e);
+                if (mask) draw_primitive(p,cmd,&frame,v->world,v->local.width,v->local.height,(Fl_WidgetKind)KIND_IMAGE,picture,mask);
+                else draw_primitive(p,cmd,&frame,v->world,v->local.width,v->local.height,FL_WIDGET_RECTANGLE,placeholder,white);
+                continue;
             }
-            double scale=fmin(aw/scene->width,ah/scene->height);
-            float node_x,node_y,node_width,node_height;
-            ca_viewport_screen_rect(viewport,&node_x,&node_y,&node_width,&node_height);
-            (void)node_x;(void)node_y;(void)node_height;
-            double logical_scale=scale/(node_width>0 ? w/node_width : 1);
-            Fl_Appearance outline={.stroke=FL_STYLE_GIZMO_RGBA,.font_size=48};
-            for (size_t i=0;i<g->count;++i) {
-                const Fl_ResolvedEntity *v=&g->entities[i];
-                if (!v->visible||!fl_scene_edit_contains(p->edit,scene->entities[i].id)) continue;
-                double local_scale=fmax(hypot(v->world.v[0],v->world.v[3]),hypot(v->world.v[1],v->world.v[4]));
-                outline.stroke_width=FL_STYLE_OUTLINE_WIDTH/(logical_scale*fmax(local_scale,1e-9));
-                draw_primitive(p,cmd,scene,v->world,v->local.width,v->local.height,FL_WIDGET_RECTANGLE,outline,white);
-            }
-            Fl_Appearance handle={.fill=FL_STYLE_GIZMO_RGBA,.font_size=48};double size=FL_STYLE_HANDLE_SIZE/logical_scale;
-            for (unsigned i=0;i<5;++i) {
-                double x,y;if (!handle_point(p,scene,g,i,logical_scale,&x,&y)) break;
-                Fl_Affine matrix=fl_affine_identity();matrix.v[2]=x-size*.5;matrix.v[5]=y-size*.5;
-                draw_primitive(p,cmd,scene,matrix,size,size,FL_WIDGET_RECTANGLE,handle,white);
-            }
+            if (mask) draw_primitive(p,cmd,&frame,v->world,v->local.width,v->local.height,v->kind,look,mask);
+        }
+        double logical_scale=map.scale;
+        Fl_Appearance frame_edge={.stroke=FL_STYLE_CANVAS_FRAME_RGBA,.stroke_width=1/map.scale};
+        draw_primitive(p,cmd,&frame,background,target.width,target.height,FL_WIDGET_RECTANGLE,frame_edge,white);
+        Fl_Appearance outline={.stroke=FL_STYLE_GIZMO_RGBA,.font_size=48};
+        for (size_t i=0;i<g->count;++i) {
+            const Fl_ResolvedEntity *v=&g->entities[i];
+            if (!v->visible||!fl_scene_edit_contains(p->edit,scene->entities[i].id)) continue;
+            double local_scale=fmax(hypot(v->world.v[0],v->world.v[3]),hypot(v->world.v[1],v->world.v[4]));
+            outline.stroke_width=FL_STYLE_OUTLINE_WIDTH/(logical_scale*fmax(local_scale,1e-9));
+            draw_primitive(p,cmd,&frame,v->world,v->local.width,v->local.height,FL_WIDGET_RECTANGLE,outline,white);
+        }
+        Fl_Appearance handle={.fill=FL_STYLE_GIZMO_RGBA,.font_size=48};double size=FL_STYLE_HANDLE_SIZE/logical_scale;
+        for (unsigned i=0;i<5;++i) {
+            double x,y;if (!handle_point(p,scene,g,i,logical_scale,&x,&y)) break;
+            Fl_Affine matrix=fl_affine_identity();matrix.v[2]=x-size*.5;matrix.v[5]=y-size*.5;
+            draw_primitive(p,cmd,&frame,matrix,size,size,FL_WIDGET_RECTANGLE,handle,white);
         }
     }
     vkCmdEndRendering(cmd);

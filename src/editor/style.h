@@ -332,6 +332,11 @@
 #define FL_STYLE_LAUNCHER_W 760
 #define FL_STYLE_LAUNCHER_H 580
 #define FL_STYLE_SCENE_RECT_RGBA {91,156,255,255}
+#define FL_STYLE_ARTBOARD_MARGIN 14.0
+#define FL_STYLE_CANVAS_TARGET_RGBA {25, 31, 47, 255}
+#define FL_STYLE_CANVAS_FRAME_RGBA {115, 145, 185, 190}
+#define FL_STYLE_CANVAS_GRID_RGBA {105, 126, 156, 36}
+#define FL_STYLE_CANVAS_GRID_MAJOR_RGBA {115, 142, 178, 64}
 #define FL_STYLE_VIEW_CLEAR {0.0030f,0.0048f,0.0130f,1.0f}
 #define FL_STYLE_ARTBOARD_CLEAR {0.0075f,0.0105f,0.0210f,1.0f}
 #define FL_CLASS_TOOLBAR "fl-toolbar"
@@ -356,6 +361,7 @@
 #define FL_CLASS_SCENE_TIME "fl-scene-time"
 #define FL_CLASS_CARD_SELECTED "fl-scene-card selected"
 #define FL_CLASS_HIERARCHY "fl-hierarchy"
+#define FL_CLASS_HIERARCHY_PANE "fl-hierarchy-pane"
 #define FL_CLASS_TREE_ROW "fl-tree-row"
 #define FL_CLASS_TREE_ROW_SELECTED "fl-tree-row selected"
 #define FL_CLASS_TREE_GUIDE "fl-tree-guide"
@@ -373,6 +379,14 @@
 #define FL_TREE_ROW_H "26px"
 #define FL_TREE_HALF_H "13px"
 #define FL_CLASS_VIEW "fl-view"
+#define FL_CLASS_SCENE_BODY "fl-scene-body"
+#define FL_CLASS_SCENE_TOOLBAR "fl-toolbar fl-scene-toolbar"
+#define FL_CLASS_TOOLBAR_SPACER "fl-toolbar-spacer"
+#define FL_CLASS_ASPECT_SELECT "fl-aspect-select"
+#define FL_CLASS_CANVAS_TOOL "fl-canvas-tool"
+#define FL_CLASS_CANVAS_TOOL_ACTIVE "fl-canvas-tool active"
+#define FL_CLASS_VIEW_GUTTER "fl-view-gutter"
+#define FL_CLASS_VIEW_RIM "fl-view-rim"
 #define FL_CLASS_VIEWPORT "fl-viewport"
 #define FL_CLASS_FORM "fl-form"
 #define FL_CLASS_INPUT "fl-input"
@@ -380,7 +394,7 @@
 #define FL_CLASS_LAUNCHER_TITLE "fl-launcher-title"
 #define FL_CLASS_RECENT "fl-recent"
 #define FL_STYLE_CSS_SCENE \
-    ".fl-scene { gap: 0px; overflow: hidden; }" \
+    ".fl-scene { gap: " FL_SPACE_SM "; overflow: hidden; }" \
     ".fl-toolbar { width: 100%; min-height: 32px; height: auto; padding: 4px 8px; gap: 8px; align-items: center; flex-shrink: 0; }" \
     ".fl-heading { color: " FL_COLOR_TEXT_BRIGHT "; font-size: " FL_FONT_MD "; }" \
     ".fl-label { color: " FL_COLOR_TEXT_MEDIUM "; }" \
@@ -389,7 +403,10 @@
     ".fl-action:hover { background: " FL_COLOR_CONTROL_HOVER "; }" \
     ".fl-recent:hover { background: " FL_COLOR_CONTROL_HOVER "; }" \
     ".fl-ambient { ambient-light: " FL_AMBIENT_LIGHT "; }" \
-    ".fl-scene-gutter { height: " FL_SCENE_STRIP_H "; margin: " FL_SPACE_SM "; flex-shrink: 0; border-radius: " FL_RADIUS_CARD_GUTTER "; }" \
+    ".fl-scene-toolbar { height: 32px; }" \
+    ".fl-scene-body { width: 100%; flex-grow: 1; min-height: 0px; }" \
+    ".fl-scene-gutter { height: " FL_SCENE_STRIP_H "; margin: 0px " FL_SPACE_SM "; flex-shrink: 0; border-radius: " FL_RADIUS_CARD_GUTTER "; }" \
+    ".fl-sunken { background: linear-gradient(to bottom, " FL_COLOR_TAB_GUTTER_TOP ", " FL_COLOR_TAB_GUTTER_BOTTOM "); }" \
     ".fl-scene-strip { width: 100%; height: 100%; padding: " FL_SPACE_SM "; gap: " FL_SPACE_SM "; overflow-x: auto; scrollbar-width: 0px; border-radius: " FL_RADIUS_CARD_GUTTER "; background: linear-gradient(to bottom, " FL_COLOR_TAB_GUTTER_TOP ", " FL_COLOR_TAB_GUTTER_BOTTOM "); }" \
     ".fl-scene-rim { left: 0px; top: 0px; width: 100%; height: 100%; z-index: 1; pointer-events: none; background: transparent; border-radius: " FL_RADIUS_CARD_GUTTER "; box-shadow: inset 0px 3px 8px " FL_COLOR_TAB_GUTTER_SHADE "; border: 1px solid " FL_COLOR_TAB_GUTTER_EDGE "; border-top-color: " FL_COLOR_TAB_GUTTER_EDGE "; border-bottom-color: " FL_COLOR_TAB_GUTTER_LIP "; }" \
     ".fl-scene-drag { width: " FL_SCENE_CARD_W "; height: " FL_SCENE_CARD_H "; flex-shrink: 0; cursor: grab; }" \
@@ -401,10 +418,19 @@
     ".fl-scene-glass.selected { border-color: " FL_COLOR_CARD_SELECTED_RIM "; border-top-color: " FL_COLOR_CARD_SELECTED_SPECULAR "; }" \
     ".fl-scene-label { left: 0px; top: 32px; width: 100%; height: 34px; padding: 0px 10px; gap: 0px; justify-content: center; z-index: 1; background: transparent; pointer-events: none; }" \
     ".fl-scene-name { z-index: 1; color: " FL_COLOR_TEXT_BRIGHT "; font-size: " FL_FONT_SM "; }" \
-    ".fl-scene-time { z-index: 1; color: " FL_COLOR_TEXT_MEDIUM "; font-size: " FL_FONT_XS "; }" \
-    ".fl-hierarchy { width: 100%; height: 100%; overflow-y: auto; gap: 0px; padding: 6px 4px; background: transparent; }" \
-    ".fl-view { width: 100%; height: 100%; gap: 0px; overflow: hidden; }" \
-    ".fl-viewport { width: 100%; flex-grow: 1; min-height: 0px; }" \
+    ".fl-scene-time { z-index: 1; color: " FL_COLOR_TEXT_MEDIUM "; font-size: " FL_FONT_XS "; }"
+
+#define FL_STYLE_CSS_SCENE_PANES \
+    ".fl-canvas-tool { width: 24px; height: 24px; flex-shrink: 0; padding: 0px; justify-content: center; align-items: center; color: " FL_COLOR_TEXT_MEDIUM "; background: " FL_COLOR_CONTROL "; border-radius: " FL_RADIUS_PILL "; }" \
+    ".fl-canvas-tool.active { color: " FL_COLOR_TEXT_BRIGHT "; background: " FL_COLOR_SELECTION "; }" \
+    ".fl-toolbar-spacer { flex-grow: 1; min-width: 0px; }" \
+    ".fl-aspect-select { width: 96px; min-width: 60px; height: 24px; flex-shrink: 1; border-radius: " FL_RADIUS_PILL "; background: " FL_COLOR_FIELD "; color: " FL_COLOR_TEXT_BRIGHT "; }" \
+    ".fl-hierarchy-pane { width: 100%; height: 100%; padding: 0px " FL_SPACE_SM " " FL_SPACE_SM "; gap: 0px; }" \
+    ".fl-hierarchy { width: 100%; flex-grow: 1; min-height: 0px; overflow-y: auto; gap: 0px; background: transparent; }" \
+    ".fl-view { width: 100%; height: 100%; padding: 0px " FL_SPACE_SM " " FL_SPACE_SM "; gap: 0px; overflow: hidden; }" \
+    ".fl-view-gutter { width: 100%; flex-grow: 1; min-height: 0px; gap: 0px; border-radius: " FL_RADIUS_CARD_GUTTER "; }" \
+    ".fl-view-rim { left: 0px; top: 0px; width: 100%; height: 100%; z-index: 1; pointer-events: none; background: transparent; border-radius: " FL_RADIUS_CARD_GUTTER "; box-shadow: inset 0px 2px 5px " FL_COLOR_TAB_GUTTER_SHADE "; border: 1px solid " FL_COLOR_TAB_GUTTER_EDGE "; border-top-color: " FL_COLOR_TAB_GUTTER_EDGE "; border-bottom-color: " FL_COLOR_TAB_GUTTER_LIP "; }" \
+    ".fl-viewport { width: 100%; flex-grow: 1; min-height: 0px; border-radius: " FL_RADIUS_CARD_GUTTER "; }" \
     ".fl-form { width: 100%; height: 100%; padding: 16px; gap: 12px; " FL_STYLE_BACKDROP " }" \
     ".fl-input { width: 100%; height: 32px; padding: 6px 10px; flex-shrink: 0; background: " FL_COLOR_FIELD "; color: " FL_COLOR_TEXT_BRIGHT "; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: " FL_RADIUS_MD "; }" \
     ".fl-launcher { width: 100%; height: 100%; padding: 28px; gap: 12px; overflow-y: auto; " FL_STYLE_BACKDROP " }" \
@@ -452,7 +478,7 @@
 #define FL_CLASS_PROPERTY_INPUT "fl-property-input"
 #define FL_STYLE_CSS_AUTHORING \
     ".fl-entity-row { width: 100%; height: " FL_TREE_ROW_H "; flex-shrink: 0; }" \
-    ".fl-stage { width: 100%; flex-grow: 1; min-height: 0px; overflow: hidden; }" \
+    ".fl-stage { width: 100%; flex-grow: 1; min-height: 0px; overflow: hidden; border-radius: " FL_RADIUS_CARD_GUTTER "; }" \
     ".fl-library, .fl-inspector { width: 100%; height: 100%; padding: 10px; gap: 10px; overflow-y: auto; background: transparent; }" \
     ".fl-widget-wrap { width: 90px; height: 72px; flex-shrink: 0; }" \
     ".fl-widget-card { width: 100%; height: 100%; padding: 8px 4px; gap: 6px; align-items: center; justify-content: center; background: " FL_COLOR_FIELD "; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: " FL_RADIUS_LG "; }" \

@@ -20,7 +20,7 @@
 #endif
 
 #define MANIFEST_VERSION 3
-#define SCENE_VERSION 2
+#define SCENE_VERSION 4
 
 struct Fl_EntityIndex { Fl_Id id; size_t position; };
 
@@ -644,6 +644,15 @@ bool fl_project_apply(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
     case FL_OP_CLIP_ADD: case FL_OP_CLIP_UPDATE: case FL_OP_CLIP_REMOVE:
         if (!fl_timeline_apply(p, s, op, &p->next_id, &created)) return false;
         break;
+    case FL_OP_SCENE_CAMERA:
+        if (!s || !isfinite(op->camera_x) || !isfinite(op->camera_y)) return false;
+        if (s->camera_x == op->camera_x && s->camera_y == op->camera_y) return true;
+        s->camera_x = op->camera_x; s->camera_y = op->camera_y; break;
+    case FL_OP_SCENE_ASPECT:
+        if (!s || op->aspect_width > 65536 || op->aspect_height > 65536 ||
+            (!op->aspect_width != !op->aspect_height)) return false;
+        if (s->aspect_width == op->aspect_width && s->aspect_height == op->aspect_height) return true;
+        s->aspect_width = op->aspect_width; s->aspect_height = op->aspect_height; break;
     case FL_OP_SCENE_SETTINGS: {
         if (!s || !op->width || !op->height || op->width > 65536 || op->height > 65536 || !op->duration || op->duration > INT64_MAX) return false;
         /* Beats partition the scene: a length change resizes the last beat. */
@@ -686,6 +695,9 @@ static bool save_scene(const Fl_Project *p, const Fl_Scene *s)
         }
     }
     fl_timeline_save(s, &b);
+    fl_binary_u64(&b, s->aspect_width); fl_binary_u64(&b, s->aspect_height);
+    const double camera[2] = {s->camera_x, s->camera_y};
+    for (size_t i = 0; i < 2; ++i) { uint64_t bits; memcpy(&bits, &camera[i], sizeof(bits)); fl_binary_u64(&b, bits); }
     bool ok = project_path(p, s->id, s->revision, path) && fl_binary_save(&b, path, "FLSCENE\0", SCENE_VERSION);
     free(b.data); return ok;
 }
@@ -792,6 +804,16 @@ static bool load_scene(Fl_Project *p, Fl_Scene *s)
         }
     }
     if (!b.failed && version >= 2 && !fl_timeline_load(s, &b)) b.failed = true;
+    if (!b.failed && version >= 3) {
+        s->aspect_width = fl_binary_get_u64(&b); s->aspect_height = fl_binary_get_u64(&b);
+        if (s->aspect_width > 65536 || s->aspect_height > 65536 ||
+            (!s->aspect_width != !s->aspect_height)) b.failed = true;
+    }
+    if (!b.failed && version >= 4) {
+        uint64_t bits = fl_binary_get_u64(&b); memcpy(&s->camera_x, &bits, sizeof(bits));
+        bits = fl_binary_get_u64(&b); memcpy(&s->camera_y, &bits, sizeof(bits));
+        if (!isfinite(s->camera_x) || !isfinite(s->camera_y)) b.failed = true;
+    }
     bool ok = !b.failed && b.cursor == b.size && id == s->id && revision == s->revision &&
               s->name && s->name[0] && s->width && s->width <= 65536 && s->height && s->height <= 65536 &&
               s->duration && s->duration <= INT64_MAX;

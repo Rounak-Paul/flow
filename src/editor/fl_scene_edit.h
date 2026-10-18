@@ -4,6 +4,9 @@
 typedef struct Fl_SceneEdit Fl_SceneEdit;
 #define FL_EVENT_SELECTION_CHANGED "editor.selection_changed"
 #define FL_EVENT_TIME_CHANGED "editor.time_changed"
+#define FL_EVENT_SNAP_CHANGED "editor.snap_changed"
+#define FL_SCENE_GRID_SPACING 64.0
+typedef struct Fl_SnapChange { Fl_SceneEdit *edit; } Fl_SnapChange;
 /* Selection notifications carry the edit controller pointer. */
 typedef struct Fl_SelectionChange { Fl_SceneEdit *edit; } Fl_SelectionChange;
 /* Current-time notifications carry the controller and the new scene time. */
@@ -19,6 +22,9 @@ Fl_Id fl_scene_edit_scene(const Fl_SceneEdit *edit);
 Fl_Id fl_scene_edit_primary(const Fl_SceneEdit *edit);
 size_t fl_scene_edit_count(const Fl_SceneEdit *edit);
 bool fl_scene_edit_contains(const Fl_SceneEdit *edit, Fl_Id entity);
+/* Read or change grid snapping for authoring gestures and insertion; does not dirty the project. */
+bool fl_scene_edit_snap(const Fl_SceneEdit *edit);
+void fl_scene_edit_set_snap(Fl_SceneEdit *edit, bool enabled);
 /* Select a scene/entity; additive toggles membership. Entity zero clears selection. */
 bool fl_scene_edit_select(Fl_SceneEdit *edit, Fl_Id scene, Fl_Id entity, bool additive);
 /* Current scene time; edits of animated properties are keyed here. */

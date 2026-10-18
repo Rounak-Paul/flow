@@ -18,6 +18,10 @@ typedef struct Fl_ScenePreviewDesc {
 Fl_ScenePreview *fl_scene_preview_create(const Fl_ScenePreviewDesc *desc);
 /* Record scene primitives and selection handles into viewport; data is the preview. */
 void fl_scene_preview_render(Ca_Viewport *viewport, void *data);
+/* Translate the canvas by logical pixel deltas dx/dy; viewport supplies the current camera scale. */
+void fl_scene_preview_pan(Fl_ScenePreview *preview, Ca_Viewport *viewport, double dx, double dy);
+/* Reset the active scene camera to the canvas center through a document operation. */
+void fl_scene_preview_reset_view(Fl_ScenePreview *preview);
 /* Convert window pixels to scene pixels; allow_outside supports dragging beyond the artboard. */
 bool fl_scene_preview_point(Fl_ScenePreview *preview, Ca_Viewport *viewport, double window_x, double window_y,
                             bool allow_outside, double *scene_x, double *scene_y);

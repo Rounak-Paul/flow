@@ -11,7 +11,7 @@ typedef struct Fl_GestureTarget {
 struct Fl_SceneEdit {
     Fl_Project *project;
     Fl_EventBus *bus;
-    Fl_EventType selection_event, time_event;
+    Fl_EventType selection_event, time_event, snap_event;
     Fl_Id scene;
     Fl_Tick time, gesture_tick;
     Fl_SceneState state;
@@ -23,7 +23,8 @@ struct Fl_SceneEdit {
     size_t target_count;
     Fl_EditGesture gesture;
     double start_x, start_y;
-    bool applying;
+    bool applying, snap, gesture_snap;
+    double snap_x, snap_y;
 };
 
 /* Publish a time change. */
@@ -74,8 +75,9 @@ Fl_SceneEdit *fl_scene_edit_create(Fl_Project *project, Fl_EventBus *bus)
     const Fl_Scene *scene = fl_project_scene_at(project, 0); edit->scene = scene ? scene->id : 0;
     edit->selection_event = fl_event_type_register(bus, FL_EVENT_SELECTION_CHANGED, sizeof(Fl_SelectionChange));
     edit->time_event = fl_event_type_register(bus, FL_EVENT_TIME_CHANGED, sizeof(Fl_TimeChange));
+    edit->snap_event = fl_event_type_register(bus, FL_EVENT_SNAP_CHANGED, sizeof(Fl_SnapChange));
     Fl_EventType changed = fl_event_type_register(bus, FL_EVENT_PROJECT_CHANGED, sizeof(Fl_ProjectChange));
-    if (edit->selection_event == FL_EVENT_TYPE_INVALID || edit->time_event == FL_EVENT_TYPE_INVALID || changed == FL_EVENT_TYPE_INVALID ||
+    if (edit->snap_event == FL_EVENT_TYPE_INVALID || edit->selection_event == FL_EVENT_TYPE_INVALID || edit->time_event == FL_EVENT_TYPE_INVALID || changed == FL_EVENT_TYPE_INVALID ||
         !fl_event_subscribe(bus, &(Fl_SubscribeDesc){.type = changed, .fn = document_changed, .user_data = edit, .owner = edit}).generation) {
         free(edit); return NULL;
     }
@@ -141,6 +143,37 @@ const Fl_SceneGeometry *fl_scene_edit_geometry(Fl_SceneEdit *edit)
     return &edit->geometry;
 }
 
+bool fl_scene_edit_snap(const Fl_SceneEdit *edit) { return edit && edit->snap; }
+void fl_scene_edit_set_snap(Fl_SceneEdit *edit, bool enabled)
+{
+    if (!edit || edit->snap == enabled) return;
+    edit->snap = enabled;
+    Fl_SnapChange change = {edit};
+    fl_event_publish(edit->bus, edit->snap_event, &change, sizeof(change));
+}
+
+/* Snap parent-local insertion coordinates to the world grid, preserving transformed parents. */
+static bool snap_insertion(Fl_SceneEdit *edit, Fl_Id parent, double *x, double *y)
+{
+    if (!edit || !isfinite(*x) || !isfinite(*y)) return false;
+    if (!edit->snap) return true;
+    Fl_Affine world = fl_affine_identity(), inverse;
+    if (parent) {
+        const Fl_Scene *scene = fl_project_scene(edit->project, edit->scene);
+        const Fl_Entity *entity = fl_scene_entity(scene, parent);
+        const Fl_SceneGeometry *geometry = fl_scene_edit_geometry(edit);
+        if (!entity || !geometry) return false;
+        world = geometry->entities[entity - scene->entities].world;
+    }
+    if (!fl_affine_inverse(world, &inverse)) return false;
+    double wx, wy;
+    fl_affine_point(world, *x, *y, &wx, &wy);
+    wx = round(wx / FL_SCENE_GRID_SPACING) * FL_SCENE_GRID_SPACING;
+    wy = round(wy / FL_SCENE_GRID_SPACING) * FL_SCENE_GRID_SPACING;
+    fl_affine_point(inverse, wx, wy, x, y);
+    return isfinite(*x) && isfinite(*y);
+}
+
 bool fl_scene_edit_begin(Fl_SceneEdit *edit, Fl_EditGesture mode, double x, double y)
 {
     if (!edit || !edit->count || mode < FL_GESTURE_MOVE || mode > FL_GESTURE_ROTATE ||
@@ -164,8 +197,10 @@ bool fl_scene_edit_begin(Fl_SceneEdit *edit, Fl_EditGesture mode, double x, doub
         if (!v->invertible || !fl_affine_inverse(parent ? geometry->entities[parent-scene->entities].world : fl_affine_identity(), &target->parent_inverse)) {
             clear_gesture(edit); return false;
         }
+        if (!edit->target_count) { edit->snap_x = v->world.v[2]; edit->snap_y = v->world.v[5]; }
         ++edit->target_count;
     }
+    edit->gesture_snap = edit->snap;
     edit->gesture_tick = edit->time;
     edit->gesture = mode; edit->start_x = x; edit->start_y = y;
     return edit->target_count != 0;
@@ -174,6 +209,15 @@ bool fl_scene_edit_begin(Fl_SceneEdit *edit, Fl_EditGesture mode, double x, doub
 bool fl_scene_edit_update(Fl_SceneEdit *edit, double x, double y)
 {
     if (!edit || !edit->target_count || !isfinite(x) || !isfinite(y)) return false;
+    if (edit->gesture_snap && (x != edit->start_x || y != edit->start_y) && edit->gesture != FL_GESTURE_ROTATE) {
+        if (edit->gesture == FL_GESTURE_MOVE) {
+            x = edit->start_x + round((edit->snap_x + x - edit->start_x) / FL_SCENE_GRID_SPACING) * FL_SCENE_GRID_SPACING - edit->snap_x;
+            y = edit->start_y + round((edit->snap_y + y - edit->start_y) / FL_SCENE_GRID_SPACING) * FL_SCENE_GRID_SPACING - edit->snap_y;
+        } else {
+            x = round(x / FL_SCENE_GRID_SPACING) * FL_SCENE_GRID_SPACING;
+            y = round(y / FL_SCENE_GRID_SPACING) * FL_SCENE_GRID_SPACING;
+        }
+    }
     for (size_t i = 0; i < edit->target_count; ++i) {
         const Fl_GestureTarget *target = &edit->targets[i];
         Fl_Transform t = target->initial.transform;
@@ -228,7 +272,7 @@ void fl_scene_edit_end(Fl_SceneEdit *edit, bool cancel)
 bool fl_scene_edit_insert(Fl_SceneEdit *edit, Fl_WidgetKind kind, Fl_Id parent, double x, double y)
 {
     Fl_Id id;
-    return edit && fl_widget_create(edit->project,edit->scene,parent,kind,x,y,&id) &&
+    return snap_insertion(edit,parent,&x,&y) && fl_widget_create(edit->project,edit->scene,parent,kind,x,y,&id) &&
         fl_scene_edit_select(edit,edit->scene,id,false);
 }
 
@@ -242,6 +286,7 @@ bool fl_scene_edit_insert_image(Fl_SceneEdit *edit, Fl_Id asset, Fl_Id parent, d
     w*=fit;h*=fit;
     Fl_Id id;
     if (centred) {x-=w*.5;y-=h*.5;}
+    if (!snap_insertion(edit,parent,&x,&y)) return false;
     return fl_widget_create_image(edit->project,edit->scene,parent,asset,x,y,w,h,&id)&&
         fl_scene_edit_select(edit,edit->scene,id,false);
 }

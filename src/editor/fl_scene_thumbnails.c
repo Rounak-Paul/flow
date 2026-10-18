@@ -1,3 +1,4 @@
+#include "doc/fl_scene_frame.h"
 #include "fl_scene_thumbnails.h"
 #include "style.h"
 #include "schema/fl_widgets.h"
@@ -45,13 +46,13 @@ static void blend(unsigned char *pixel, const unsigned char colour[4], double op
 
 /* Fraction of a pixel's sample grid that lies inside the shape. */
 static double coverage(const Fl_ResolvedEntity *v, Fl_WidgetKind kind, const Fl_Artboard *board,
-                       double sw, double sh, unsigned px, unsigned py)
+                       const Fl_SceneFrame *frame, unsigned px, unsigned py)
 {
     unsigned inside = 0;
     for (unsigned sy = 0; sy < SAMPLES_PER_AXIS; ++sy) for (unsigned sx = 0; sx < SAMPLES_PER_AXIS; ++sx) {
         double x = (px + (sx + .5) / SAMPLES_PER_AXIS - board->x) / board->scale;
         double y = (py + (sy + .5) / SAMPLES_PER_AXIS - board->y) / board->scale;
-        if (x < 0 || y < 0 || x > sw || y > sh) continue;
+        if (x < frame->x || y < frame->y || x > frame->x + frame->width || y > frame->y + frame->height) continue;
         double lx, ly;
         fl_affine_point(v->inverse, x, y, &lx, &ly);
         if (lx < 0 || ly < 0 || lx > v->local.width || ly > v->local.height) continue;
@@ -103,7 +104,8 @@ static unsigned char *rasterize(const Fl_Scene *scene)
     if (!pixels) return NULL;
     const unsigned char canvas[4] = FL_STYLE_SCENE_THUMB_CANVAS_RGBA, artboard[4] = FL_STYLE_SCENE_THUMB_ARTBOARD_RGBA;
     for (size_t i = 0; i < bytes; i += 4) memcpy(pixels + i, canvas, 4);
-    double sw = (double)scene->width, sh = (double)scene->height;
+    Fl_SceneFrame frame = fl_scene_frame(scene);
+    double sw = frame.width, sh = frame.height;
     Fl_Artboard board = {.scale = fmin(FL_STYLE_SCENE_THUMB_W / sw, FL_STYLE_SCENE_THUMB_H / sh)};
     board.x = (FL_STYLE_SCENE_THUMB_W - sw * board.scale) * .5; board.y = (FL_STYLE_SCENE_THUMB_H - sh * board.scale) * .5;
     unsigned ax0 = (unsigned)lround(board.x), ay0 = (unsigned)lround(board.y);
@@ -111,6 +113,7 @@ static unsigned char *rasterize(const Fl_Scene *scene)
     for (unsigned y = ay0; y < ay1; ++y) for (unsigned x = ax0; x < ax1; ++x)
         memcpy(pixels + ((size_t)y * FL_STYLE_SCENE_THUMB_W + x) * 4, artboard, 4);
 
+    board.x -= frame.x * board.scale; board.y -= frame.y * board.scale;
     Fl_SceneState state = {0};
     const Fl_SceneState *first_frame = fl_scene_state_update(&state, scene, 0) ? &state : NULL;
     Fl_SceneGeometry geometry = {0};
@@ -127,7 +130,7 @@ static unsigned char *rasterize(const Fl_Scene *scene)
             Fl_Appearance look = first_frame ? first_frame->entities[index].appearance : fl_widget_appearance(&scene->entities[index]);
             const unsigned char *fill = kind == FL_WIDGET_IMAGE ? placeholder : look.fill;
             for (unsigned y = y0; y < y1; ++y) for (unsigned x = x0; x < x1; ++x) {
-                double cover = coverage(v, kind, &board, sw, sh, x, y);
+                double cover = coverage(v, kind, &board, &frame, x, y);
                 if (cover > 0) blend(pixels + ((size_t)y * FL_STYLE_SCENE_THUMB_W + x) * 4, fill, v->opacity, cover);
             }
         }
