@@ -499,7 +499,7 @@ Flow has full control of rendering. `fl_render` builds passes on causality's `Vk
 
 - **Colour pipeline:** scenes render into **RGBA16F linear-light** targets, so blending and gradients are physically correct and banding-free. They are converted to sRGB (preview) or the export colour space at the end. Premultiplied alpha throughout.
 - **Vector paths:** fills use **stencil-then-cover** (non-zero and even-odd) on **MSAA** targets (8× where supported, 4× minimum). Strokes are expanded on the CPU (joins, caps, dashes) into fill geometry and cached per path and stroke style.
-- **Analytic primitives:** rects, rounded rects, ellipses, lines and arrows are drawn as **SDF quads** with exact coverage AA, avoiding tessellation.
+- **Analytic primitives:** rects, rounded rects, ellipses, triangles, diamonds, hexagons, stars, lines and arrows are drawn as **SDF quads** with exact coverage AA, avoiding tessellation.
 - **Text:** shaped by **HarfBuzz**, rasterized by **FreeType** into a glyph atlas keyed by `(font, glyph, pixel-size bucket, subpixel offset)`. Glyphs are rasterized at the **actual output pixel size**, so 4K export and deep zooms stay crisp. Very large glyphs (above a threshold) switch to path rendering.
 - **Math:** LaTeX is typeset by **MicroTeX** into glyph runs and rules, rendered by the same text and path pipeline, so it scales and morphs like any shape.
 - **Code:** **tree-sitter** parses the code and highlight queries produce token runs. Tokens are addressable (`code.lines[4].tokens[2]`), which enables real token-level code morphs.

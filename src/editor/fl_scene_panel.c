@@ -471,6 +471,10 @@ static const char *kind_icon(const Fl_Entity *e, bool open)
     case FL_WIDGET_IMAGE: return CA_ICON_NF_FA_IMAGE;
     case FL_WIDGET_VIDEO: return CA_ICON_NF_FA_FILM;
     case FL_WIDGET_LINE: case FL_WIDGET_ARROW: return CA_ICON_NF_FA_ARROW_RIGHT;
+    case FL_WIDGET_TRIANGLE: return CA_ICON_NF_FA_CARET_UP;
+    case FL_WIDGET_DIAMOND: return CA_ICON_NF_FA_DIAMOND;
+    case FL_WIDGET_HEXAGON: return CA_ICON_NF_FA_DRAW_POLYGON;
+    case FL_WIDGET_STAR: return CA_ICON_NF_FA_STAR;
     default: return open ? CA_ICON_NF_FA_FOLDER_OPEN : CA_ICON_NF_FA_FOLDER;
     }
 }

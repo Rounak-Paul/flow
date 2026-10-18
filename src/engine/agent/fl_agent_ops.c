@@ -252,7 +252,7 @@ static bool configure(Ctx *x, const Fl_Scene *scene, const Fl_Entity *e, const c
         style.radius = number; style_given = true;
     }
     if ((item = cJSON_GetObjectItemCaseSensitive(props, "fill2"))) {
-        if (!def || !(def->kind == FL_WIDGET_RECTANGLE || def->kind == FL_WIDGET_ELLIPSE)) return fl_fail(f, "not_applicable", "%s: gradients need a rectangle or ellipse", ctx);
+        if (!def || !(def->kind == FL_WIDGET_RECTANGLE || def->kind == FL_WIDGET_ELLIPSE || fl_widget_is_polygon(def->kind))) return fl_fail(f, "not_applicable", "%s: gradients need a rectangle, ellipse or polygon shape", ctx);
         style.gradient = !cJSON_IsNull(item); style_given = true;
         if (style.gradient && !agent_parse_color(item, style.gradient_to, f, "fill2")) return false;
     }
@@ -343,7 +343,7 @@ static bool entity_create(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
     if (!agent_only_keys(op, f, "entity.create", keys) || !(s = need_scene(x, op, "scene", f, "entity.create")) ||
         !agent_get_string(op, "kind", true, &kind_name, f, "entity.create") || !agent_get_id(op, "parent", &x->refs, false, &parent, f, "entity.create") ||
         !agent_get_id(op, "asset", &x->refs, false, &asset, f, "entity.create")) return false;
-    if (!agent_widget_from_name(kind_name, &kind)) return fl_fail(f, "invalid_argument", "entity.create: kind must be group, rectangle, ellipse, line, arrow, text, image or video");
+    if (!agent_widget_from_name(kind_name, &kind)) return fl_fail(f, "invalid_argument", "entity.create: kind must be group, rectangle, ellipse, triangle, diamond, hexagon, star, line, arrow, text, image or video");
     if (parent && !fl_scene_entity(s, parent)) return fl_fail(f, "not_found", "entity.create: parent %llu is not in scene %llu", (unsigned long long)parent, (unsigned long long)s->id);
     const cJSON *props = cJSON_GetObjectItemCaseSensitive(op, "props");
     if (props && !agent_object(props, f, "entity.create props")) return false;

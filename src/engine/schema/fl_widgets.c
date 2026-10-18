@@ -15,12 +15,55 @@ static const Fl_WidgetDef definitions[FL_WIDGET_COUNT] = {
     {FL_WIDGET_TEXT, "Text", "Editable text block", {0,0,480,160,0,1,1}, {{230,233,238,255},{0,0,0,0},0,48}, true,false,true,false,false},
     {FL_WIDGET_IMAGE, "Image", "Picture from the project's assets", {0,0,320,180,0,1,1}, {{255,255,255,255},{0,0,0,0},0,48}, false,false,false,true,false},
     {FL_WIDGET_VIDEO, "Video", "Video clip from the project's assets", {0,0,320,180,0,1,1}, {{255,255,255,255},{0,0,0,0},0,48}, false,false,false,false,true},
+    {FL_WIDGET_TRIANGLE, "Triangle", "Triangle pointing up", {0,0,240,208,0,1,1}, {{232,112,92,255},{230,233,238,255},0,48}, true,true,false,false,false},
+    {FL_WIDGET_DIAMOND, "Diamond", "Rhombus, for decisions and highlights", {0,0,240,240,0,1,1}, {{168,124,232,255},{230,233,238,255},0,48}, true,true,false,false,false},
+    {FL_WIDGET_HEXAGON, "Hexagon", "Regular six-sided shape", {0,0,260,225,0,1,1}, {{72,190,200,255},{230,233,238,255},0,48}, true,true,false,false,false},
+    {FL_WIDGET_STAR, "Star", "Five-pointed star", {0,0,240,240,0,1,1}, {{245,200,66,255},{230,233,238,255},0,48}, true,true,false,false,false},
 };
 static const Fl_Typography default_typography = {FL_TYPOGRAPHY_DEFAULT_FAMILY, 400, false};
 
 const Fl_WidgetDef *fl_widget_definition(Fl_WidgetKind kind)
 {
     return kind >= 0 && kind < FL_WIDGET_COUNT ? &definitions[kind] : NULL;
+}
+
+bool fl_widget_is_polygon(Fl_WidgetKind kind)
+{
+    return kind >= FL_WIDGET_TRIANGLE && kind < FL_WIDGET_COUNT;
+}
+
+bool fl_widget_is_geometry(Fl_WidgetKind kind)
+{
+    return (kind >= FL_WIDGET_ELLIPSE && kind <= FL_WIDGET_ARROW) || fl_widget_is_polygon(kind);
+}
+
+/* Vertex k of a polygon kind in normalized box coordinates; the renderer's shader uses the same outlines. */
+static void polygon_vertex(Fl_WidgetKind kind, int k, double *x, double *y)
+{
+    static const double pi = 3.14159265358979323846;
+    switch (kind) {
+    case FL_WIDGET_TRIANGLE: *x = k == 0 ? 0 : k == 1 ? 1 : -1; *y = k == 0 ? -1 : 1; break;
+    case FL_WIDGET_DIAMOND: *x = cos(-pi / 2 + k * pi / 2); *y = sin(-pi / 2 + k * pi / 2); break;
+    case FL_WIDGET_HEXAGON: *x = cos(k * pi / 3); *y = sin(k * pi / 3) / 0.86602540378; break;
+    default: {
+        double radius = k % 2 ? 0.4 : 1, angle = -pi / 2 + k * pi / 5;
+        *x = radius * cos(angle); *y = radius * sin(angle) + 0.0955;
+    }
+    }
+}
+
+bool fl_widget_shape_contains(Fl_WidgetKind kind, double nx, double ny)
+{
+    if (kind == FL_WIDGET_ELLIPSE) return nx * nx + ny * ny <= 1;
+    if (!fl_widget_is_polygon(kind)) return false;
+    const int count = kind == FL_WIDGET_TRIANGLE ? 3 : kind == FL_WIDGET_DIAMOND ? 4 : kind == FL_WIDGET_HEXAGON ? 6 : 10;
+    bool inside = false;
+    for (int i = 0, j = count - 1; i < count; j = i++) {
+        double xi, yi, xj, yj;
+        polygon_vertex(kind, i, &xi, &yi); polygon_vertex(kind, j, &xj, &yj);
+        if ((yi > ny) != (yj > ny) && nx < (xj - xi) * (ny - yi) / (yj - yi) + xi) inside = !inside;
+    }
+    return inside;
 }
 
 /* Read/write IEEE754 doubles without native layout or alignment assumptions. */
@@ -59,7 +102,7 @@ const Fl_WidgetDef *fl_widget_for_entity(const Fl_Entity *e)
     if (geometry) {
         if (geometry->version != 1 || geometry->size != 1 || !geometry->data) return NULL;
         Fl_WidgetKind kind = (Fl_WidgetKind)geometry->data[0];
-        return kind >= FL_WIDGET_ELLIPSE && kind <= FL_WIDGET_ARROW ? fl_widget_definition(kind) : NULL;
+        return fl_widget_is_geometry(kind) ? fl_widget_definition(kind) : NULL;
     }
     if (fl_entity_component(e, FL_COMPONENT_VIDEO)) return &definitions[FL_WIDGET_VIDEO];
     if (fl_entity_component(e, FL_COMPONENT_IMAGE)) return &definitions[FL_WIDGET_IMAGE];
@@ -89,7 +132,7 @@ bool fl_widget_component_valid(const Fl_Component *c)
     case FL_COMPONENT_RECTANGLE: return c->size == 4;
     case FL_COMPONENT_TEXT: return !c->size || !memchr(c->data, 0, c->size);
     case FL_COMPONENT_APPEARANCE: { Fl_Appearance a; return fl_appearance_decode(c, &a); }
-    case FL_COMPONENT_GEOMETRY: return c->size == 1 && c->data[0] >= FL_WIDGET_ELLIPSE && c->data[0] <= FL_WIDGET_ARROW;
+    case FL_COMPONENT_GEOMETRY: return c->size == 1 && fl_widget_is_geometry((Fl_WidgetKind)c->data[0]);
     case FL_COMPONENT_TYPOGRAPHY: { Fl_Typography t; return fl_typography_decode(c, &t); }
     case FL_COMPONENT_IMAGE: { Fl_Id asset; return fl_image_asset_decode(c, &asset); }
     case FL_COMPONENT_OPACITY: { double opacity; return fl_opacity_decode(c, &opacity); }

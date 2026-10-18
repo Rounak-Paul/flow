@@ -56,9 +56,8 @@ static double coverage(const Fl_ResolvedEntity *v, Fl_WidgetKind kind, const Fl_
         double lx, ly;
         fl_affine_point(v->inverse, x, y, &lx, &ly);
         if (lx < 0 || ly < 0 || lx > v->local.width || ly > v->local.height) continue;
-        if (kind == FL_WIDGET_ELLIPSE) {
-            double nx = lx / v->local.width * 2 - 1, ny = ly / v->local.height * 2 - 1;
-            if (nx * nx + ny * ny > 1) continue;
+        if (kind == FL_WIDGET_ELLIPSE || fl_widget_is_polygon(kind)) {
+            if (!fl_widget_shape_contains(kind, lx / v->local.width * 2 - 1, ly / v->local.height * 2 - 1)) continue;
         }
         ++inside;
     }
@@ -124,7 +123,7 @@ static unsigned char *rasterize(const Fl_Scene *scene)
             const Fl_ResolvedEntity *v = &geometry.entities[index];
             Fl_WidgetKind kind = v->kind;
             if (!v->visible || !v->invertible || v->opacity <= 0 || v->local.width <= 0 || v->local.height <= 0) continue;
-            if (kind != FL_WIDGET_RECTANGLE && kind != FL_WIDGET_ELLIPSE && kind != FL_WIDGET_IMAGE) continue;
+            if (kind != FL_WIDGET_RECTANGLE && kind != FL_WIDGET_ELLIPSE && kind != FL_WIDGET_IMAGE && !fl_widget_is_polygon(kind)) continue;
             unsigned x0, y0, x1, y1;
             if (!shape_bounds(v, &board, &x0, &y0, &x1, &y1)) continue;
             Fl_Appearance look = first_frame ? first_frame->entities[index].appearance : fl_widget_appearance(&scene->entities[index]);

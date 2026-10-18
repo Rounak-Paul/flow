@@ -105,6 +105,13 @@ static bool create_pipeline(Fl_SceneRenderer *p, VkFormat format)
     const char *fs = "#version 450\nlayout(push_constant) uniform P { vec4 a; vec4 b; vec4 fill; vec4 stroke; vec4 params; vec4 fill2; vec4 extra; } p;"
         "layout(set=0,binding=0) uniform sampler2D mask;layout(location=0) in vec2 uv;layout(location=0) out vec4 color;"
         "float rbox(vec2 q0,vec2 half_size,float r){vec2 q=abs(q0)-half_size+r;return length(max(q,0.))+min(max(q.x,q.y),0.)-r;}"
+        "vec2 vert(int k,float kind){if(kind==8.)return vec2(k==0?0.:(k==1?1.:-1.),k==0?-1.:1.);"
+        "if(kind==9.){float a=-1.5707963+float(k)*1.5707963;return vec2(cos(a),sin(a));}"
+        "if(kind==10.){float a=float(k)*1.0471976;return vec2(cos(a),sin(a)/.8660254);}"
+        "float a=-1.5707963+float(k)*.62831853;float rad=(k%2==0)?1.:.4;return rad*vec2(cos(a),sin(a))+vec2(0.,.0955);}"
+        "float poly(vec2 p,float kind){int n=kind==8.?3:(kind==9.?4:(kind==10.?6:10));vec2 v0=vert(0,kind);float d=dot(p-v0,p-v0);float s=1.;"
+        "for(int i=0,j=n-1;i<n;j=i++){vec2 vi=vert(i,kind),vj=vert(j,kind);vec2 e=vj-vi,w=p-vi;vec2 b=w-e*clamp(dot(w,e)/dot(e,e),0.,1.);d=min(d,dot(b,b));"
+        "bvec3 c=bvec3(p.y>=vi.y,p.y<vj.y,e.x*w.y>e.y*w.x);if(all(c)||all(not(c)))s=-s;}return s*sqrt(d);}"
         "void main(){float kind=p.params.w;vec2 size=p.params.xy;float sw=p.params.z;float r=min(p.extra.x,min(size.x,size.y)*.5);"
         "if(kind==15.){vec2 world=uv*vec2(p.a.w,p.b.w)+size;vec2 cell=world/sw;"
         "vec2 d=abs(fract(cell-.5)-.5)/max(fwidth(cell),vec2(.0001));"
@@ -129,6 +136,7 @@ static bool create_pipeline(Fl_SceneRenderer *p, VkFormat format)
         "float cover=1-smoothstep(-fwidth(shaft),fwidth(shaft),shaft);"
         "if(kind==4.){cover*=1-smoothstep(.79,.8,uv.x);cover=max(cover,1-smoothstep(-fwidth(head),fwidth(head),head));}color=p.stroke;color.a*=cover;return;}"
         "float edge;if(kind==2.){vec2 q=(uv-.5)*2;edge=(length(q)-1)*min(size.x,size.y)*.5;}"
+        "else if(kind>=8.){edge=poly((uv-.5)*2,kind)*min(size.x,size.y)*.5;}"
         "else edge=rbox((uv-.5)*size,size*.5,r);"
         "float aa=max(fwidth(edge),.001);float cover=1-smoothstep(-aa,aa,edge);"
         "float border=sw>0 ? smoothstep(-sw-aa,-sw+aa,edge) : 0;"
@@ -548,7 +556,7 @@ static void draw_entity(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_Scene
         else fl_scene_renderer_styled(p, cmd, frame, v->world, v->local.width, v->local.height, FL_WIDGET_RECTANGLE, placeholder, white, &shape);
         return;
     }
-    if (mask) fl_scene_renderer_styled(p, cmd, frame, v->world, v->local.width, v->local.height, v->kind, look, mask, boxed ? &shape : NULL);
+    if (mask) fl_scene_renderer_styled(p, cmd, frame, v->world, v->local.width, v->local.height, v->kind, look, mask, boxed || fl_widget_is_polygon(v->kind) ? &shape : NULL);
 }
 
 /* Full-access barrier with a layout change; layers are small in number, so simplicity beats precise stages. */

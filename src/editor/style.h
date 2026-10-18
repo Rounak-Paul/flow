@@ -480,7 +480,7 @@
     ".fl-entity-row { width: 100%; flex-shrink: 0; }" \
     ".fl-stage { width: 100%; flex-grow: 1; min-height: 0px; overflow: hidden; border-radius: " FL_RADIUS_CARD_GUTTER "; }" \
     ".fl-library, .fl-inspector { width: 100%; height: 100%; padding: 10px; gap: 10px; overflow-y: auto; background: transparent; }" \
-    ".fl-widget-wrap { width: 90px; height: 72px; flex-shrink: 0; }" \
+    ".fl-widget-wrap { min-width: 90px; flex-grow: 1; height: 72px; }" \
     ".fl-widget-card { width: 100%; height: 100%; padding: 8px 4px; gap: 6px; align-items: center; justify-content: center; background: " FL_COLOR_FIELD "; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: " FL_RADIUS_LG "; }" \
     ".fl-widget-icon { font-size: 22px; color: " FL_COLOR_TEXT_MEDIUM "; }" \
     ".fl-widget-card:hover { border-color: " FL_COLOR_ACCENT "; background: " FL_COLOR_SELECTION "; glow-radius: 10px; glow-color: " FL_COLOR_ACCENT_GLOW "; }" \

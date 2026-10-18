@@ -98,9 +98,8 @@ Fl_Id fl_scene_geometry_pick(const Fl_SceneGeometry *g, const Fl_Scene *s, doubl
         double lx, ly; fl_affine_point(v->inverse, x, y, &lx, &ly);
         double w = v->local.width, h = v->local.height;
         if (w <= 0 || h <= 0) continue;
-        if (v->kind == FL_WIDGET_ELLIPSE) {
-            double nx = lx/w*2-1, ny = ly/h*2-1;
-            if (nx*nx+ny*ny > 1) continue;
+        if (v->kind == FL_WIDGET_ELLIPSE || fl_widget_is_polygon(v->kind)) {
+            if (!fl_widget_shape_contains(v->kind, lx/w*2-1, ly/h*2-1)) continue;
         } else if (v->kind == FL_WIDGET_LINE || v->kind == FL_WIDGET_ARROW) {
             Fl_Appearance appearance = fl_widget_appearance(&s->entities[index]);
             double local_tolerance = fmax(hypot(v->inverse.v[0], v->inverse.v[3]), hypot(v->inverse.v[1], v->inverse.v[4])) * tolerance;

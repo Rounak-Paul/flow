@@ -531,11 +531,11 @@ static void style_section(Fl_Inspector *p,const Fl_WidgetDef *def)
 {
     if (!def) return;
     ca_text(&(Ca_TextDesc){.text="Style",.style=FL_CLASS_HEADING});
-    bool box=def->kind==FL_WIDGET_RECTANGLE||def->kind==FL_WIDGET_GROUP||def->has_image||def->has_video,shape=def->kind==FL_WIDGET_RECTANGLE||def->kind==FL_WIDGET_ELLIPSE;
+    bool box=def->kind==FL_WIDGET_RECTANGLE||def->kind==FL_WIDGET_GROUP||def->has_image||def->has_video,shape=def->kind==FL_WIDGET_RECTANGLE||def->kind==FL_WIDGET_ELLIPSE,filled=shape||fl_widget_is_polygon(def->kind);
     if (box) field(p,RADIUS,"Radius",true);
     ca_checkbox(&(Ca_CheckboxDesc){.text="Clip children",.checked=p->clip,.on_change=clip_changed,.change_data=p,.id="property-clip"});
     field(p,BLUR,"Blur",true);
-    if (shape) {field(p,GRADIENT_TO,"Gradient to",false);field(p,GRADIENT_ANGLE,"Gradient °",true);}
+    if (filled) {field(p,GRADIENT_TO,"Gradient to",false);field(p,GRADIENT_ANGLE,"Gradient °",true);}
     if (shape||def->has_image||def->has_video) {
         field(p,SHADOW_BLUR,"Shadow blur",true);field(p,SHADOW_X,"Shadow X",true);field(p,SHADOW_Y,"Shadow Y",true);field(p,SHADOW_COLOR,"Shadow colour",false);
     }

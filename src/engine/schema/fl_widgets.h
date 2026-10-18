@@ -3,7 +3,8 @@
 
 typedef enum Fl_WidgetKind {
     FL_WIDGET_GROUP, FL_WIDGET_RECTANGLE, FL_WIDGET_ELLIPSE,
-    FL_WIDGET_LINE, FL_WIDGET_ARROW, FL_WIDGET_TEXT, FL_WIDGET_IMAGE, FL_WIDGET_VIDEO, FL_WIDGET_COUNT
+    FL_WIDGET_LINE, FL_WIDGET_ARROW, FL_WIDGET_TEXT, FL_WIDGET_IMAGE, FL_WIDGET_VIDEO,
+    FL_WIDGET_TRIANGLE, FL_WIDGET_DIAMOND, FL_WIDGET_HEXAGON, FL_WIDGET_STAR, FL_WIDGET_COUNT
 } Fl_WidgetKind;
 #define FL_TYPOGRAPHY_DEFAULT_FAMILY "Inter"
 #define FL_TYPOGRAPHY_FAMILY_MAX 255
@@ -26,6 +27,15 @@ typedef struct Fl_WidgetDef {
     Fl_Appearance appearance;
     bool has_fill, has_stroke, has_text, has_image, has_video;
 } Fl_WidgetDef;
+/* True for the fill-and-stroke polygon shapes (triangle, diamond, hexagon, star). */
+bool fl_widget_is_polygon(Fl_WidgetKind kind);
+/* True for kinds stored as a geometry component (ellipse, line, arrow and the polygons). */
+bool fl_widget_is_geometry(Fl_WidgetKind kind);
+/*
+ * Whether the point (nx, ny) lies inside an ellipse or polygon kind, in coordinates normalized to the box:
+ * -1..1 on both axes, y downwards. False for other kinds.
+ */
+bool fl_widget_shape_contains(Fl_WidgetKind kind, double nx, double ny);
 /* Borrow the immutable definition for kind; NULL for invalid kinds. */
 const Fl_WidgetDef *fl_widget_definition(Fl_WidgetKind kind);
 /* Infer entity's primitive from its persisted components; NULL for unknown geometry. */
