@@ -112,5 +112,8 @@ bool fl_fs_flush(FILE *file);
  */
 bool fl_fs_commit(const char *from, const char *path);
 
+/* Restrict a file to the current user (mode 0600). No-op on Windows, where profile ACLs already do this. */
+bool fl_fs_make_private(const char *path);
+
 /* Resolve an existing path to an absolute UTF-8 path, writing at most cap bytes. */
 bool fl_fs_absolute(const char *path, char *out, size_t cap);

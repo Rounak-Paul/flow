@@ -331,6 +331,16 @@ static bool sync_parent(const char *path)
 #endif
 }
 
+bool fl_fs_make_private(const char *path)
+{
+#if defined(_WIN32)
+    (void)path;
+    return true;
+#else
+    return chmod(path, S_IRUSR | S_IWUSR) == 0;
+#endif
+}
+
 bool fl_fs_absolute(const char *path, char *out, size_t cap)
 {
     if (!path || !out || !cap) return false;

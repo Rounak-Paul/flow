@@ -3,6 +3,7 @@
 #include "fl_menubar.h"
 #include "fl_workspace.h"
 #include "fl_launcher.h"
+#include "fl_mcp_service.h"
 #include "core/fl_clock.h"
 #include "style.h"
 
@@ -32,6 +33,7 @@ struct Fl_Editor {
     Fl_Workspace     *workspace;
     Fl_MenuBar       *menubar;
     Fl_Launcher *launcher;
+    Fl_McpService *mcp;
     Fl_Project *project;
     uint64_t save_after;
     bool show_projects;
@@ -186,6 +188,7 @@ static void on_worker_exit(uint32_t worker_index, void *user_data)
 static void on_main_window_close(Ca_Window *window, void *user_data)
 {
     Fl_Editor *editor = user_data;
+    fl_mcp_service_detach(editor->mcp);
     /* Menus and the workspace (which closes its floating windows) go while the main window exists. */
     fl_menubar_destroy(editor->menubar);
     editor->menubar = NULL;
@@ -373,6 +376,7 @@ static bool start_ui(Fl_Editor *editor)
         FL_LOG_ERROR(LOG_TAG, "failed to register event bus pump");
         return false;
     }
+    editor->mcp = fl_mcp_service_create(editor->bus, editor->instance);
     return true;
 }
 
@@ -398,6 +402,7 @@ static bool open_project_window(Fl_Editor *editor)
     }
 
     ca_window_set_title(editor->window, fl_project_name(editor->project));
+    fl_mcp_service_attach(editor->mcp, editor->project, editor->window, editor->workspace);
     return true;
 }
 
@@ -429,6 +434,9 @@ void fl_editor_destroy(Fl_Editor *editor)
     if (!editor) return;
     FL_LOG_INFO(LOG_TAG, "shutting down");
 
+    /* Agents are cut off first so no tool call can reach a project that is about to close. */
+    fl_mcp_service_destroy(editor->mcp);
+    editor->mcp = NULL;
     /* Job clients (workspace importer/preview, fonts) wait on their own jobs before the pool stops. */
     fl_menubar_destroy(editor->menubar);
     editor->menubar = NULL;

@@ -45,6 +45,7 @@ struct Fl_Project {
     Fl_EventBus *bus;
     Fl_EventType changed;
     FILE *lock;
+    uint64_t generation;
     bool dirty, publishing;
 };
 
@@ -657,7 +658,7 @@ bool fl_project_apply(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
     default: return false;
     }
     if (s) ++s->revision;
-    p->dirty = true;
+    p->dirty = true; ++p->generation;
     if (out_id) *out_id = created;
     if (p->bus) {
         Fl_ProjectChange change = {p, op->kind, op->kind == FL_OP_SCENE_ADD ? created : op->scene,
@@ -668,26 +669,29 @@ bool fl_project_apply(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
     return true;
 }
 
+/* Serialize one scene document into stream. */
+static void encode_scene(const Fl_Scene *s, Fl_Binary *b)
+{
+    fl_binary_u64(b, s->id); fl_binary_u64(b, s->revision); fl_binary_string(b, s->name);
+    fl_binary_u64(b, s->width); fl_binary_u64(b, s->height); fl_binary_u64(b, s->duration);
+    fl_binary_u64(b, s->entity_count);
+    for (size_t i = 0; i < s->entity_count; ++i) {
+        const Fl_Entity *e = &s->entities[i];
+        fl_binary_u64(b, e->id); fl_binary_u64(b, e->parent); fl_binary_string(b, e->name);
+        fl_binary_u64(b, e->visible); fl_binary_u64(b, e->component_count);
+        for (size_t j = 0; j < e->component_count; ++j) fl_component_write(&e->components[j], b);
+    }
+    fl_timeline_save(s, b);
+    fl_binary_u64(b, s->aspect_width); fl_binary_u64(b, s->aspect_height);
+    const double camera[2] = {s->camera_x, s->camera_y};
+    for (size_t i = 0; i < 2; ++i) { uint64_t bits; memcpy(&bits, &camera[i], sizeof(bits)); fl_binary_u64(b, bits); }
+}
+
 /* Encode one independently replaceable scene document. */
 static bool save_scene(const Fl_Project *p, const Fl_Scene *s)
 {
     Fl_Binary b = {0}; char path[FL_PATH_MAX];
-    fl_binary_u64(&b, s->id); fl_binary_u64(&b, s->revision); fl_binary_string(&b, s->name);
-    fl_binary_u64(&b, s->width); fl_binary_u64(&b, s->height); fl_binary_u64(&b, s->duration);
-    fl_binary_u64(&b, s->entity_count);
-    for (size_t i = 0; i < s->entity_count; ++i) {
-        const Fl_Entity *e = &s->entities[i];
-        fl_binary_u64(&b, e->id); fl_binary_u64(&b, e->parent); fl_binary_string(&b, e->name);
-        fl_binary_u64(&b, e->visible); fl_binary_u64(&b, e->component_count);
-        for (size_t j = 0; j < e->component_count; ++j) {
-            const Fl_Component *c = &e->components[j];
-            fl_component_write(c, &b);
-        }
-    }
-    fl_timeline_save(s, &b);
-    fl_binary_u64(&b, s->aspect_width); fl_binary_u64(&b, s->aspect_height);
-    const double camera[2] = {s->camera_x, s->camera_y};
-    for (size_t i = 0; i < 2; ++i) { uint64_t bits; memcpy(&bits, &camera[i], sizeof(bits)); fl_binary_u64(&b, bits); }
+    encode_scene(s, &b);
     bool ok = project_path(p, s->id, s->revision, path) && fl_binary_save(&b, path, "FLSCENE\0", SCENE_VERSION);
     free(b.data); return ok;
 }
@@ -733,6 +737,103 @@ bool fl_project_save(Fl_Project *p)
     return ok;
 }
 
+static bool decode_scene(Fl_Project *p, Fl_Scene *s, const Fl_Binary *input);
+
+uint64_t fl_project_generation(const Fl_Project *p) { return p ? p->generation : 0; }
+
+/* One scene's encoded document inside a snapshot. */
+typedef struct Fl_SnapshotScene { Fl_Id id; uint64_t revision; Fl_Binary data; } Fl_SnapshotScene;
+struct Fl_Snapshot { Fl_SnapshotScene *scenes; size_t count, bytes; };
+
+void fl_snapshot_destroy(Fl_Snapshot *snapshot)
+{
+    if (!snapshot) return;
+    for (size_t i = 0; i < snapshot->count; ++i) free(snapshot->scenes[i].data.data);
+    free(snapshot->scenes); free(snapshot);
+}
+
+size_t fl_snapshot_bytes(const Fl_Snapshot *snapshot) { return snapshot ? snapshot->bytes : 0; }
+
+Fl_Snapshot *fl_project_snapshot(const Fl_Project *p)
+{
+    if (!p || p->owner != fl_thread_current_id()) return NULL;
+    Fl_Snapshot *snapshot = calloc(1, sizeof(*snapshot));
+    if (!snapshot) return NULL;
+    snapshot->scenes = p->count ? calloc(p->count, sizeof(*snapshot->scenes)) : NULL;
+    if (p->count && !snapshot->scenes) {free(snapshot); return NULL;}
+    for (size_t i = 0; i < p->count; ++i) {
+        Fl_SnapshotScene *entry = &snapshot->scenes[snapshot->count++];
+        entry->id = p->scenes[i].id; entry->revision = p->scenes[i].revision;
+        encode_scene(&p->scenes[i], &entry->data);
+        if (entry->data.failed) {fl_snapshot_destroy(snapshot); return NULL;}
+        snapshot->bytes += entry->data.size;
+    }
+    return snapshot;
+}
+
+/* Revision a restored scene must use so it never collides with a committed or pending-delete file. */
+static uint64_t restored_revision(const Fl_Project *p, Fl_Id id, uint64_t snapshot_revision)
+{
+    uint64_t highest = snapshot_revision;
+    for (size_t i = 0; i < p->count; ++i) if (p->scenes[i].id == id && p->scenes[i].revision > highest) highest = p->scenes[i].revision;
+    for (size_t i = 0; i < p->retired_count; ++i) if (p->retired[i].id == id && p->retired[i].revision > highest) highest = p->retired[i].revision;
+    return highest + 1;
+}
+
+bool fl_project_restore(Fl_Project *p, const Fl_Snapshot *snapshot)
+{
+    if (!p || !snapshot || p->publishing || p->owner != fl_thread_current_id()) return false;
+    Fl_Scene *scenes = snapshot->count ? calloc(snapshot->count, sizeof(*scenes)) : NULL;
+    uint64_t *saved = snapshot->count ? calloc(snapshot->count, sizeof(*saved)) : NULL;
+    size_t removed = 0;
+    for (size_t i = 0; i < p->count; ++i) {
+        bool kept = false;
+        for (size_t j = 0; j < snapshot->count; ++j) kept |= snapshot->scenes[j].id == p->scenes[i].id;
+        removed += !kept && p->saved[i];
+    }
+    Fl_Retired *retired = removed ? realloc(p->retired, (p->retired_count + removed) * sizeof(*retired)) : p->retired;
+    bool ok = (!snapshot->count || (scenes && saved)) && (!removed || retired);
+    if (retired) p->retired = retired;
+    for (size_t i = 0; ok && i < snapshot->count; ++i) {
+        const Fl_SnapshotScene *entry = &snapshot->scenes[i];
+        scenes[i].id = entry->id; scenes[i].revision = entry->revision;
+        ok = entry->revision < UINT64_MAX - 1 && decode_scene(p, &scenes[i], &entry->data);
+        scenes[i].revision = restored_revision(p, entry->id, entry->revision);
+        for (size_t j = 0; j < p->count; ++j) if (p->scenes[j].id == entry->id) saved[i] = p->saved[j];
+    }
+    if (!ok) {
+        for (size_t i = 0; i < snapshot->count && scenes; ++i) free_scene(&scenes[i]);
+        free(scenes); free(saved); return false;
+    }
+    for (size_t i = 0; i < p->count; ++i) {
+        bool kept = false;
+        for (size_t j = 0; j < snapshot->count; ++j) kept |= snapshot->scenes[j].id == p->scenes[i].id;
+        if (!kept && p->saved[i]) p->retired[p->retired_count++] = (Fl_Retired){p->scenes[i].id, p->saved[i]};
+    }
+    Fl_Id *previous = p->count ? malloc(p->count * sizeof(*previous)) : NULL;
+    size_t previous_count = previous ? p->count : 0;
+    for (size_t i = 0; i < previous_count; ++i) previous[i] = p->scenes[i].id;
+    for (size_t i = 0; i < p->count; ++i) free_scene(&p->scenes[i]);
+    free(p->scenes); free(p->saved);
+    p->scenes = scenes; p->saved = saved; p->count = snapshot->count;
+    p->dirty = true; ++p->generation;
+    if (p->bus) {
+        p->publishing = true;
+        for (size_t i = 0; i < previous_count; ++i) {
+            if (fl_project_scene(p, previous[i])) continue;
+            Fl_ProjectChange change = {p, FL_OP_RESTORE, previous[i], 0, 0};
+            fl_event_publish(p->bus, p->changed, &change, sizeof(change));
+        }
+        for (size_t i = 0; i < p->count; ++i) {
+            Fl_ProjectChange change = {p, FL_OP_RESTORE, p->scenes[i].id, 0, 0};
+            fl_event_publish(p->bus, p->changed, &change, sizeof(change));
+        }
+        p->publishing = false;
+    }
+    free(previous);
+    return true;
+}
+
 Fl_Project *fl_project_create(const char *directory, const char *name, Fl_EventBus *bus)
 {
     if (!name || !name[0] || !directory || !fl_fs_mkdir_p(directory)) return NULL;
@@ -760,11 +861,9 @@ static size_t read_count(Fl_Binary *b, size_t stride, size_t minimum)
 }
 
 /* Decode and validate component and entity records without trusting stored sizes. */
-static bool load_scene(Fl_Project *p, Fl_Scene *s)
+static bool decode_scene(Fl_Project *p, Fl_Scene *s, const Fl_Binary *input)
 {
-    char path[FL_PATH_MAX]; Fl_Binary b; uint64_t version;
-    if (!project_path(p, s->id, s->revision, path) || !fl_binary_load(&b, path, "FLSCENE\0", SCENE_VERSION, &version)) return false;
-    if (version != SCENE_VERSION) {free(b.data); return false;}
+    Fl_Binary b = *input;
     uint64_t id = fl_binary_get_u64(&b), revision = fl_binary_get_u64(&b);
     s->name = fl_binary_get_string(&b);
     s->width = fl_binary_get_u64(&b); s->height = fl_binary_get_u64(&b); s->duration = fl_binary_get_u64(&b);
@@ -815,6 +914,15 @@ static bool load_scene(Fl_Project *p, Fl_Scene *s)
     bool ok = !b.failed && b.cursor == b.size && id == s->id && revision == s->revision &&
               s->name && s->name[0] && s->width && s->width <= 65536 && s->height && s->height <= 65536 &&
               s->duration && s->duration <= INT64_MAX;
+    return ok;
+}
+
+/* Read a committed scene snapshot whose id and revision come from the manifest. */
+static bool load_scene(Fl_Project *p, Fl_Scene *s)
+{
+    char path[FL_PATH_MAX]; Fl_Binary b; uint64_t version;
+    if (!project_path(p, s->id, s->revision, path) || !fl_binary_load(&b, path, "FLSCENE\0", SCENE_VERSION, &version)) return false;
+    bool ok = version == SCENE_VERSION && decode_scene(p, s, &b);
     free(b.data); return ok;
 }
 

@@ -127,6 +127,11 @@ void fl_cond_wait(Fl_CondVar *cond, Fl_Mutex *mutex)
     SleepConditionVariableSRW((PCONDITION_VARIABLE)&cond->cv, (PSRWLOCK)&mutex->srw, INFINITE, 0);
 }
 
+bool fl_cond_wait_ms(Fl_CondVar *cond, Fl_Mutex *mutex, uint32_t timeout_ms)
+{
+    return SleepConditionVariableSRW((PCONDITION_VARIABLE)&cond->cv, (PSRWLOCK)&mutex->srw, timeout_ms, 0) != 0;
+}
+
 void fl_cond_signal(Fl_CondVar *cond)
 {
     WakeConditionVariable((PCONDITION_VARIABLE)&cond->cv);
@@ -139,6 +144,8 @@ void fl_cond_broadcast(Fl_CondVar *cond)
 
 #else
 
+#include <errno.h>
+#include <time.h>
 #include <unistd.h>
 
 struct Fl_Thread {
@@ -237,6 +244,16 @@ void fl_cond_destroy(Fl_CondVar *cond)
 void fl_cond_wait(Fl_CondVar *cond, Fl_Mutex *mutex)
 {
     pthread_cond_wait(&cond->handle, &mutex->handle);
+}
+
+bool fl_cond_wait_ms(Fl_CondVar *cond, Fl_Mutex *mutex, uint32_t timeout_ms)
+{
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += timeout_ms / 1000u;
+    deadline.tv_nsec += (long)(timeout_ms % 1000u) * 1000000L;
+    if (deadline.tv_nsec >= 1000000000L) {++deadline.tv_sec; deadline.tv_nsec -= 1000000000L;}
+    return pthread_cond_timedwait(&cond->handle, &mutex->handle, &deadline) != ETIMEDOUT;
 }
 
 void fl_cond_signal(Fl_CondVar *cond)

@@ -570,8 +570,8 @@ Future semantic packs will expose typed parameters and stable named parts throug
 | Audio | **miniaudio** | Single-file C, decode + mix + playback; presenter clock follows the audio device clock |
 | Word alignment | `Fl_Aligner` interface: imported JSON, reading-rate estimate, whisper.cpp backend (v0.2) | Offline-first, swappable |
 | Video encode | Embedded **ffmpeg** sidecar | Broad codecs (platform H.264, SVT-AV1, ProRes, VP9) without linking FFmpeg |
-| IPC | Own `fl_sock` (UDS / named pipes) + JSON-RPC 2.0 | No dependencies; same protocol for CLI and MCP |
-| MCP | Own `fl_mcp` (MCP over stdio, JSON-RPC 2.0) | Small protocol surface; no runtime dependency |
+| IPC | Loopback HTTP via vendored **CivetWeb** (MIT) | Embedded server for the editor-hosted MCP endpoint; CLI modes remain planned |
+| MCP | Own `fl_mcp` core (MCP Streamable HTTP, JSON-RPC 2.0) + vendored **cJSON** (MIT) | Small protocol surface; the editor itself is the MCP server |
 | Hashing | Built-in SHA-256, CRC32C | Content addressing, oplog integrity |
 | Tests | CTest: unit, property-style randomized op round-trips (seeded), fault-injection on allocation and I/O, golden frames | Correctness of the document model is the product |
 | Sanitizers | ASan + UBSan CI job; `-Wall -Wextra -Werror` | Stability first |
@@ -583,23 +583,25 @@ Future semantic packs will expose typed parameters and stable named parts throug
 
 ### 7.1 Integration surface
 
-- **MCP server** (primary). Any MCP-capable agent connects with `flow mcp` (stdio). The shim connects to the running app over the local socket, and launches the app in headless mode if it isn't running.
+- **MCP server** (primary, implemented). The running editor serves MCP over loopback HTTP (`http://127.0.0.1:<port>/mcp`, Streamable HTTP, bearer-token auth, Origin/Host checks). Any MCP-capable agent connects with its HTTP transport; the user sees every change live because tools run on the UI thread through the same operations as the GUI. Setup and the tool list: `docs/mcp.md`.
 - **CLI** (secondary, for scripting): `flow op apply ops.json`, `flow render --beat b12 --out f.png`, `flow lint`.
 - **Format spec.** `docs/format.md` documents the schema, so an agent can read the files even without MCP. **Writes still go through ops.**
 
 ### 7.2 MCP tools
 
+Implemented tools (details in `docs/mcp.md`):
+
 | Tool | Purpose |
 |---|---|
-| `get_context(selectionToken)` | The context packet for the user's current Point-and-Ask selection |
-| `query(scope, filter)` | Find entities by kind, name, part, tag or text |
-| `describe_component(kind)` | Parameter schema, parts, examples |
-| `draft_changeset(scope, ops, rationale)` | Create or extend a private draft; returns validation errors |
-| `render_frames(draftId, targets[])` | PNGs of the draft state at beats or times, cropped to scope |
-| `lint(draftId)` | Lint issues for the draft state |
-| `propose(draftId, summary)` | Send the draft to the user for review |
-| `request_scope(draftId, entityIds, reason)` | Ask to escalate write scope |
-| `list_assets / add_asset` | Asset management (content-addressed) |
+| `get_reference` | Units, operation vocabulary, animation and Lua scripting manual |
+| `get_project`, `get_scene`, `evaluate_scene` | Scenes and assets; a scene's full contents; resolved values at a time |
+| `apply_ops` | Atomic, undoable batch of typed operations with temporary ids, revision preconditions and dry run |
+| `undo`, `redo` | Whole-changeset history, refused when the document changed in between |
+| `render_frame` | PNG of a scene at a time, as the editor draws it |
+| `get_editor_state`, `set_editor_state` | Scene, playhead and selection shown to the user |
+| `import_asset`, `save_project` | Asset import and explicit save |
+
+Planned (not implemented): Point-and-Ask context packets, drafts and review, scope escalation, `lint`.
 
 The agent never gets a "write file" capability for project files.
 

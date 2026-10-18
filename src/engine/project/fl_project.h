@@ -75,7 +75,8 @@ typedef enum Fl_OpKind {
     FL_OP_ASSET_ADD, FL_OP_ASSET_REMOVE, FL_OP_ASSET_RENAME,
     FL_OP_BEAT_ADD, FL_OP_BEAT_REMOVE, FL_OP_BEAT_UPDATE, FL_OP_BEAT_MOVE,
     FL_OP_KEY_SET, FL_OP_KEY_REMOVE, FL_OP_TRACK_REMOVE,
-    FL_OP_CLIP_ADD, FL_OP_CLIP_UPDATE, FL_OP_CLIP_REMOVE, FL_OP_BEAT_SPLIT, FL_OP_SCENE_ASPECT, FL_OP_SCENE_CAMERA
+    FL_OP_CLIP_ADD, FL_OP_CLIP_UPDATE, FL_OP_CLIP_REMOVE, FL_OP_BEAT_SPLIT, FL_OP_SCENE_ASPECT, FL_OP_SCENE_CAMERA,
+    FL_OP_RESTORE /* notification kind only: scenes were replaced by fl_project_restore; never a valid operation */
 } Fl_OpKind;
 /* One local transform replacement in an atomic selection gesture. */
 typedef struct Fl_TransformEdit { Fl_Id entity; Fl_Transform transform; } Fl_TransformEdit;
@@ -124,6 +125,21 @@ typedef struct Fl_ProjectChange { Fl_Project *project; Fl_OpKind kind; Fl_Id sce
 Fl_Project *fl_project_create(const char *directory, const char *name, Fl_EventBus *bus);
 /* Open and validate a binary project of the current format with its exclusive process lock. */
 Fl_Project *fl_project_open(const char *directory, Fl_EventBus *bus);
+/* Count of successful document mutations; changes on every apply and restore. */
+uint64_t fl_project_generation(const Fl_Project *project);
+/* Point-in-time copy of every scene, for atomic multi-operation transactions and undo.
+   Assets are content-addressed and outside the snapshot. */
+typedef struct Fl_Snapshot Fl_Snapshot;
+/* Capture all scenes; NULL on allocation failure or from a non-owner thread. */
+Fl_Snapshot *fl_project_snapshot(const Fl_Project *project);
+/* Replace the project's scenes with the snapshot's. Restored scenes receive fresh revisions, scenes absent
+   from the snapshot are removed, and FL_OP_RESTORE is published per affected scene. False leaves the
+   project untouched. */
+bool fl_project_restore(Fl_Project *project, const Fl_Snapshot *snapshot);
+/* Encoded size of the snapshot, for history budgeting. */
+size_t fl_snapshot_bytes(const Fl_Snapshot *snapshot);
+/* Release a snapshot. NULL is safe. */
+void fl_snapshot_destroy(Fl_Snapshot *snapshot);
 /* Free the project and release the lock. Does not implicitly save. NULL is safe. */
 void fl_project_destroy(Fl_Project *project);
 /* Owner-thread only. Apply one validated operation atomically; out_id receives a created object's id. */

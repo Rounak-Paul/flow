@@ -1,0 +1,404 @@
+#include "flow_test.h"
+#include "agent/fl_agent.h"
+#include "agent/fl_history.h"
+#include "agent/fl_mcp.h"
+#include "agent/fl_mcp_http.h"
+#include "core/fl_thread.h"
+#include "media/fl_png.h"
+#include "platform/fl_fs.h"
+#include "platform/fl_paths.h"
+#include <civetweb.h>
+#include <math.h>
+#include <stdlib.h>
+#include <string.h>
+
+static Fl_Project *g_project;
+static Fl_Project *host_project(void *user) {(void)user; return g_project;}
+
+/* Parse literal JSON text; the tests build every request this way. */
+static cJSON *json(const char *text)
+{
+    cJSON *value = cJSON_Parse(text);
+    CHECK(value != NULL);
+    return value;
+}
+
+/* Call a tool with JSON arguments; returns the result (NULL on error, with *error set). */
+static cJSON *call(Fl_Agent *agent, const char *tool, const char *arguments, cJSON **error)
+{
+    cJSON *args = arguments ? json(arguments) : NULL;
+    cJSON *result = fl_agent_call(agent, tool, args, error);
+    cJSON_Delete(args);
+    return result;
+}
+
+static double number(const cJSON *object, const char *key)
+{
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(object, key);
+    CHECK(cJSON_IsNumber(item));
+    return cJSON_IsNumber(item) ? item->valuedouble : NAN;
+}
+
+static bool error_code(const cJSON *error, const char *code)
+{
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(error, "code");
+    return cJSON_IsString(item) && !strcmp(item->valuestring, code);
+}
+
+/* Find an entity in a get_scene result by name. */
+static const cJSON *entity_named(const cJSON *scene, const char *name)
+{
+    const cJSON *list = cJSON_GetObjectItemCaseSensitive(scene, "entity_list"), *item;
+    cJSON_ArrayForEach(item, list) {
+        const cJSON *n = cJSON_GetObjectItemCaseSensitive(item, "name");
+        if (cJSON_IsString(n) && !strcmp(n->valuestring, name)) return item;
+    }
+    return NULL;
+}
+
+static size_t entity_count(Fl_Id scene) {return fl_project_scene(g_project, scene)->entity_count;}
+
+/* Operations build content, validate atomically, support expectations, dry runs and undo/redo. */
+static void test_authoring(Fl_Agent *agent, Fl_Id scene)
+{
+    cJSON *error = NULL, *result;
+    char request[2048];
+    snprintf(request, sizeof(request),
+        "{\"label\":\"Intro\",\"ops\":["
+        "{\"op\":\"entity.create\",\"scene\":%llu,\"kind\":\"rectangle\",\"as\":\"$box\",\"props\":{\"name\":\"Box\",\"x\":100,\"y\":50,\"width\":200,\"height\":100,\"fill\":\"#ff0000\",\"rotation\":90}},"
+        "{\"op\":\"entity.create\",\"scene\":%llu,\"kind\":\"text\",\"parent\":\"$box\",\"as\":\"$t\",\"props\":{\"name\":\"Title\",\"text\":\"Hello\",\"font_size\":64}},"
+        "{\"op\":\"key.set\",\"entity\":\"$box\",\"property\":\"x\",\"at\":0,\"value\":100},"
+        "{\"op\":\"key.set\",\"entity\":\"$box\",\"property\":\"x\",\"at\":2,\"value\":600,\"ease\":\"in_out\"},"
+        "{\"op\":\"script.set\",\"entity\":\"$t\",\"source\":\"function on_evaluate(self, time) self.transform.y = self.transform.y + 10 end\"}"
+        "]}", (unsigned long long)scene, (unsigned long long)scene);
+    cJSON *args = json(request);
+    result = fl_agent_call(agent, "apply_ops", args, &error);
+    cJSON_Delete(args);
+    CHECK(result && !error);
+    if (!result) {char *text = error ? cJSON_Print(error) : NULL; if (text) fprintf(stderr, "%s\n", text); free(text); return;}
+    CHECK(number(result, "applied") == 5 && number(result, "undo_available") == 1);
+    cJSON_Delete(result);
+    CHECK(entity_count(scene) == 2);
+
+    char scene_args[64];
+    snprintf(scene_args, sizeof(scene_args), "{\"scene\":%llu,\"include_scripts\":true}", (unsigned long long)scene);
+    result = call(agent, "get_scene", scene_args, &error);
+    CHECK(result != NULL);
+    const cJSON *box = entity_named(result, "Box"), *title = entity_named(result, "Title");
+    CHECK(box && title);
+    CHECK(fabs(number(box, "rotation") - 90) < 1e-9 && number(box, "width") == 200);
+    const cJSON *fill = cJSON_GetObjectItemCaseSensitive(box, "fill");
+    CHECK(cJSON_IsString(fill) && !strcmp(fill->valuestring, "#ff0000ff"));
+    const cJSON *tracks = cJSON_GetObjectItemCaseSensitive(box, "tracks");
+    CHECK(cJSON_GetArraySize(tracks) == 1 && cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(tracks->child, "keys")) == 2);
+    CHECK(number(title, "parent") == number(box, "id") && !strcmp(cJSON_GetObjectItemCaseSensitive(title, "text")->valuestring, "Hello"));
+    const cJSON *script = cJSON_GetObjectItemCaseSensitive(title, "script");
+    CHECK(script && cJSON_GetObjectItemCaseSensitive(script, "source"));
+    double revision = number(result, "revision"), box_id = number(box, "id");
+    cJSON_Delete(result);
+
+    /* Evaluation applies keyframes (linear towards the in_out key) and scripts. */
+    snprintf(scene_args, sizeof(scene_args), "{\"scene\":%llu,\"time\":1}", (unsigned long long)scene);
+    result = call(agent, "evaluate_scene", scene_args, &error);
+    CHECK(result != NULL);
+    if (result) {
+        const cJSON *list = cJSON_GetObjectItemCaseSensitive(result, "entities");
+        CHECK(fabs(number(list->child, "x") - 350) < 1e-6);
+        CHECK(!cJSON_GetObjectItemCaseSensitive(list->child->next, "script_error"));
+    }
+    cJSON_Delete(result);
+
+    /* A failing operation applies nothing, and names the failing index. */
+    snprintf(request, sizeof(request),
+        "{\"ops\":[{\"op\":\"entity.create\",\"scene\":%llu,\"kind\":\"ellipse\"},{\"op\":\"key.set\",\"entity\":\"$missing\",\"property\":\"x\",\"at\":0,\"value\":1}]}",
+        (unsigned long long)scene);
+    result = call(agent, "apply_ops", request, &error);
+    CHECK(!result && error && error_code(error, "unknown_reference") && number(error, "op_index") == 1);
+    cJSON_Delete(error); error = NULL;
+    CHECK(entity_count(scene) == 2);
+    snprintf(request, sizeof(request),
+        "{\"ops\":[{\"op\":\"entity.create\",\"scene\":%llu,\"kind\":\"ellipse\"},{\"op\":\"key.set\",\"entity\":%.0f,\"property\":\"x\",\"at\":99,\"value\":1}]}",
+        (unsigned long long)scene, box_id);
+    result = call(agent, "apply_ops", request, &error);
+    CHECK(!result && error && error_code(error, "rejected"));
+    cJSON_Delete(error); error = NULL;
+    CHECK(entity_count(scene) == 2);
+
+    /* Typos and inapplicable properties are rejected, not ignored. */
+    snprintf(request, sizeof(request), "{\"ops\":[{\"op\":\"entity.set\",\"entity\":%.0f,\"props\":{\"colour\":\"#fff\"}}]}", box_id);
+    result = call(agent, "apply_ops", request, &error);
+    CHECK(!result && error_code(error, "unknown_field")); cJSON_Delete(error); error = NULL;
+    snprintf(request, sizeof(request), "{\"ops\":[{\"op\":\"entity.set\",\"entity\":%.0f,\"props\":{\"text\":\"x\"}}]}", box_id);
+    result = call(agent, "apply_ops", request, &error);
+    CHECK(!result && error_code(error, "not_applicable")); cJSON_Delete(error); error = NULL;
+
+    /* Stale expectations refuse the batch before touching anything. */
+    snprintf(request, sizeof(request), "{\"expect\":{\"%llu\":%.0f},\"ops\":[{\"op\":\"scene.rename\",\"scene\":%llu,\"name\":\"X\"}]}",
+             (unsigned long long)scene, revision - 1, (unsigned long long)scene);
+    result = call(agent, "apply_ops", request, &error);
+    CHECK(!result && error_code(error, "revision_conflict") && cJSON_GetObjectItemCaseSensitive(error, "changed_scenes"));
+    cJSON_Delete(error); error = NULL;
+
+    /* Dry runs validate and report ids but leave the document alone. */
+    snprintf(request, sizeof(request), "{\"dry_run\":true,\"ops\":[{\"op\":\"entity.create\",\"scene\":%llu,\"kind\":\"line\",\"as\":\"$l\"}]}", (unsigned long long)scene);
+    result = call(agent, "apply_ops", request, &error);
+    CHECK(result && cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(result, "dry_run")) && entity_count(scene) == 2);
+    cJSON_Delete(result);
+
+    /* Whole-changeset undo/redo. */
+    result = call(agent, "undo", NULL, &error);
+    CHECK(result && entity_count(scene) == 0);
+    cJSON_Delete(result);
+    result = call(agent, "redo", NULL, &error);
+    CHECK(result && entity_count(scene) == 2);
+    cJSON_Delete(result);
+    result = call(agent, "redo", NULL, &error);
+    CHECK(!result && error_code(error, "nothing_to_do")); cJSON_Delete(error); error = NULL;
+
+    /* An outside edit makes the entry unsafe to undo; nothing is overwritten. */
+    CHECK(fl_project_apply(g_project, &(Fl_Op){.kind = FL_OP_SCENE_RENAME, .scene = scene, .name = "Edited by hand"}, NULL));
+    result = call(agent, "undo", NULL, &error);
+    CHECK(!result && error_code(error, "conflict") && entity_count(scene) == 2);
+    cJSON_Delete(error); error = NULL;
+    CHECK(!strcmp(fl_project_scene(g_project, scene)->name, "Edited by hand"));
+}
+
+/* Scene-list changes undo as whole changesets and the restored project saves and reopens. */
+static void test_scene_history(Fl_Agent *agent, const char *directory)
+{
+    cJSON *error = NULL, *result;
+    size_t scenes = fl_project_scene_count(g_project);
+    result = call(agent, "apply_ops", "{\"ops\":[{\"op\":\"scene.add\",\"name\":\"Second\",\"as\":\"$s\"},"
+        "{\"op\":\"entity.create\",\"scene\":\"$s\",\"kind\":\"ellipse\",\"props\":{\"name\":\"Dot\"}}]}", &error);
+    CHECK(result != NULL); cJSON_Delete(result);
+    CHECK(fl_project_scene_count(g_project) == scenes + 1);
+    CHECK(fl_project_save(g_project));
+    result = call(agent, "undo", NULL, &error);
+    CHECK(result && fl_project_scene_count(g_project) == scenes); cJSON_Delete(result);
+    CHECK(fl_project_save(g_project));
+    Fl_Id first = fl_project_scene_at(g_project, 0)->id;
+    char request[256];
+    snprintf(request, sizeof(request), "{\"ops\":[{\"op\":\"scene.remove\",\"scene\":%llu}]}", (unsigned long long)first);
+    size_t entities = entity_count(first);
+    result = call(agent, "apply_ops", request, &error);
+    CHECK(result != NULL); cJSON_Delete(result);
+    CHECK(fl_project_scene_count(g_project) == scenes - 1 && fl_project_save(g_project));
+    result = call(agent, "undo", NULL, &error);
+    CHECK(result && fl_project_scene_count(g_project) == scenes && entity_count(first) == entities); cJSON_Delete(result);
+    CHECK(fl_project_save(g_project));
+    fl_project_destroy(g_project);
+    g_project = fl_project_open(directory, NULL);
+    CHECK(g_project && fl_project_scene_count(g_project) == scenes && fl_project_scene(g_project, first) && entity_count(first) == entities);
+}
+
+/* The MCP core dispatches JSON-RPC, validates input and reports tool failures as results. */
+static bool inline_post(void (*task)(void *), void *data, void *user) {(void)user; task(data); return true;}
+
+static void test_protocol(Fl_Agent *agent)
+{
+    Fl_Mcp *mcp = fl_mcp_create(&(Fl_McpDesc){"flow-test", "1", fl_agent_instructions(), inline_post, NULL, 2000});
+    CHECK(mcp && fl_agent_register(agent, mcp));
+    if (!mcp) return;
+    const char *init = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\"}}";
+    char *reply = fl_mcp_handle(mcp, init, strlen(init));
+    cJSON *r = json(reply ? reply : "null");
+    CHECK(!strcmp(cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(r, "result"), "protocolVersion")->valuestring, "2025-03-26"));
+    cJSON_Delete(r); free(reply);
+    const char *note = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}";
+    CHECK(fl_mcp_handle(mcp, note, strlen(note)) == NULL);
+    const char *list = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}";
+    reply = fl_mcp_handle(mcp, list, strlen(list));
+    r = json(reply ? reply : "null");
+    const cJSON *tools = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(r, "result"), "tools");
+    CHECK(cJSON_GetArraySize(tools) >= 8);
+    cJSON_Delete(r); free(reply);
+    const char *call_ok = "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"get_project\",\"arguments\":{}}}";
+    reply = fl_mcp_handle(mcp, call_ok, strlen(call_ok));
+    r = json(reply ? reply : "null");
+    const cJSON *res = cJSON_GetObjectItemCaseSensitive(r, "result");
+    CHECK(cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(res, "isError")));
+    CHECK(cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(res, "content")) == 1);
+    cJSON_Delete(r); free(reply);
+    const char *call_bad = "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"get_scene\",\"arguments\":{\"scene\":99999}}}";
+    reply = fl_mcp_handle(mcp, call_bad, strlen(call_bad));
+    r = json(reply ? reply : "null");
+    CHECK(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(r, "result"), "isError")));
+    cJSON_Delete(r); free(reply);
+    const char *unknown = "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\",\"params\":{\"name\":\"nope\"}}";
+    reply = fl_mcp_handle(mcp, unknown, strlen(unknown));
+    r = json(reply ? reply : "null");
+    CHECK(cJSON_GetObjectItemCaseSensitive(r, "error") != NULL);
+    cJSON_Delete(r); free(reply);
+    reply = fl_mcp_handle(mcp, "{not json", 9);
+    r = json(reply ? reply : "null");
+    CHECK(number(cJSON_GetObjectItemCaseSensitive(r, "error"), "code") == -32700);
+    cJSON_Delete(r); free(reply);
+    const char *batch = "[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}]";
+    reply = fl_mcp_handle(mcp, batch, strlen(batch));
+    r = json(reply ? reply : "null");
+    CHECK(number(cJSON_GetObjectItemCaseSensitive(r, "error"), "code") == -32600);
+    cJSON_Delete(r); free(reply);
+    fl_mcp_destroy(mcp);
+}
+
+/* A queue drained by the test's main thread stands in for the editor's owner thread. */
+typedef struct Task {void (*run)(void *); void *data; struct Task *next;} Task;
+static Task *g_queue;
+static Fl_Mutex g_queue_lock;
+static bool queue_post(void (*task)(void *), void *data, void *user)
+{
+    (void)user;
+    Task *t = malloc(sizeof(*t));
+    if (!t) return false;
+    *t = (Task){task, data, NULL};
+    fl_mutex_lock(&g_queue_lock);
+    Task **tail = &g_queue;
+    while (*tail) tail = &(*tail)->next;
+    *tail = t;
+    fl_mutex_unlock(&g_queue_lock);
+    return true;
+}
+
+typedef struct Client {uint16_t port; int unauthorized, forbidden, wrong_method, ok_status, call_status; char body[4096]; volatile int done;} Client;
+
+/* One HTTP exchange; returns the status and copies up to size-1 body bytes. */
+static int exchange(uint16_t port, const char *method, const char *headers, const char *body, char *out, size_t size)
+{
+    char error[256], request[4096];
+    snprintf(request, sizeof(request), "%s /mcp HTTP/1.1\r\nHost: 127.0.0.1:%u\r\n%sContent-Length: %zu\r\n\r\n%s", method, (unsigned)port, headers, strlen(body), body);
+    struct mg_connection *c = mg_download("127.0.0.1", port, 0, error, sizeof(error), "%s", request);
+    if (!c) return -1;
+    int status = mg_get_response_info(c)->status_code;
+    int n = out ? mg_read(c, out, size - 1) : 0;
+    if (out) out[n > 0 ? n : 0] = 0;
+    mg_close_connection(c);
+    return status;
+}
+
+static void client_main(void *data)
+{
+    Client *c = data;
+    const char *auth = "Authorization: Bearer secret\r\n";
+    const char *list = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}";
+    c->unauthorized = exchange(c->port, "POST", "", list, NULL, 0);
+    c->forbidden = exchange(c->port, "POST", "Authorization: Bearer secret\r\nOrigin: https://evil.example\r\n", list, NULL, 0);
+    c->wrong_method = exchange(c->port, "GET", auth, "", NULL, 0);
+    c->ok_status = exchange(c->port, "POST", auth, list, c->body, sizeof(c->body) - 1);
+    char big[8192]; (void)big;
+    c->call_status = exchange(c->port, "POST", auth, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"get_project\",\"arguments\":{}}}", c->body, sizeof(c->body));
+    c->done = 1;
+}
+
+static void test_http(Fl_Agent *agent)
+{
+    CHECK(fl_mutex_init(&g_queue_lock));
+    Fl_Mcp *mcp = fl_mcp_create(&(Fl_McpDesc){"flow-test", "1", NULL, queue_post, NULL, 5000});
+    CHECK(mcp && fl_agent_register(agent, mcp));
+    Fl_McpHttp *http = fl_mcp_http_start(&(Fl_McpHttpDesc){mcp, 0, "secret"});
+    CHECK(http && fl_mcp_http_port(http));
+    if (!http) {fl_mcp_destroy(mcp); return;}
+    Client client = {.port = fl_mcp_http_port(http)};
+    Fl_Thread *thread = fl_thread_create(client_main, &client);
+    CHECK(thread != NULL);
+    while (thread && !client.done) {
+        fl_mutex_lock(&g_queue_lock);
+        Task *t = g_queue; if (t) g_queue = t->next;
+        fl_mutex_unlock(&g_queue_lock);
+        if (t) {t->run(t->data); free(t);}
+    }
+    if (thread) fl_thread_join(thread);
+    CHECK(client.unauthorized == 401 && client.forbidden == 403 && client.wrong_method == 405);
+    CHECK(client.ok_status == 200 && client.call_status == 200 && strstr(client.body, "\"result\""));
+    fl_mcp_shutdown(mcp);
+    fl_mcp_http_stop(http);
+    fl_mcp_destroy(mcp);
+    fl_mutex_destroy(&g_queue_lock);
+}
+
+/* A tool that never answers times out instead of hanging the transport; PNG encoding crops and shrinks. */
+static void silent_tool(Fl_McpCall *call, const cJSON *arguments, void *user) {(void)call; (void)arguments; (void)user;}
+
+static void test_timeout_and_png(void)
+{
+    Fl_Mcp *mcp = fl_mcp_create(&(Fl_McpDesc){"flow-test", "1", NULL, inline_post, NULL, 200});
+    CHECK(mcp && fl_mcp_register(mcp, &(Fl_McpTool){"silent", "never answers", "{\"type\":\"object\"}", true, silent_tool, NULL}));
+    CHECK(!fl_mcp_register(mcp, &(Fl_McpTool){"silent", "duplicate", "{\"type\":\"object\"}", true, silent_tool, NULL}));
+    CHECK(!fl_mcp_register(mcp, &(Fl_McpTool){"Bad Name", "x", "{\"type\":\"object\"}", true, silent_tool, NULL}));
+    const char *request = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"silent\"}}";
+    char *reply = fl_mcp_handle(mcp, request, strlen(request));
+    CHECK(reply && strstr(reply, "timeout") && strstr(reply, "\"isError\":true"));
+    free(reply);
+    fl_mcp_shutdown(mcp);
+    reply = fl_mcp_handle(mcp, request, strlen(request));
+    CHECK(reply && strstr(reply, "shutting_down"));
+    free(reply);
+    fl_mcp_destroy(mcp);
+
+    uint8_t pixels[8 * 4 * 4];
+    for (size_t i = 0; i < sizeof(pixels); ++i) pixels[i] = (uint8_t)(i * 7);
+    size_t size = 0; uint32_t w = 0, h = 0;
+    unsigned char *png = fl_png_encode_region(pixels, 8, 4, 2, 0, 6, 4, 3, &size, &w, &h);
+    CHECK(png && size > 8 && !memcmp(png, "\x89PNG", 4) && w == 3 && h == 2);
+    free(png);
+    CHECK(fl_png_encode_region(pixels, 8, 4, 8, 0, 1, 1, 0, &size, NULL, NULL) == NULL);
+}
+
+/* History keeps invariants on its own: budgets drop the oldest entries, redo is cleared by new work. */
+static void test_history(const char *directory)
+{
+    char dir[FL_PATH_MAX];
+    CHECK(fl_fs_join(dir, sizeof(dir), directory, "history") && fl_fs_mkdir_p(dir));
+    char manifest[FL_PATH_MAX];
+    CHECK(fl_fs_join(manifest, sizeof(manifest), dir, "project.flow")); fl_fs_remove(manifest);
+    Fl_Project *p = fl_project_create(dir, "History", NULL);
+    CHECK(p != NULL); if (!p) return;
+    Fl_History *h = fl_history_create(2, 1u << 30);
+    CHECK(h != NULL);
+    Fl_Id scene = fl_project_scene_at(p, 0)->id;
+    const char *names[] = {"one", "two", "three"};
+    for (int i = 0; i < 3; ++i) {
+        CHECK(fl_history_begin(h, p, names[i]));
+        CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_SCENE_RENAME, .scene = scene, .name = names[i]}, NULL));
+        CHECK(fl_history_commit(h, p));
+    }
+    CHECK(fl_history_undo_count(h) == 2);
+    char label[FL_HISTORY_LABEL_MAX]; bool conflict;
+    CHECK(fl_history_undo(h, p, label, &conflict) && !strcmp(label, "three") && !strcmp(fl_project_scene(p, scene)->name, "two"));
+    CHECK(fl_history_undo(h, p, label, &conflict) && !strcmp(label, "two") && !strcmp(fl_project_scene(p, scene)->name, "one"));
+    CHECK(!fl_history_undo(h, p, label, &conflict));
+    CHECK(fl_history_redo(h, p, label, &conflict) && !strcmp(fl_project_scene(p, scene)->name, "two"));
+    CHECK(fl_history_begin(h, p, "four"));
+    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_SCENE_RENAME, .scene = scene, .name = "four"}, NULL));
+    CHECK(fl_history_commit(h, p));
+    CHECK(fl_history_redo_count(h) == 0 && fl_history_undo_count(h) == 2);
+    CHECK(fl_history_begin(h, p, "rolled back"));
+    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_SCENE_RENAME, .scene = scene, .name = "doomed"}, NULL));
+    CHECK(fl_history_rollback(h, p) && !strcmp(fl_project_scene(p, scene)->name, "four"));
+    fl_history_destroy(h);
+    fl_project_destroy(p);
+}
+
+int main(int argc, char **argv)
+{
+    if (argc != 2) return 2;
+    char directory[FL_PATH_MAX], manifest[FL_PATH_MAX];
+    CHECK(fl_fs_join(directory, sizeof(directory), argv[1], "agent") && fl_fs_mkdir_p(directory));
+    CHECK(fl_fs_join(manifest, sizeof(manifest), directory, "project.flow")); fl_fs_remove(manifest);
+    g_project = fl_project_create(directory, "Agent", NULL);
+    CHECK(g_project != NULL); if (!g_project) return 1;
+    Fl_Agent *agent = fl_agent_create(&(Fl_AgentHost){host_project, NULL});
+    CHECK(agent != NULL); if (!agent) return 1;
+    Fl_Id scene = fl_project_scene_at(g_project, 0)->id;
+    test_authoring(agent, scene);
+    test_scene_history(agent, directory);
+    test_protocol(agent);
+    Fl_Agent *http_agent = fl_agent_create(&(Fl_AgentHost){host_project, NULL});
+    CHECK(http_agent != NULL);
+    test_http(http_agent);
+    fl_agent_destroy(http_agent);
+    test_history(argv[1]);
+    test_timeout_and_png();
+    fl_agent_destroy(agent);
+    fl_project_destroy(g_project);
+    return FLOW_TEST_RESULT("fl_agent_tests");
+}

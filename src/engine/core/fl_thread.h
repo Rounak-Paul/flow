@@ -135,6 +135,14 @@ void fl_cond_destroy(Fl_CondVar *cond);
 void fl_cond_wait(Fl_CondVar *cond, Fl_Mutex *mutex);
 
 /*
+ * Like fl_cond_wait but gives up after timeout_ms.
+ *
+ * Returns  false when the wait timed out (the mutex is held again either way); true otherwise, including
+ *          spurious wake-ups, so callers still re-check their predicate.
+ */
+bool fl_cond_wait_ms(Fl_CondVar *cond, Fl_Mutex *mutex, uint32_t timeout_ms);
+
+/*
  * Wake one thread waiting on cond.
  */
 void fl_cond_signal(Fl_CondVar *cond);

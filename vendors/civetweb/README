@@ -1,0 +1,4 @@
+CivetWeb v1.16 (MIT), vendored unmodified from https://github.com/civetweb/civetweb
+(tag v1.16): src/civetweb.c, the src/*.inl implementation fragments, include/civetweb.h, LICENSE.md.
+Built by CMakeLists.txt here with SSL, CGI, Lua, Duktape, zlib and file serving disabled; Flow only uses it
+as an embedded loopback HTTP server for the MCP endpoint.

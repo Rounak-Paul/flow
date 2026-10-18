@@ -4,6 +4,9 @@
 #include "core/fl_job.h"
 #include "project/fl_project.h"
 #include "text/fl_fonts.h"
+#include "fl_scene_edit.h"
+#include "fl_scene_panel.h"
+#include "fl_playback.h"
 
 #include <ca_dock.h>
 #include <causality.h>
@@ -89,3 +92,10 @@ bool fl_workspace_panel_visible(const Fl_Workspace *workspace, const char *id);
  * Returns  true when the panel is visible afterwards.
  */
 bool fl_workspace_toggle_panel(Fl_Workspace *workspace, const char *id);
+
+/* Borrow the workspace's shared scene edit controller (selection, active scene, time). */
+Fl_SceneEdit *fl_workspace_edit(const Fl_Workspace *workspace);
+/* Borrow the scene panel hosting the canvas viewport. */
+Fl_ScenePanel *fl_workspace_scene_panel(const Fl_Workspace *workspace);
+/* Borrow the playback controller. */
+Fl_Playback *fl_workspace_playback(const Fl_Workspace *workspace);

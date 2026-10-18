@@ -1,0 +1,62 @@
+# Flow MCP server
+
+The running editor is an MCP server. An agent edits the project that is open in Flow and the user sees every change as it happens. Nothing is written to project files directly: every change is a typed document operation, grouped into atomic, undoable changesets.
+
+## Connect
+
+Open a project in Flow. The editor listens on `http://127.0.0.1:7788/mcp` (another free port if that one is taken) and writes the port and bearer token to `mcp.json` in its config directory:
+
+| OS | File |
+|---|---|
+| macOS | `~/Library/Application Support/Flow/config/mcp.json` |
+| Windows | `%APPDATA%\Flow\config\mcp.json` |
+| Linux | `~/.config/flow/mcp.json` |
+
+The file is readable by you only and keeps the same token across restarts. Claude Code:
+
+```sh
+claude mcp add --transport http flow http://127.0.0.1:7788/mcp \
+  --header "Authorization: Bearer $(jq -r .token "$HOME/Library/Application Support/Flow/config/mcp.json")"
+```
+
+Any client that supports MCP Streamable HTTP with a custom `Authorization` header works the same way. The endpoint accepts only loopback `Host`/`Origin` headers and POST requests; it never serves files.
+
+Tools need an open project. With the project launcher showing they return `no_project`.
+
+## Tools
+
+| Tool | What it does |
+|---|---|
+| `get_reference` | The manual: units, every operation and its fields, the animation model, Lua scripting. Agents should read it first. |
+| `get_project` | Scenes (id, revision, size, length), assets, undo history |
+| `get_scene` | One scene in full: beats, audio clips, entities in draw order with properties, keyframe tracks and script info |
+| `evaluate_scene` | Resolved values of every entity at a time, after keyframes and Lua, plus script errors |
+| `apply_ops` | Atomic batch of operations. Created objects get `"as": "$name"` and can be referenced by later operations. `expect` refuses the batch if a scene changed since it was read; `dry_run` validates without applying |
+| `undo` / `redo` | Revert or repeat the newest changeset; refused (`conflict`) if anything else edited the project since |
+| `render_frame` | PNG of a scene at a time (seconds), without editor grid or selection. The editor briefly shows that scene and time, then restores the user's view |
+| `get_editor_state` / `set_editor_state` | Read or set the shown scene, playhead and selection |
+| `import_asset` | Copy a local image, audio, video or font file (absolute path) into the project; not part of undo |
+| `save_project` | Write now; Flow also autosaves after changes |
+
+Units: times in seconds, rotation in degrees, colours `#RRGGBB[AA]`, positions in scene pixels. Operations: `scene.add/remove/rename/move/set`, `entity.create/set/remove/reparent/reorder`, `key.set/remove`, `track.remove`, `beat.add/update/remove/move/split`, `clip.add/update/remove`, `script.set/remove`.
+
+```json
+{"label": "Intro", "ops": [
+  {"op": "entity.create", "scene": 1, "kind": "ellipse", "as": "$dot",
+   "props": {"name": "Dot", "x": 100, "y": 300, "width": 200, "height": 200, "fill": "#ff6b35"}},
+  {"op": "key.set", "entity": "$dot", "property": "x", "at": 0, "value": 100},
+  {"op": "key.set", "entity": "$dot", "property": "x", "at": 4, "value": 1200, "ease": "in_out"}
+]}
+```
+
+## Behaviour to know
+
+- A failing operation applies nothing and reports `op_index`, a stable `code` and a message naming the problem. Unknown fields are errors, not ignored.
+- History keeps up to 64 changesets. After any edit made outside the history (in the GUI, an asset import, a rename), earlier entries can no longer be undone and are dropped when the next changeset starts.
+- Calls run on the editor's UI thread and time out after 30 s. Closing the project fails in-flight calls cleanly.
+- `render_frame` needs the Scene panel visible and playback stopped, and returns one image per call.
+- Scripts are `on_evaluate(self, time)` only; see `docs/lua-scripting.md`.
+
+## Internals
+
+`src/engine/agent/`: `fl_mcp` (JSON-RPC and tool registry, hand-off to the owner thread), `fl_mcp_http` (CivetWeb transport), `fl_agent*` (document tools and the operation executor), `fl_history` (changeset undo/redo over scene snapshots, `fl_project_snapshot/restore`). `src/editor/fl_mcp_service.c` wires the endpoint to the editor and implements the editor-only tools. Vendored: `vendors/civetweb` (MIT), `vendors/cjson` (MIT).

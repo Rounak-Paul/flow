@@ -1,0 +1,662 @@
+#include "fl_agent_internal.h"
+#include "components/fl_script.h"
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define DEG_TO_RAD (3.14159265358979323846 / 180.0)
+
+/* Execution state of one batch: the project and the names created so far. */
+typedef struct Ctx {
+    Fl_Project *project;
+    Fl_AgentRefs refs;
+} Ctx;
+
+typedef bool (*OpFn)(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *fail);
+
+/* Add the created id to the result so later operations and the caller can use it. */
+static void report_id(cJSON *result, Fl_Id id) { cJSON_AddNumberToObject(result, "id", (double)id); }
+
+static const Fl_Scene *need_scene(Ctx *x, const cJSON *op, const char *key, Fl_Fail *f, const char *ctx)
+{
+    Fl_Id id;
+    if (!agent_get_id(op, key, &x->refs, true, &id, f, ctx)) return NULL;
+    const Fl_Scene *s = fl_project_scene(x->project, id);
+    if (!s) fl_fail(f, "not_found", "%s: no scene with id %llu", ctx, (unsigned long long)id);
+    return s;
+}
+
+static const Fl_Entity *need_entity(Ctx *x, const cJSON *op, const char *key, const Fl_Scene **scene, Fl_Fail *f, const char *ctx)
+{
+    Fl_Id id;
+    if (!agent_get_id(op, key, &x->refs, true, &id, f, ctx)) return NULL;
+    const Fl_Scene *s = agent_scene_of_entity(x->project, id);
+    if (!s) {fl_fail(f, "not_found", "%s: no entity with id %llu", ctx, (unsigned long long)id); return NULL;}
+    if (scene) *scene = s;
+    return fl_scene_entity(s, id);
+}
+
+/* Document-level rejection: the operation parsed but fl_project_apply refused it. */
+static bool rejected(Fl_Fail *f, const char *ctx, const char *hint)
+{
+    return fl_fail(f, "rejected", "%s was rejected by document validation: %s", ctx, hint);
+}
+
+static bool apply(Ctx *x, const Fl_Op *op, Fl_Id *created) { return fl_project_apply(x->project, op, created); }
+
+/* ---------- scenes ---------- */
+
+static bool scene_add(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[] = {"op", "as", "name", NULL};
+    const char *name;
+    if (!agent_only_keys(op, f, "scene.add", keys) || !agent_get_string(op, "name", true, &name, f, "scene.add")) return false;
+    Fl_Id id = 0;
+    if (!name[0] || !apply(x, &(Fl_Op){.kind = FL_OP_SCENE_ADD, .name = name}, &id)) return rejected(f, "scene.add", "name must be non-empty");
+    report_id(result, id); return true;
+}
+
+static bool scene_remove(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[] = {"op", "as", "scene", NULL};
+    (void)result;
+    const Fl_Scene *s;
+    if (!agent_only_keys(op, f, "scene.remove", keys) || !(s = need_scene(x, op, "scene", f, "scene.remove"))) return false;
+    return apply(x, &(Fl_Op){.kind = FL_OP_SCENE_REMOVE, .scene = s->id}, NULL) || rejected(f, "scene.remove", "scene");
+}
+
+static bool scene_rename(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[] = {"op", "as", "scene", "name", NULL};
+    (void)result;
+    const Fl_Scene *s; const char *name;
+    if (!agent_only_keys(op, f, "scene.rename", keys) || !(s = need_scene(x, op, "scene", f, "scene.rename")) ||
+        !agent_get_string(op, "name", true, &name, f, "scene.rename")) return false;
+    return apply(x, &(Fl_Op){.kind = FL_OP_SCENE_RENAME, .scene = s->id, .name = name}, NULL) || rejected(f, "scene.rename", "name must be non-empty");
+}
+
+static bool scene_move(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[] = {"op", "as", "scene", "position", NULL};
+    (void)result;
+    const Fl_Scene *s; double position;
+    if (!agent_only_keys(op, f, "scene.move", keys) || !(s = need_scene(x, op, "scene", f, "scene.move")) ||
+        !agent_get_number(op, "position", true, &position, NULL, f, "scene.move")) return false;
+    return (position >= 0 && position < (double)fl_project_scene_count(x->project) &&
+            apply(x, &(Fl_Op){.kind = FL_OP_SCENE_MOVE, .scene = s->id, .position = (size_t)position}, NULL)) ||
+           rejected(f, "scene.move", "position must be an index inside the scene list");
+}
+
+/* Settings that change canvas size, framing and camera; omitted fields keep their value. */
+static bool scene_set(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[] = {"op", "as", "scene", "width", "height", "aspect", "camera", NULL};
+    (void)result;
+    const Fl_Scene *s;
+    if (!agent_only_keys(op, f, "scene.set", keys) || !(s = need_scene(x, op, "scene", f, "scene.set"))) return false;
+    double width = (double)s->width, height = (double)s->height;
+    bool has_width, has_height;
+    if (!agent_get_number(op, "width", false, &width, &has_width, f, "scene.set") ||
+        !agent_get_number(op, "height", false, &height, &has_height, f, "scene.set")) return false;
+    if (has_width || has_height) {
+        if (width < 1 || height < 1 || width > 65536 || height > 65536 || width != floor(width) || height != floor(height))
+            return fl_fail(f, "invalid_argument", "scene.set: width and height are whole pixels in 1..65536");
+        if (!apply(x, &(Fl_Op){.kind = FL_OP_SCENE_SETTINGS, .scene = s->id, .width = (uint64_t)width, .height = (uint64_t)height,
+                               .duration = (uint64_t)fl_scene_length(s)}, NULL)) return rejected(f, "scene.set", "canvas size");
+    }
+    const cJSON *aspect = cJSON_GetObjectItemCaseSensitive(op, "aspect");
+    if (aspect) {
+        uint64_t w = 0, h = 0;
+        if (!cJSON_IsNull(aspect)) {
+            const cJSON *a = cJSON_IsArray(aspect) && cJSON_GetArraySize(aspect) == 2 ? aspect->child : NULL;
+            if (!a || !cJSON_IsNumber(a) || !cJSON_IsNumber(a->next) || a->valuedouble < 1 || a->next->valuedouble < 1 ||
+                a->valuedouble > 65536 || a->next->valuedouble > 65536) return fl_fail(f, "invalid_argument", "scene.set: aspect is [width, height] or null");
+            w = (uint64_t)a->valuedouble; h = (uint64_t)a->next->valuedouble;
+        }
+        if (!apply(x, &(Fl_Op){.kind = FL_OP_SCENE_ASPECT, .scene = s->id, .aspect_width = w, .aspect_height = h}, NULL))
+            return rejected(f, "scene.set", "aspect");
+    }
+    const cJSON *camera = cJSON_GetObjectItemCaseSensitive(op, "camera");
+    if (camera) {
+        const cJSON *c = cJSON_IsArray(camera) && cJSON_GetArraySize(camera) == 2 ? camera->child : NULL;
+        if (!c || !cJSON_IsNumber(c) || !cJSON_IsNumber(c->next) || !isfinite(c->valuedouble) || !isfinite(c->next->valuedouble))
+            return fl_fail(f, "invalid_argument", "scene.set: camera is [x, y]");
+        if (!apply(x, &(Fl_Op){.kind = FL_OP_SCENE_CAMERA, .scene = s->id, .camera_x = c->valuedouble, .camera_y = c->next->valuedouble}, NULL))
+            return rejected(f, "scene.set", "camera");
+    }
+    return true;
+}
+
+/* ---------- entities ---------- */
+
+/* Longest value of a text content or typography family accepted from an agent. */
+#define TEXT_LIMIT (1u << 20)
+
+/* Merge `props` into the entity's current components and commit them in one configure operation. */
+static bool configure(Ctx *x, const Fl_Scene *scene, const Fl_Entity *e, const cJSON *props, Fl_Fail *f, const char *ctx)
+{
+    static const char *const keys[] = {"name", "visible", "x", "y", "width", "height", "rotation", "scale_x", "scale_y", "opacity",
+        "fill", "stroke", "stroke_width", "text", "font_size", "font_family", "font_weight", "italic", "asset", NULL};
+    if (!agent_object(props, f, ctx) || !agent_only_keys(props, f, ctx, keys)) return false;
+    const Fl_WidgetDef *def = fl_widget_for_entity(e);
+    Fl_Transform t = {.scale_x = 1, .scale_y = 1};
+    fl_transform_decode(fl_entity_component(e, FL_COMPONENT_TRANSFORM), &t);
+    Fl_Appearance a = fl_widget_appearance(e);
+    Fl_Typography ty = fl_widget_typography(e);
+    double opacity = fl_widget_opacity(e), number;
+    Fl_Id asset = 0;
+    fl_image_asset_decode(fl_entity_component(e, FL_COMPONENT_IMAGE), &asset);
+    const Fl_Component *current_text = fl_entity_component(e, FL_COMPONENT_TEXT);
+    const char *name = e->name, *text = NULL;
+    bool visible = e->visible, present;
+    if (!agent_get_string(props, "name", false, &name, f, ctx)) return false;
+    if (!name) name = e->name;
+    if (!name[0]) return fl_fail(f, "invalid_argument", "%s: name must be non-empty", ctx);
+    if (!agent_get_bool(props, "visible", &visible, NULL, f, ctx)) return false;
+    double *transform_fields[] = {&t.x, &t.y, &t.width, &t.height, &t.rotation, &t.scale_x, &t.scale_y};
+    static const char *const transform_keys[] = {"x", "y", "width", "height", "rotation", "scale_x", "scale_y"};
+    for (size_t i = 0; i < 7; ++i) {
+        if (!agent_get_number(props, transform_keys[i], false, &number, &present, f, ctx)) return false;
+        if (!present) continue;
+        if (fabs(number) > 1e9 || (i == 2 || i == 3 ? number < 0 : false)) return fl_fail(f, "invalid_argument", "%s: \"%s\" is out of range", ctx, transform_keys[i]);
+        *transform_fields[i] = i == 4 ? number * DEG_TO_RAD : number;
+    }
+    if (!agent_get_number(props, "opacity", false, &number, &present, f, ctx)) return false;
+    if (present) {
+        if (number < 0 || number > 1) return fl_fail(f, "invalid_argument", "%s: opacity is between 0 and 1", ctx);
+        opacity = number;
+    }
+    const cJSON *item;
+    if ((item = cJSON_GetObjectItemCaseSensitive(props, "fill")) && !cJSON_IsNull(item)) {
+        if (!def || !def->has_fill) return fl_fail(f, "not_applicable", "%s: a %s has no fill", ctx, def ? agent_widget_name(def->kind) : "entity");
+        if (!agent_parse_color(item, a.fill, f, "fill")) return false;
+    }
+    if ((item = cJSON_GetObjectItemCaseSensitive(props, "stroke")) && !cJSON_IsNull(item)) {
+        if (!def || !def->has_stroke) return fl_fail(f, "not_applicable", "%s: a %s has no stroke", ctx, def ? agent_widget_name(def->kind) : "entity");
+        if (!agent_parse_color(item, a.stroke, f, "stroke")) return false;
+    }
+    if (!agent_get_number(props, "stroke_width", false, &number, &present, f, ctx)) return false;
+    if (present) {
+        if (!def || !def->has_stroke) return fl_fail(f, "not_applicable", "%s: stroke_width needs a shape with a stroke", ctx);
+        if (number < 0 || number > 65536) return fl_fail(f, "invalid_argument", "%s: stroke_width is 0..65536", ctx);
+        a.stroke_width = number;
+    }
+    if (!agent_get_string(props, "text", false, &text, f, ctx)) return false;
+    if (text && (!def || !def->has_text)) return fl_fail(f, "not_applicable", "%s: only text entities have text", ctx);
+    if (text && strlen(text) > TEXT_LIMIT) return fl_fail(f, "invalid_argument", "%s: text is longer than %u bytes", ctx, TEXT_LIMIT);
+    if (!agent_get_number(props, "font_size", false, &number, &present, f, ctx)) return false;
+    if (present) {
+        if (!def || !def->has_text) return fl_fail(f, "not_applicable", "%s: font_size needs a text entity", ctx);
+        if (number < 1 || number > 2048) return fl_fail(f, "invalid_argument", "%s: font_size is 1..2048", ctx);
+        a.font_size = number;
+    }
+    const char *family = NULL;
+    if (!agent_get_string(props, "font_family", false, &family, f, ctx)) return false;
+    if (family) {
+        if (!def || !def->has_text) return fl_fail(f, "not_applicable", "%s: font_family needs a text entity", ctx);
+        if (!family[0] || strlen(family) > FL_TYPOGRAPHY_FAMILY_MAX) return fl_fail(f, "invalid_argument", "%s: font_family must be 1..%d characters", ctx, FL_TYPOGRAPHY_FAMILY_MAX);
+        snprintf(ty.family, sizeof(ty.family), "%s", family);
+    }
+    if (!agent_get_number(props, "font_weight", false, &number, &present, f, ctx)) return false;
+    if (present) {
+        if (!def || !def->has_text) return fl_fail(f, "not_applicable", "%s: font_weight needs a text entity", ctx);
+        if (number < 1 || number > 1000 || number != floor(number)) return fl_fail(f, "invalid_argument", "%s: font_weight is a whole number 1..1000", ctx);
+        ty.weight = (unsigned)number;
+    }
+    bool italic = ty.italic;
+    if (!agent_get_bool(props, "italic", &italic, &present, f, ctx)) return false;
+    if (present && (!def || !def->has_text)) return fl_fail(f, "not_applicable", "%s: italic needs a text entity", ctx);
+    ty.italic = italic;
+    if (!agent_get_number(props, "asset", false, &number, &present, f, ctx)) return false;
+    if (present) {
+        if (!def || !def->has_image) return fl_fail(f, "not_applicable", "%s: only image entities show an asset", ctx);
+        const Fl_Asset *record = fl_project_asset(x->project, (Fl_Id)number);
+        if (number < 1 || !record || record->kind != FL_ASSET_IMAGE) return fl_fail(f, "not_found", "%s: asset %.0f is not an image in this project", ctx, number);
+        asset = (Fl_Id)number;
+    }
+
+    unsigned char transform[56], style[24], typography[3 + FL_TYPOGRAPHY_FAMILY_MAX], image[8], alpha[8];
+    fl_transform_encode(&t, transform); fl_appearance_encode(&a, style); fl_opacity_encode(opacity, alpha);
+    Fl_Component components[6] = {{FL_COMPONENT_TRANSFORM, 1, 56, transform}, {FL_COMPONENT_OPACITY, 1, 8, alpha}};
+    size_t count = 2;
+    if (def && def->kind != FL_WIDGET_GROUP && def->kind != FL_WIDGET_IMAGE) components[count++] = (Fl_Component){FL_COMPONENT_APPEARANCE, 1, 24, style};
+    if (def && def->has_text) {
+        size_t size = fl_typography_encode(&ty, typography);
+        if (!size) return fl_fail(f, "invalid_argument", "%s: invalid typography", ctx);
+        const unsigned char *bytes = text ? (const unsigned char *)text : current_text ? current_text->data : (const unsigned char *)"";
+        components[count++] = (Fl_Component){FL_COMPONENT_TEXT, 1, text ? strlen(text) : current_text ? current_text->size : 0, bytes};
+        components[count++] = (Fl_Component){FL_COMPONENT_TYPOGRAPHY, 1, size, typography};
+    }
+    if (def && def->has_image && asset) {
+        fl_image_asset_encode(asset, image);
+        components[count++] = (Fl_Component){FL_COMPONENT_IMAGE, 1, 8, image};
+    }
+    return apply(x, &(Fl_Op){.kind = FL_OP_ENTITY_CONFIGURE, .scene = scene->id, .entity = e->id, .name = name, .visible = visible,
+                             .components = components, .component_count = count}, NULL) || rejected(f, ctx, "property values");
+}
+
+static bool entity_create(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[] = {"op", "as", "scene", "kind", "parent", "asset", "props", NULL};
+    const Fl_Scene *s; const char *kind_name; Fl_WidgetKind kind; Fl_Id parent = 0, asset = 0;
+    if (!agent_only_keys(op, f, "entity.create", keys) || !(s = need_scene(x, op, "scene", f, "entity.create")) ||
+        !agent_get_string(op, "kind", true, &kind_name, f, "entity.create") || !agent_get_id(op, "parent", &x->refs, false, &parent, f, "entity.create") ||
+        !agent_get_id(op, "asset", &x->refs, false, &asset, f, "entity.create")) return false;
+    if (!agent_widget_from_name(kind_name, &kind)) return fl_fail(f, "invalid_argument", "entity.create: kind must be group, rectangle, ellipse, line, arrow, text or image");
+    if (parent && !fl_scene_entity(s, parent)) return fl_fail(f, "not_found", "entity.create: parent %llu is not in scene %llu", (unsigned long long)parent, (unsigned long long)s->id);
+    const cJSON *props = cJSON_GetObjectItemCaseSensitive(op, "props");
+    if (props && !agent_object(props, f, "entity.create props")) return false;
+    double px = 0, py = 0;
+    if (props && (!agent_get_number(props, "x", false, &px, NULL, f, "entity.create") || !agent_get_number(props, "y", false, &py, NULL, f, "entity.create"))) return false;
+    Fl_Id id = 0;
+    if (kind == FL_WIDGET_IMAGE) {
+        const Fl_Asset *record = fl_project_asset(x->project, asset);
+        if (!record || record->kind != FL_ASSET_IMAGE) return fl_fail(f, "not_found", "entity.create: image entities need \"asset\" to be an image asset id");
+        double w = record->width ? (double)record->width : 320, h = record->height ? (double)record->height : 180;
+        double fit = fmin(1, fmin(0.8 * (double)s->width / w, 0.8 * (double)s->height / h));
+        if (props) {
+            double v; bool present;
+            if (!agent_get_number(props, "width", false, &v, &present, f, "entity.create")) return false;
+            if (present) {w = v; fit = 1;}
+            if (!agent_get_number(props, "height", false, &v, &present, f, "entity.create")) return false;
+            if (present) {h = v; fit = 1;}
+        }
+        if (!(w > 0) || !(h > 0) || !fl_widget_create_image(x->project, s->id, parent, asset, px, py, w * fit, h * fit, &id)) return rejected(f, "entity.create", "image size or position");
+    } else if (!fl_widget_create(x->project, s->id, parent, kind, px, py, &id)) return rejected(f, "entity.create", "position must be finite");
+    report_id(result, id);
+    if (props && props->child) {
+        const Fl_Entity *created = fl_scene_entity(fl_project_scene(x->project, s->id), id);
+        if (!created || !configure(x, fl_project_scene(x->project, s->id), created, props, f, "entity.create props")) return false;
+    }
+    return true;
+}
+
+static bool entity_set(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[] = {"op", "as", "entity", "props", NULL};
+    (void)result;
+    const Fl_Scene *s; const Fl_Entity *e;
+    if (!agent_only_keys(op, f, "entity.set", keys) || !(e = need_entity(x, op, "entity", &s, f, "entity.set"))) return false;
+    const cJSON *props = cJSON_GetObjectItemCaseSensitive(op, "props");
+    if (!props) return fl_fail(f, "missing_field", "entity.set requires \"props\"");
+    return configure(x, s, e, props, f, "entity.set");
+}
+
+static bool entity_remove(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[] = {"op", "as", "entity", NULL};
+    (void)result;
+    const Fl_Scene *s; const Fl_Entity *e;
+    if (!agent_only_keys(op, f, "entity.remove", keys) || !(e = need_entity(x, op, "entity", &s, f, "entity.remove"))) return false;
+    return apply(x, &(Fl_Op){.kind = FL_OP_ENTITY_REMOVE, .scene = s->id, .entity = e->id}, NULL) || rejected(f, "entity.remove", "entity");
+}
+
+static bool entity_reparent(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[] = {"op", "as", "entity", "parent", NULL};
+    (void)result;
+    const Fl_Scene *s; const Fl_Entity *e; Fl_Id parent;
+    if (!agent_only_keys(op, f, "entity.reparent", keys) || !(e = need_entity(x, op, "entity", &s, f, "entity.reparent")) ||
+        !agent_get_id(op, "parent", &x->refs, false, &parent, f, "entity.reparent")) return false;
+    return apply(x, &(Fl_Op){.kind = FL_OP_ENTITY_PARENT, .scene = s->id, .entity = e->id, .parent = parent}, NULL) ||
+           rejected(f, "entity.reparent", "the parent must be in the same scene and not a descendant of the entity");
+}
+
+static bool entity_reorder(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[] = {"op", "as", "entity", "position", NULL};
+    (void)result;
+    const Fl_Scene *s; const Fl_Entity *e; double position;
+    if (!agent_only_keys(op, f, "entity.reorder", keys) || !(e = need_entity(x, op, "entity", &s, f, "entity.reorder")) ||
+        !agent_get_number(op, "position", true, &position, NULL, f, "entity.reorder")) return false;
+    return (position >= 0 && position < (double)s->entity_count &&
+            apply(x, &(Fl_Op){.kind = FL_OP_ENTITY_MOVE, .scene = s->id, .entity = e->id, .position = (size_t)position}, NULL)) ||
+           rejected(f, "entity.reorder", "position must be an index inside the scene's entity list (later entities draw on top)");
+}
+
+/* ---------- keyframes ---------- */
+
+static bool key_set(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[] = {"op", "as", "entity", "property", "at", "value", "ease", "key", NULL};
+    const Fl_Scene *s; const Fl_Entity *e; const char *property_name, *ease_name = "linear";
+    Fl_AnimProperty property; Fl_Ease ease = FL_EASE_LINEAR; Fl_TimeAnchor anchor; Fl_Id key = 0;
+    if (!agent_only_keys(op, f, "key.set", keys) || !(e = need_entity(x, op, "entity", &s, f, "key.set")) ||
+        !agent_get_string(op, "property", true, &property_name, f, "key.set") || !agent_get_string(op, "ease", false, &ease_name, f, "key.set") ||
+        !agent_get_id(op, "key", &x->refs, false, &key, f, "key.set")) return false;
+    if (!agent_property_from_name(property_name, &property)) return fl_fail(f, "invalid_argument", "key.set: property must be one of x, y, width, height, rotation, scale_x, scale_y, opacity, fill, stroke, stroke_width, font_size");
+    if (ease_name && !agent_ease_from_name(ease_name, &ease)) return fl_fail(f, "invalid_argument", "key.set: ease must be linear, in, out, in_out or hold");
+    const cJSON *at = cJSON_GetObjectItemCaseSensitive(op, "at"), *value = cJSON_GetObjectItemCaseSensitive(op, "value");
+    if (!at) return fl_fail(f, "missing_field", "key.set requires \"at\"");
+    if (!value) return fl_fail(f, "missing_field", "key.set requires \"value\"");
+    if (!agent_parse_anchor(at, &x->refs, &anchor, f, "key.set at")) return false;
+    double v[4] = {0};
+    if (property == FL_PROP_FILL || property == FL_PROP_STROKE) {
+        unsigned char rgba[4];
+        if (!agent_parse_color(value, rgba, f, "key.set value")) return false;
+        for (int i = 0; i < 4; ++i) v[i] = rgba[i];
+    } else {
+        if (!cJSON_IsNumber(value) || !isfinite(value->valuedouble)) return fl_fail(f, "invalid_argument", "key.set: value for %s must be a number", property_name);
+        v[0] = property == FL_PROP_ROTATION ? value->valuedouble * DEG_TO_RAD : value->valuedouble;
+    }
+    const Fl_WidgetDef *def = fl_widget_for_entity(e);
+    bool text_prop = property == FL_PROP_FONT_SIZE, fill = property == FL_PROP_FILL, stroke = property == FL_PROP_STROKE || property == FL_PROP_STROKE_WIDTH;
+    if (def && ((text_prop && !def->has_text) || (fill && !def->has_fill) || (stroke && !def->has_stroke)))
+        return fl_fail(f, "not_applicable", "key.set: a %s cannot animate %s", agent_widget_name(def->kind), property_name);
+    Fl_Id created = 0;
+    if (!apply(x, &(Fl_Op){.kind = FL_OP_KEY_SET, .scene = s->id, .entity = e->id, .key = key, .property = property, .anchor = anchor,
+                           .value = {v[0], v[1], v[2], v[3]}, .ease = ease}, &created))
+        return rejected(f, "key.set", "the time must lie inside the scene (0 to its length) and the value inside the property's range");
+    report_id(result, created);
+    return true;
+}
+
+static bool key_remove(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[] = {"op", "as", "key", NULL};
+    (void)result;
+    Fl_Id id;
+    if (!agent_only_keys(op, f, "key.remove", keys) || !agent_get_id(op, "key", &x->refs, true, &id, f, "key.remove")) return false;
+    const Fl_Scene *s = agent_scene_of_key(x->project, id, NULL);
+    if (!s) return fl_fail(f, "not_found", "key.remove: no keyframe with id %llu", (unsigned long long)id);
+    return apply(x, &(Fl_Op){.kind = FL_OP_KEY_REMOVE, .scene = s->id, .key = id}, NULL) || rejected(f, "key.remove", "keyframe");
+}
+
+static bool track_remove(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[] = {"op", "as", "entity", "property", NULL};
+    (void)result;
+    const Fl_Scene *s; const Fl_Entity *e; const char *name; Fl_AnimProperty property;
+    if (!agent_only_keys(op, f, "track.remove", keys) || !(e = need_entity(x, op, "entity", &s, f, "track.remove")) ||
+        !agent_get_string(op, "property", true, &name, f, "track.remove")) return false;
+    if (!agent_property_from_name(name, &property)) return fl_fail(f, "invalid_argument", "track.remove: unknown property \"%s\"", name);
+    const Fl_Track *t = fl_scene_track(s, e->id, property);
+    if (!t) return fl_fail(f, "not_found", "track.remove: %s has no %s animation", e->name, name);
+    return apply(x, &(Fl_Op){.kind = FL_OP_TRACK_REMOVE, .scene = s->id, .track = t->id}, NULL) || rejected(f, "track.remove", "track");
+}
+
+/* ---------- beats ---------- */
+
+static bool beat_add(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[] = {"op", "as", "scene", "name", "duration", "position", "auto_advance", NULL};
+    const Fl_Scene *s; const char *name; Fl_Tick duration; double position; bool has_position, auto_advance = false;
+    if (!agent_only_keys(op, f, "beat.add", keys) || !(s = need_scene(x, op, "scene", f, "beat.add")) ||
+        !agent_get_string(op, "name", true, &name, f, "beat.add") || !agent_get_seconds(op, "duration", true, &duration, NULL, f, "beat.add") ||
+        !agent_get_number(op, "position", false, &position, &has_position, f, "beat.add") || !agent_get_bool(op, "auto_advance", &auto_advance, NULL, f, "beat.add")) return false;
+    if (!has_position) position = (double)s->beat_count;
+    Fl_Id id = 0;
+    if (duration <= 0 || !name[0] || position < 0 || position > (double)s->beat_count ||
+        !apply(x, &(Fl_Op){.kind = FL_OP_BEAT_ADD, .scene = s->id, .name = name, .position = (size_t)position, .beat_duration = (uint64_t)duration, .auto_advance = auto_advance}, &id))
+        return rejected(f, "beat.add", "name must be non-empty, duration positive, position within 0..beat count");
+    report_id(result, id); return true;
+}
+
+static bool beat_update(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[] = {"op", "as", "beat", "name", "duration", "auto_advance", NULL};
+    (void)result;
+    Fl_Id id;
+    if (!agent_only_keys(op, f, "beat.update", keys) || !agent_get_id(op, "beat", &x->refs, true, &id, f, "beat.update")) return false;
+    const Fl_Scene *s = agent_scene_of_beat(x->project, id);
+    if (!s) return fl_fail(f, "not_found", "beat.update: no beat with id %llu", (unsigned long long)id);
+    const Fl_Beat *beat = NULL;
+    for (size_t i = 0; i < s->beat_count; ++i) if (s->beats[i].id == id) beat = &s->beats[i];
+    const char *name = beat->name; Fl_Tick duration = (Fl_Tick)beat->duration; bool auto_advance = beat->auto_advance, present;
+    if (!agent_get_string(op, "name", false, &name, f, "beat.update") || !agent_get_seconds(op, "duration", false, &duration, &present, f, "beat.update") ||
+        !agent_get_bool(op, "auto_advance", &auto_advance, NULL, f, "beat.update")) return false;
+    if (!name) name = beat->name;
+    return (duration > 0 && name[0] &&
+            apply(x, &(Fl_Op){.kind = FL_OP_BEAT_UPDATE, .scene = s->id, .beat = id, .name = name, .beat_duration = (uint64_t)duration, .auto_advance = auto_advance}, NULL)) ||
+           rejected(f, "beat.update", "name must be non-empty and duration positive; keyframes inside the beat scale with it");
+}
+
+static bool beat_remove(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[] = {"op", "as", "beat", NULL};
+    (void)result;
+    Fl_Id id;
+    if (!agent_only_keys(op, f, "beat.remove", keys) || !agent_get_id(op, "beat", &x->refs, true, &id, f, "beat.remove")) return false;
+    const Fl_Scene *s = agent_scene_of_beat(x->project, id);
+    if (!s) return fl_fail(f, "not_found", "beat.remove: no beat with id %llu", (unsigned long long)id);
+    return apply(x, &(Fl_Op){.kind = FL_OP_BEAT_REMOVE, .scene = s->id, .beat = id}, NULL) || rejected(f, "beat.remove", "a scene keeps at least one beat");
+}
+
+static bool beat_move(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[] = {"op", "as", "beat", "position", NULL};
+    (void)result;
+    Fl_Id id; double position;
+    if (!agent_only_keys(op, f, "beat.move", keys) || !agent_get_id(op, "beat", &x->refs, true, &id, f, "beat.move") ||
+        !agent_get_number(op, "position", true, &position, NULL, f, "beat.move")) return false;
+    const Fl_Scene *s = agent_scene_of_beat(x->project, id);
+    if (!s) return fl_fail(f, "not_found", "beat.move: no beat with id %llu", (unsigned long long)id);
+    return (position >= 0 && position < (double)s->beat_count &&
+            apply(x, &(Fl_Op){.kind = FL_OP_BEAT_MOVE, .scene = s->id, .beat = id, .position = (size_t)position}, NULL)) ||
+           rejected(f, "beat.move", "position must be an index inside the beat list");
+}
+
+static bool beat_split(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[] = {"op", "as", "beat", "at", "name", NULL};
+    Fl_Id id; Fl_Tick at; const char *name;
+    if (!agent_only_keys(op, f, "beat.split", keys) || !agent_get_id(op, "beat", &x->refs, true, &id, f, "beat.split") ||
+        !agent_get_seconds(op, "at", true, &at, NULL, f, "beat.split") || !agent_get_string(op, "name", true, &name, f, "beat.split")) return false;
+    const Fl_Scene *s = agent_scene_of_beat(x->project, id);
+    if (!s) return fl_fail(f, "not_found", "beat.split: no beat with id %llu", (unsigned long long)id);
+    Fl_Id created = 0;
+    if (!apply(x, &(Fl_Op){.kind = FL_OP_BEAT_SPLIT, .scene = s->id, .beat = id, .tick = at, .name = name}, &created))
+        return rejected(f, "beat.split", "\"at\" is scene time in seconds and must fall strictly inside the beat; name must be non-empty");
+    report_id(result, created); return true;
+}
+
+/* ---------- audio clips ---------- */
+
+/* Parse clip fields over a base record (a new clip's defaults or the clip being updated). */
+static bool clip_fields(Ctx *x, const cJSON *op, Fl_AudioClip *clip, Fl_Fail *f, const char *ctx)
+{
+    bool present; double gain;
+    Fl_Tick t;
+    const cJSON *start = cJSON_GetObjectItemCaseSensitive(op, "start");
+    if (start && !agent_parse_anchor(start, &x->refs, &clip->start, f, "clip start")) return false;
+    if (!agent_get_seconds(op, "source_offset", false, &t, &present, f, ctx)) return false;
+    if (present) {if (t < 0) return fl_fail(f, "invalid_argument", "%s: source_offset cannot be negative", ctx); clip->source_offset = (uint64_t)t;}
+    if (!agent_get_seconds(op, "duration", false, &t, &present, f, ctx)) return false;
+    if (present) {if (t < 0) return fl_fail(f, "invalid_argument", "%s: duration cannot be negative", ctx); clip->duration = (uint64_t)t;}
+    if (!agent_get_seconds(op, "fade_in", false, &t, &present, f, ctx)) return false;
+    if (present) {if (t < 0) return fl_fail(f, "invalid_argument", "%s: fade_in cannot be negative", ctx); clip->fade_in = (uint64_t)t;}
+    if (!agent_get_seconds(op, "fade_out", false, &t, &present, f, ctx)) return false;
+    if (present) {if (t < 0) return fl_fail(f, "invalid_argument", "%s: fade_out cannot be negative", ctx); clip->fade_out = (uint64_t)t;}
+    if (!agent_get_number(op, "gain", false, &gain, &present, f, ctx)) return false;
+    if (present) clip->gain = gain;
+    return true;
+}
+
+static bool clip_add(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[] = {"op", "as", "scene", "asset", "start", "source_offset", "duration", "gain", "fade_in", "fade_out", NULL};
+    const Fl_Scene *s; Fl_AudioClip clip = {.gain = 1};
+    if (!agent_only_keys(op, f, "clip.add", keys) || !(s = need_scene(x, op, "scene", f, "clip.add")) ||
+        !agent_get_id(op, "asset", &x->refs, true, &clip.asset, f, "clip.add") || !clip_fields(x, op, &clip, f, "clip.add")) return false;
+    Fl_Id id = 0;
+    if (!apply(x, &(Fl_Op){.kind = FL_OP_CLIP_ADD, .scene = s->id, .clip_record = &clip}, &id))
+        return rejected(f, "clip.add", "asset must be an audio asset; gain is 0..4; the clip must start inside the scene");
+    report_id(result, id); return true;
+}
+
+static bool clip_update(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[] = {"op", "as", "clip", "start", "source_offset", "duration", "gain", "fade_in", "fade_out", NULL};
+    (void)result;
+    Fl_Id id;
+    if (!agent_only_keys(op, f, "clip.update", keys) || !agent_get_id(op, "clip", &x->refs, true, &id, f, "clip.update")) return false;
+    const Fl_Scene *s = agent_scene_of_clip(x->project, id);
+    if (!s) return fl_fail(f, "not_found", "clip.update: no clip with id %llu", (unsigned long long)id);
+    Fl_AudioClip clip = {0};
+    for (size_t i = 0; i < s->clip_count; ++i) if (s->clips[i].id == id) clip = s->clips[i];
+    return clip_fields(x, op, &clip, f, "clip.update") &&
+           (apply(x, &(Fl_Op){.kind = FL_OP_CLIP_UPDATE, .scene = s->id, .clip = id, .clip_record = &clip}, NULL) || rejected(f, "clip.update", "clip values"));
+}
+
+static bool clip_remove(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[] = {"op", "as", "clip", NULL};
+    (void)result;
+    Fl_Id id;
+    if (!agent_only_keys(op, f, "clip.remove", keys) || !agent_get_id(op, "clip", &x->refs, true, &id, f, "clip.remove")) return false;
+    const Fl_Scene *s = agent_scene_of_clip(x->project, id);
+    if (!s) return fl_fail(f, "not_found", "clip.remove: no clip with id %llu", (unsigned long long)id);
+    return apply(x, &(Fl_Op){.kind = FL_OP_CLIP_REMOVE, .scene = s->id, .clip = id}, NULL) || rejected(f, "clip.remove", "clip");
+}
+
+/* ---------- scripts ---------- */
+
+static bool script_set(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[] = {"op", "as", "entity", "source", "enabled", NULL};
+    (void)result;
+    const Fl_Scene *s; const Fl_Entity *e; const char *source; bool enabled = true;
+    if (!agent_only_keys(op, f, "script.set", keys) || !(e = need_entity(x, op, "entity", &s, f, "script.set")) ||
+        !agent_get_string(op, "source", true, &source, f, "script.set") || !agent_get_bool(op, "enabled", &enabled, NULL, f, "script.set")) return false;
+    Fl_Component component = {0};
+    if (!fl_script_encode(&(Fl_Script){.source = source, .source_size = strlen(source), .enabled = enabled}, &component))
+        return fl_fail(f, "invalid_argument", "script.set: source must be 1..%u bytes of text without NUL", FL_SCRIPT_SOURCE_LIMIT);
+    bool ok = apply(x, &(Fl_Op){.kind = FL_OP_COMPONENT_SET, .scene = s->id, .entity = e->id, .component = component}, NULL);
+    free((void *)component.data);
+    return ok || rejected(f, "script.set", "script component");
+}
+
+static bool script_remove(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[] = {"op", "as", "entity", NULL};
+    (void)result;
+    const Fl_Scene *s; const Fl_Entity *e;
+    if (!agent_only_keys(op, f, "script.remove", keys) || !(e = need_entity(x, op, "entity", &s, f, "script.remove"))) return false;
+    return apply(x, &(Fl_Op){.kind = FL_OP_COMPONENT_REMOVE, .scene = s->id, .entity = e->id, .component = {.type = FL_COMPONENT_SCRIPT}}, NULL) ||
+           fl_fail(f, "not_found", "script.remove: %s has no script", e->name);
+}
+
+static const struct {const char *name; OpFn run;} OPERATIONS[] = {
+    {"scene.add", scene_add}, {"scene.remove", scene_remove}, {"scene.rename", scene_rename}, {"scene.move", scene_move}, {"scene.set", scene_set},
+    {"entity.create", entity_create}, {"entity.set", entity_set}, {"entity.remove", entity_remove}, {"entity.reparent", entity_reparent},
+    {"entity.reorder", entity_reorder},
+    {"key.set", key_set}, {"key.remove", key_remove}, {"track.remove", track_remove},
+    {"beat.add", beat_add}, {"beat.update", beat_update}, {"beat.remove", beat_remove}, {"beat.move", beat_move}, {"beat.split", beat_split},
+    {"clip.add", clip_add}, {"clip.update", clip_update}, {"clip.remove", clip_remove},
+    {"script.set", script_set}, {"script.remove", script_remove},
+};
+
+/* Run one operation and register its `as` name; the result object already holds the op name. */
+static bool run_op(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    const char *name;
+    if (!agent_object(op, f, "operation") || !agent_get_string(op, "op", true, &name, f, "operation")) return false;
+    cJSON_AddStringToObject(result, "op", name);
+    const char *as = NULL;
+    if (!agent_get_string(op, "as", false, &as, f, name)) return false;
+    if (as && (as[0] != '$' || strlen(as) < 2 || strlen(as) >= sizeof(x->refs.names[0]) || x->refs.count >= FL_AGENT_MAX_REFS))
+        return fl_fail(f, "invalid_argument", "%s: \"as\" must be \"$name\" (at most 46 characters)", name);
+    for (size_t i = 0; as && i < x->refs.count; ++i) if (!strcmp(x->refs.names[i], as)) return fl_fail(f, "invalid_argument", "%s: name %s is already used in this batch", name, as);
+    for (size_t i = 0; i < sizeof(OPERATIONS) / sizeof(*OPERATIONS); ++i) {
+        if (strcmp(OPERATIONS[i].name, name)) continue;
+        if (!OPERATIONS[i].run(x, op, result, f)) return false;
+        const cJSON *id = cJSON_GetObjectItemCaseSensitive(result, "id");
+        if (as) {
+            if (!id) return fl_fail(f, "invalid_argument", "%s creates nothing, so \"as\" has no id to name", name);
+            snprintf(x->refs.names[x->refs.count], sizeof(x->refs.names[0]), "%s", as);
+            x->refs.ids[x->refs.count++] = (Fl_Id)id->valuedouble;
+            cJSON_AddStringToObject(result, "as", as);
+        }
+        return true;
+    }
+    return fl_fail(f, "unknown_operation", "unknown operation \"%s\"", name);
+}
+
+/* Scene id -> revision pairs the caller expects to still be current. */
+static bool check_expectations(Fl_Project *p, const cJSON *expect, cJSON **error)
+{
+    if (!expect) return true;
+    Fl_Fail fail;
+    if (!cJSON_IsObject(expect)) {fl_fail(&fail, "invalid_argument", "expect must map scene ids to revisions"); *error = fl_fail_json(&fail); return false;}
+    cJSON *stale = NULL;
+    for (const cJSON *item = expect->child; item; item = item->next) {
+        char *end; unsigned long long id = strtoull(item->string, &end, 10);
+        const Fl_Scene *s = *end || !id ? NULL : fl_project_scene(p, id);
+        if (!cJSON_IsNumber(item) || !s) {fl_fail(&fail, "invalid_argument", "expect: \"%s\" is not a scene id with a numeric revision", item->string); cJSON_Delete(stale); *error = fl_fail_json(&fail); return false;}
+        if ((double)s->revision != item->valuedouble) {
+            if (!stale) stale = cJSON_CreateArray();
+            if (stale) cJSON_AddItemToArray(stale, agent_scene_summary(s));
+        }
+    }
+    if (!stale) return true;
+    fl_fail(&fail, "revision_conflict", "A scene changed since you read it. Re-read the listed scenes and rebuild the changeset; nothing was applied.");
+    *error = fl_fail_json(&fail);
+    if (*error) cJSON_AddItemToObject(*error, "changed_scenes", stale); else cJSON_Delete(stale);
+    return false;
+}
+
+cJSON *agent_tool_apply_ops(Fl_Agent *agent, const cJSON *args, cJSON **error)
+{
+    static const char *const keys[] = {"ops", "label", "expect", "dry_run", NULL};
+    Fl_Fail fail;
+    Fl_Project *project = agent->host.project(agent->host.user_data);
+    if (!project) {fl_fail(&fail, "no_project", "No project is open in Flow"); *error = fl_fail_json(&fail); return NULL;}
+    const cJSON *ops = cJSON_GetObjectItemCaseSensitive(args, "ops");
+    const char *label = NULL;
+    bool dry_run = false;
+    if (!agent_only_keys(args, &fail, "apply_ops", keys) || !agent_get_string(args, "label", false, &label, &fail, "apply_ops") ||
+        !agent_get_bool(args, "dry_run", &dry_run, NULL, &fail, "apply_ops")) {*error = fl_fail_json(&fail); return NULL;}
+    if (!cJSON_IsArray(ops) || !cJSON_GetArraySize(ops) || (unsigned)cJSON_GetArraySize(ops) > FL_AGENT_MAX_OPS) {
+        fl_fail(&fail, "invalid_argument", "apply_ops: \"ops\" must be an array of 1..%u operations", FL_AGENT_MAX_OPS);
+        *error = fl_fail_json(&fail); return NULL;
+    }
+    if (!check_expectations(project, cJSON_GetObjectItemCaseSensitive(args, "expect"), error)) return NULL;
+    Ctx x = {.project = project};
+    x.refs.names = calloc(FL_AGENT_MAX_REFS, sizeof(*x.refs.names)); x.refs.ids = calloc(FL_AGENT_MAX_REFS, sizeof(*x.refs.ids));
+    cJSON *results = cJSON_CreateArray();
+    if (!x.refs.names || !x.refs.ids || !results || !fl_history_begin(agent->history, project, label)) {
+        free(x.refs.names); free(x.refs.ids); cJSON_Delete(results);
+        fl_fail(&fail, "internal", "out of memory preparing the changeset"); *error = fl_fail_json(&fail); return NULL;
+    }
+    uint64_t start = fl_project_generation(project);
+    int index = 0;
+    bool ok = true;
+    cJSON *failing_op = NULL;
+    for (const cJSON *op = ops->child; op && ok; op = op->next, ++index) {
+        cJSON *result = cJSON_CreateObject();
+        if (!result) {ok = fl_fail(&fail, "internal", "out of memory"); break;}
+        ok = run_op(&x, op, result, &fail);
+        if (ok) cJSON_AddItemToArray(results, result);
+        else {failing_op = result; break;}
+    }
+    cJSON *out = NULL;
+    if (!ok) {
+        bool changed = fl_project_generation(project) != start;
+        if (changed) fl_history_rollback(agent->history, project); else fl_history_discard(agent->history);
+        *error = fl_fail_json(&fail);
+        if (*error) {
+            cJSON_AddNumberToObject(*error, "op_index", index);
+            const cJSON *name = failing_op ? cJSON_GetObjectItemCaseSensitive(failing_op, "op") : NULL;
+            if (name) cJSON_AddStringToObject(*error, "op", name->valuestring);
+            cJSON_AddStringToObject(*error, "state", "nothing was applied");
+        }
+        cJSON_Delete(failing_op); cJSON_Delete(results);
+    } else {
+        bool changed = fl_project_generation(project) != start;
+        if (dry_run && changed) fl_history_rollback(agent->history, project);
+        else if (changed) fl_history_commit(agent->history, project);
+        else fl_history_discard(agent->history);
+        out = cJSON_CreateObject();
+        cJSON *scenes = out ? cJSON_AddArrayToObject(out, "scenes") : NULL;
+        if (out) {
+            cJSON_AddBoolToObject(out, "dry_run", dry_run);
+            cJSON_AddNumberToObject(out, "applied", index);
+            cJSON_AddItemToObject(out, "results", results);
+            for (size_t i = 0; scenes && i < fl_project_scene_count(project); ++i) cJSON_AddItemToArray(scenes, agent_scene_summary(fl_project_scene_at(project, i)));
+            cJSON_AddNumberToObject(out, "undo_available", (double)fl_history_undo_count(agent->history));
+        } else cJSON_Delete(results);
+    }
+    free(x.refs.names); free(x.refs.ids);
+    return out;
+}

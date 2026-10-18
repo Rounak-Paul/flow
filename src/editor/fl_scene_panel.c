@@ -3,6 +3,7 @@
 #include "style.h"
 #include "core/fl_log.h"
 #include "fl_scene_preview.h"
+#include "fl_canvas_view.h"
 #include "fl_scene_thumbnails.h"
 #include <ca_icons.h>
 #include <ca_components.h>
@@ -687,4 +688,24 @@ bool fl_scene_panel_drop_widget(Fl_ScenePanel *p,Fl_WidgetKind kind,double scree
 {
     Fl_SceneDropTarget target;
     return fl_scene_panel_drop_target(p,screen_x,screen_y,&target)&&fl_scene_edit_insert(p->edit,kind,target.parent,target.x,target.y);
+}
+
+bool fl_scene_panel_output_rect(const Fl_ScenePanel *p, double *x, double *y, double *width, double *height)
+{
+    if (!p || !p->viewport || !p->window) return false;
+    const Fl_Scene *scene = fl_project_scene(p->project, fl_scene_edit_scene(p->edit));
+    float vx, vy, vw, vh;
+    ca_viewport_screen_rect(p->viewport, &vx, &vy, &vw, &vh);
+    Fl_CanvasMapping map = fl_canvas_mapping(fl_scene_frame(scene), vw, vh, FL_STYLE_ARTBOARD_MARGIN);
+    if (!scene || map.scale <= 0) return false;
+    *x = vx + (map.target.x - map.world.x) * map.scale; *y = vy + (map.target.y - map.world.y) * map.scale;
+    *width = map.target.width * map.scale; *height = map.target.height * map.scale;
+    return *width >= 1 && *height >= 1;
+}
+
+void fl_scene_panel_set_clean(Fl_ScenePanel *p, bool clean)
+{
+    if (!p) return;
+    fl_scene_preview_set_clean(p->preview, clean);
+    if (p->viewport) ca_viewport_request_redraw(p->viewport);
 }

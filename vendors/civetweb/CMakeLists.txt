@@ -1,0 +1,11 @@
+# CivetWeb 1.16 — vendored sources (MIT); see README. Embedded as a loopback HTTP server only.
+add_library(civetweb STATIC civetweb.c)
+target_include_directories(civetweb PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>)
+target_compile_definitions(civetweb PRIVATE NO_SSL NO_CGI NO_FILES NO_CACHING USE_SERVER_STATS=0 USE_WEBSOCKET=0)
+set_target_properties(civetweb PROPERTIES POSITION_INDEPENDENT_CODE ON)
+find_package(Threads REQUIRED)
+target_link_libraries(civetweb PUBLIC Threads::Threads)
+if(WIN32)
+    target_link_libraries(civetweb PUBLIC ws2_32)
+    target_compile_definitions(civetweb PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()

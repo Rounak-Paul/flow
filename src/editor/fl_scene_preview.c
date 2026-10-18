@@ -45,6 +45,7 @@ struct Fl_ScenePreview {
     Fl_EventBus *bus;
     Fl_PreviewInvalidateFn invalidate;
     void *invalidate_data;
+    bool clean;                 /* omit editor aids (grid, frame edge, selection) */
     VkDevice device;
     VkPipeline pipeline;
     VkPipelineLayout layout;
@@ -435,7 +436,7 @@ void fl_scene_preview_render(Ca_Viewport *viewport,void *data)
         Fl_Affine background=fl_affine_identity(); background.v[2]=target.x; background.v[5]=target.y;
         Fl_Appearance board={.fill=FL_STYLE_CANVAS_TARGET_RGBA};
         draw_primitive(p,cmd,&frame,background,target.width,target.height,FL_WIDGET_RECTANGLE,board,white);
-        draw_grid(p,cmd,&frame,white);
+        if (!p->clean) draw_grid(p,cmd,&frame,white);
         const Fl_Appearance placeholder={.fill=FL_STYLE_IMAGE_PLACEHOLDER_RGBA,
             .stroke=FL_STYLE_IMAGE_PLACEHOLDER_STROKE_RGBA,.stroke_width=FL_STYLE_IMAGE_PLACEHOLDER_STROKE};
         for (size_t i=0;i<g->count;++i) {
@@ -459,21 +460,23 @@ void fl_scene_preview_render(Ca_Viewport *viewport,void *data)
             if (mask) draw_primitive(p,cmd,&frame,v->world,v->local.width,v->local.height,v->kind,look,mask);
         }
         double logical_scale=map.scale;
-        Fl_Appearance frame_edge={.stroke=FL_STYLE_CANVAS_FRAME_RGBA,.stroke_width=1/map.scale};
-        draw_primitive(p,cmd,&frame,background,target.width,target.height,FL_WIDGET_RECTANGLE,frame_edge,white);
-        Fl_Appearance outline={.stroke=FL_STYLE_GIZMO_RGBA,.font_size=48};
-        for (size_t i=0;i<g->count;++i) {
-            const Fl_ResolvedEntity *v=&g->entities[i];
-            if (!v->visible||!fl_scene_edit_contains(p->edit,scene->entities[i].id)) continue;
-            double local_scale=fmax(hypot(v->world.v[0],v->world.v[3]),hypot(v->world.v[1],v->world.v[4]));
-            outline.stroke_width=FL_STYLE_OUTLINE_WIDTH/(logical_scale*fmax(local_scale,1e-9));
-            draw_primitive(p,cmd,&frame,v->world,v->local.width,v->local.height,FL_WIDGET_RECTANGLE,outline,white);
-        }
-        Fl_Appearance handle={.fill=FL_STYLE_GIZMO_RGBA,.font_size=48};double size=FL_STYLE_HANDLE_SIZE/logical_scale;
-        for (unsigned i=0;i<5;++i) {
-            double x,y;if (!handle_point(p,scene,g,i,logical_scale,&x,&y)) break;
-            Fl_Affine matrix=fl_affine_identity();matrix.v[2]=x-size*.5;matrix.v[5]=y-size*.5;
-            draw_primitive(p,cmd,&frame,matrix,size,size,FL_WIDGET_RECTANGLE,handle,white);
+        if (!p->clean) {
+            Fl_Appearance frame_edge={.stroke=FL_STYLE_CANVAS_FRAME_RGBA,.stroke_width=1/map.scale};
+            draw_primitive(p,cmd,&frame,background,target.width,target.height,FL_WIDGET_RECTANGLE,frame_edge,white);
+            Fl_Appearance outline={.stroke=FL_STYLE_GIZMO_RGBA,.font_size=48};
+            for (size_t i=0;i<g->count;++i) {
+                const Fl_ResolvedEntity *v=&g->entities[i];
+                if (!v->visible||!fl_scene_edit_contains(p->edit,scene->entities[i].id)) continue;
+                double local_scale=fmax(hypot(v->world.v[0],v->world.v[3]),hypot(v->world.v[1],v->world.v[4]));
+                outline.stroke_width=FL_STYLE_OUTLINE_WIDTH/(logical_scale*fmax(local_scale,1e-9));
+                draw_primitive(p,cmd,&frame,v->world,v->local.width,v->local.height,FL_WIDGET_RECTANGLE,outline,white);
+            }
+            Fl_Appearance handle={.fill=FL_STYLE_GIZMO_RGBA,.font_size=48};double size=FL_STYLE_HANDLE_SIZE/logical_scale;
+            for (unsigned i=0;i<5;++i) {
+                double x,y;if (!handle_point(p,scene,g,i,logical_scale,&x,&y)) break;
+                Fl_Affine matrix=fl_affine_identity();matrix.v[2]=x-size*.5;matrix.v[5]=y-size*.5;
+                draw_primitive(p,cmd,&frame,matrix,size,size,FL_WIDGET_RECTANGLE,handle,white);
+            }
         }
     }
     vkCmdEndRendering(cmd);
@@ -490,6 +493,8 @@ Fl_ScenePreview *fl_scene_preview_create(const Fl_ScenePreviewDesc *desc)
         .user_data=p,.owner=p}).generation) {fl_text_rasterizer_destroy(p->rasterizer);free(p);return NULL;}
     return p;
 }
+void fl_scene_preview_set_clean(Fl_ScenePreview *p, bool clean) {if (p) p->clean = clean;}
+
 void fl_scene_preview_destroy(Fl_ScenePreview *p)
 {
     if (!p) return;
