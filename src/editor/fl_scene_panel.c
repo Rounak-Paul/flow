@@ -2,6 +2,7 @@
 #include "style.h"
 #include "core/fl_log.h"
 #include "fl_scene_preview.h"
+#include "fl_scene_thumbnails.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,6 +24,7 @@ struct Fl_ScenePanel {
     Fl_Row *rows;
     size_t row_count;
     Fl_ScenePreview *preview;
+    Fl_SceneThumbnails *thumbnails;
     Fl_Fonts *fonts;
     Ca_Window *rename_window;
     Ca_TextInput *rename_input;
@@ -94,13 +96,6 @@ static void add_scene(Ca_Button *button, void *data)
     (void)button; Fl_ScenePanel *p = data; Fl_Id id;
     char name[64]; snprintf(name, sizeof(name), "Scene %zu", fl_project_scene_count(p->project) + 1);
     if (apply(p, (Fl_Op){.kind = FL_OP_SCENE_ADD, .name = name}, &id)) fl_scene_edit_select(p->edit,id,0,false);
-}
-
-/* Save the project explicitly; automatic saves use the same engine boundary. */
-static void save_project(Ca_Button *button, void *data)
-{
-    (void)button; Fl_ScenePanel *p = data;
-    if (!fl_project_save(p->project)) FL_LOG_ERROR("project", "save failed; changes remain in memory");
 }
 
 /* Add a group or rectangle under parent, then select its stable identity. */
@@ -288,6 +283,7 @@ void fl_scene_panel_destroy(Fl_ScenePanel *p)
     fl_scene_panel_teardown(p); fl_event_unsubscribe_owner(p->bus, p);
     ca_effect_destroy(p->keys);
     fl_scene_preview_destroy(p->preview);
+    fl_scene_thumbnails_destroy(p->thumbnails);
     free(p->rows); free(p);
 }
 
@@ -298,15 +294,16 @@ void fl_scene_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
     const Fl_Scene *s = fl_project_scene(p->project, fl_scene_edit_scene(p->edit));
     size_t scenes = fl_project_scene_count(p->project), entities = s ? s->entity_count : 0;
     free(p->rows); p->rows = NULL; p->row_count = 0;
+    if (!p->thumbnails) p->thumbnails = fl_scene_thumbnails_create(ca_window_instance(window));
+    fl_scene_thumbnails_retain(p->thumbnails, p->project);
     if (scenes > SIZE_MAX - entities || scenes + entities > SIZE_MAX / sizeof(*p->rows)) return;
     p->rows = calloc(scenes + entities + 1, sizeof(*p->rows));
     if (!p->rows) return;
     ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_SCENE});
     ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_TOOLBAR});
-    ca_text(&(Ca_TextDesc){.text = "Scenes", .style = FL_CLASS_HEADING});
     ca_btn_begin(&(Ca_BtnDesc){.text = "+ Scene", .on_click = add_scene, .click_data = p, .style = FL_CLASS_ACTION}); ca_btn_end();
-    ca_btn_begin(&(Ca_BtnDesc){.text = "Save project", .on_click = save_project, .click_data = p, .style = FL_CLASS_ACTION}); ca_btn_end();
     ca_div_end();
+    ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_SCENE_GUTTER});
     p->scene_strip = ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_SCENE_STRIP});
     for (size_t i = 0; i < scenes; ++i) {
         const Fl_Scene *scene = fl_project_scene_at(p->project, i);
@@ -314,15 +311,26 @@ void fl_scene_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
         char id[48]; snprintf(id, sizeof(id), "scene-%llu", (unsigned long long)scene->id);
         row->bounds = ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .id = id,
             .style = FL_CLASS_SCENE_DRAG, .on_drag_end = scene_drag_end, .drag_data = row, .drag_preview = true});
+        bool selected = scene->id == fl_scene_edit_scene(p->edit);
         ca_btn_begin(&(Ca_BtnDesc){.on_click = select_row, .click_data = row,
-            .direction = CA_VERTICAL, .style = scene->id == fl_scene_edit_scene(p->edit) ? FL_CLASS_CARD_SELECTED : FL_CLASS_CARD});
-        char info[96]; snprintf(info, sizeof(info), "%zu   %.2fs", i + 1, scene->duration / 120000.0);
-        ca_text(&(Ca_TextDesc){.text = info, .style = FL_CLASS_MUTED});
-        ca_text(&(Ca_TextDesc){.text = scene->name, .style = FL_CLASS_HEADING});
-        ca_btn_end(); ca_div_end();
+            .direction = CA_VERTICAL, .style = selected ? FL_CLASS_CARD_SELECTED : FL_CLASS_CARD});
+        Ca_Image *thumbnail = fl_scene_thumbnails_get(p->thumbnails, scene);
+        if (thumbnail) ca_image(&(Ca_ImageDesc){.image = thumbnail, .width = FL_STYLE_SCENE_THUMB_DISPLAY_W,
+            .height = FL_STYLE_SCENE_THUMB_DISPLAY_H, .corner_radius = FL_STYLE_SCENE_THUMB_RADIUS, .style = FL_CLASS_SCENE_THUMB});
+        ca_div_begin(&(Ca_DivDesc){.position = CA_POSITION_ABSOLUTE, .style = selected ? FL_CLASS_SCENE_GLASS_SELECTED : FL_CLASS_SCENE_GLASS, .no_hover = true});
+        ca_div_end();
+        char duration[32]; snprintf(duration, sizeof(duration), "%.2fs", scene->duration / 120000.0);
+        ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .position = CA_POSITION_ABSOLUTE, .style = FL_CLASS_SCENE_LABEL, .no_hover = true});
+        ca_text(&(Ca_TextDesc){.text = scene->name, .style = FL_CLASS_SCENE_NAME});
+        ca_text(&(Ca_TextDesc){.text = duration, .style = FL_CLASS_SCENE_TIME});
+        ca_div_end();
+        ca_btn_end();
         const char *items[] = {"Rename", "Move earlier", "Move later", "Delete scene"};
         ca_context_menu(&(Ca_CtxMenuDesc){.items = items, .item_count = 4, .on_select = scene_menu, .select_data = row});
+        ca_div_end();
     }
+    ca_div_end();
+    ca_div_begin(&(Ca_DivDesc){.position = CA_POSITION_ABSOLUTE, .style = FL_CLASS_SCENE_RIM, .no_hover = true}); ca_div_end();
     ca_div_end();
     ca_split_begin(&(Ca_SplitDesc){.direction = CA_HORIZONTAL, .ratio = .23f,
         .fixed_pane = CA_SPLIT_FIXED_FIRST, .fixed_size = FL_STYLE_HIERARCHY_W, .id = "scene-body"});

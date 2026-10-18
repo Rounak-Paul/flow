@@ -57,6 +57,11 @@
 /* Raised glass tab: bright sheen, specular top rim, dark underside, cast shadow. */
 #define FL_COLOR_TAB_PILL_TOP   "rgba(255, 255, 255, 0.115)"
 #define FL_COLOR_TAB_PILL_BOTTOM "rgba(255, 255, 255, 0.022)"
+#define FL_COLOR_CARD_SELECTED_GLOW "rgba(106, 166, 255, 0.10)"
+#define FL_COLOR_CARD_SELECTED_RIM "rgba(106, 166, 255, 0.50)"
+#define FL_COLOR_CARD_SELECTED_SPECULAR "rgba(150, 195, 255, 0.60)"
+#define FL_COLOR_CARD_GLASS_TOP "rgba(255, 255, 255, 0.016)"
+#define FL_COLOR_CARD_GLASS_BOTTOM "rgba(255, 255, 255, 0.0)"
 #define FL_COLOR_TAB_PILL_RIM   "rgba(255, 255, 255, 0.10)"
 #define FL_COLOR_TAB_PILL_SPECULAR "rgba(255, 255, 255, 0.32)"
 #define FL_COLOR_TAB_PILL_UNDER "rgba(0, 0, 0, 0.55)"
@@ -97,6 +102,7 @@
 #define FL_MOTION_TAB_EASE      "cubic-bezier(0.34, 1.56, 0.64, 1)"
 #define FL_MOTION_TAB_STRETCH   "1"
 #define FL_MOTION_FADE          "background-color 0.16s ease-out"
+#define FL_MOTION_FADE_BORDER   "border-color 0.16s ease-out"
 
 /* Spacing scale. */
 #define FL_SPACE_XS             "2px"
@@ -108,11 +114,14 @@
 /* Corner radii. */
 #define FL_RADIUS_SM            "6px"
 #define FL_RADIUS_MD            "9px"
+#define FL_RADIUS_CARD          "12px"
+#define FL_RADIUS_CARD_GUTTER   "17px"
 #define FL_RADIUS_LG            "14px"
 #define FL_RADIUS_PILL          "999px"
 
 /* Blur strengths (logical pixels) and the gutter between floating panels. */
 #define FL_BLUR_PANEL           "28px"
+#define FL_AMBIENT_LIGHT        "48px 88px 2.4"
 #define FL_BLUR_FLOAT           "40px"
 #define FL_PANEL_GAP            "8px"
 
@@ -251,6 +260,7 @@
     "  border-radius: " FL_RADIUS_LG ";"                                         \
     "  background: linear-gradient(to bottom, " FL_COLOR_GLASS_TOP ", " FL_COLOR_GLASS_BOTTOM ");" \
     "  border: 1px solid " FL_COLOR_GLASS_BORDER ";"                             \
+    "  backdrop-filter: blur(" FL_BLUR_PANEL ");"                                \
     "}"                                                                          \
     ".ca-dock-group.ca-dock-empty { background: " FL_COLOR_FIELD "; }" \
     ".ca-dock-content { background: transparent; }"                              \
@@ -328,9 +338,21 @@
 #define FL_CLASS_LABEL "fl-label"
 #define FL_CLASS_MUTED "fl-muted"
 #define FL_CLASS_ACTION "fl-action"
+#define FL_CLASS_SCENE_GUTTER "fl-scene-gutter fl-ambient"
 #define FL_CLASS_SCENE_STRIP "fl-scene-strip"
+#define FL_CLASS_SCENE_RIM "fl-scene-rim"
+
+#define FL_SCENE_CARD_W "116px"
+#define FL_SCENE_CARD_H "66px"
+#define FL_SCENE_STRIP_H "74px"
 #define FL_CLASS_CARD "fl-scene-card"
 #define FL_CLASS_SCENE_DRAG "fl-scene-drag"
+#define FL_CLASS_SCENE_THUMB "fl-scene-thumb"
+#define FL_CLASS_SCENE_GLASS "fl-scene-glass"
+#define FL_CLASS_SCENE_GLASS_SELECTED "fl-scene-glass selected"
+#define FL_CLASS_SCENE_LABEL "fl-scene-label"
+#define FL_CLASS_SCENE_NAME "fl-scene-name"
+#define FL_CLASS_SCENE_TIME "fl-scene-time"
 #define FL_CLASS_CARD_SELECTED "fl-scene-card selected"
 #define FL_CLASS_HIERARCHY "fl-hierarchy"
 #define FL_CLASS_ENTITY "fl-entity"
@@ -352,10 +374,20 @@
     ".fl-action { padding: 5px 14px; background: " FL_COLOR_CONTROL "; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: " FL_RADIUS_PILL "; color: " FL_COLOR_TEXT_BRIGHT "; flex-shrink: 0; }" \
     ".fl-action:hover { background: " FL_COLOR_CONTROL_HOVER "; }" \
     ".fl-recent:hover { background: " FL_COLOR_CONTROL_HOVER "; }" \
-    ".fl-scene-strip { width: 100%; height: 104px; flex-shrink: 0; padding: 8px; gap: 8px; overflow-x: auto; background: " FL_COLOR_GLASS_BAR "; }" \
-    ".fl-scene-drag { flex-shrink: 0; cursor: grab; }" \
-    ".fl-scene-card { width: 164px; height: 82px; flex-shrink: 0; overflow: hidden; padding: 12px; gap: 12px; background: " FL_COLOR_CONTROL "; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: " FL_RADIUS_LG "; }" \
-    ".fl-scene-card.selected { border-color: " FL_COLOR_ACCENT "; background: " FL_COLOR_SELECTION "; glow-radius: 12px; glow-color: " FL_COLOR_ACCENT_GLOW "; }" \
+    ".fl-ambient { ambient-light: " FL_AMBIENT_LIGHT "; }" \
+    ".fl-scene-gutter { height: " FL_SCENE_STRIP_H "; margin: " FL_SPACE_SM "; flex-shrink: 0; border-radius: " FL_RADIUS_CARD_GUTTER "; }" \
+    ".fl-scene-strip { width: 100%; height: 100%; padding: " FL_SPACE_SM "; gap: " FL_SPACE_SM "; overflow-x: auto; scrollbar-width: 0px; border-radius: " FL_RADIUS_CARD_GUTTER "; background: linear-gradient(to bottom, " FL_COLOR_TAB_GUTTER_TOP ", " FL_COLOR_TAB_GUTTER_BOTTOM "); }" \
+    ".fl-scene-rim { left: 0px; top: 0px; width: 100%; height: 100%; z-index: 1; pointer-events: none; background: transparent; border-radius: " FL_RADIUS_CARD_GUTTER "; box-shadow: inset 0px 3px 8px " FL_COLOR_TAB_GUTTER_SHADE "; border: 1px solid " FL_COLOR_TAB_GUTTER_EDGE "; border-top-color: " FL_COLOR_TAB_GUTTER_EDGE "; border-bottom-color: " FL_COLOR_TAB_GUTTER_LIP "; }" \
+    ".fl-scene-drag { width: " FL_SCENE_CARD_W "; height: " FL_SCENE_CARD_H "; flex-shrink: 0; cursor: grab; }" \
+    ".fl-scene-card { width: 100%; height: 100%; flex-shrink: 0; overflow: hidden; gap: 0px; background: transparent; border-radius: " FL_RADIUS_CARD "; }" \
+    ".fl-scene-card:hover { glow-radius: 8px; glow-color: " FL_COLOR_TAB_PILL_RIM "; }" \
+    ".fl-scene-card.selected { glow-radius: 6px; glow-color: " FL_COLOR_CARD_SELECTED_GLOW "; }" \
+    ".fl-scene-thumb { pointer-events: none; }" \
+    ".fl-scene-glass { left: 0px; top: 0px; width: 100%; height: 100%; z-index: 1; pointer-events: none; border-radius: " FL_RADIUS_CARD "; background: linear-gradient(to bottom, " FL_COLOR_CARD_GLASS_TOP ", " FL_COLOR_CARD_GLASS_BOTTOM "); border: 1px solid " FL_COLOR_TAB_PILL_RIM "; border-top-color: " FL_COLOR_TAB_PILL_SPECULAR "; border-bottom-color: " FL_COLOR_TAB_PILL_UNDER "; }" \
+    ".fl-scene-glass.selected { border-color: " FL_COLOR_CARD_SELECTED_RIM "; border-top-color: " FL_COLOR_CARD_SELECTED_SPECULAR "; }" \
+    ".fl-scene-label { left: 0px; top: 32px; width: 100%; height: 34px; padding: 0px 10px; gap: 0px; justify-content: center; z-index: 1; background: transparent; pointer-events: none; }" \
+    ".fl-scene-name { z-index: 1; color: " FL_COLOR_TEXT_BRIGHT "; font-size: " FL_FONT_SM "; }" \
+    ".fl-scene-time { z-index: 1; color: " FL_COLOR_TEXT_MEDIUM "; font-size: " FL_FONT_XS "; }" \
     ".fl-hierarchy { width: 100%; height: 100%; overflow-y: auto; gap: 2px; padding: 8px; background: transparent; }" \
     ".fl-entity { width: 100%; height: 28px; flex-shrink: 0; overflow: hidden; padding: 4px 8px; background: transparent; gap: 0px; border-radius: " FL_RADIUS_SM "; }" \
     ".fl-entity:hover { background: " FL_COLOR_HOVER "; }" \
@@ -379,7 +411,7 @@
 #define FL_STYLE_OUTLINE_WIDTH 2.0
 #define FL_STYLE_GIZMO_RGBA {91,156,255,255}
 #define FL_CLASS_ENTITY_ROW "fl-entity-row"
-#define FL_CLASS_STAGE "fl-stage"
+#define FL_CLASS_STAGE "fl-stage fl-ambient"
 #define FL_CLASS_LIBRARY "fl-library"
 #define FL_CLASS_WIDGET_WRAP "fl-widget-wrap"
 #define FL_CLASS_WIDGET_CARD "fl-widget-card"
@@ -409,7 +441,7 @@
 #define FL_STYLE_IMAGE_PLACEHOLDER_STROKE 2.0
 #define FL_STYLE_FONT_LIST_LIMIT 300
 #define FL_CLASS_ASSETS "fl-assets"
-#define FL_CLASS_ASSET_GRID "fl-asset-grid"
+#define FL_CLASS_ASSET_GRID "fl-asset-grid fl-ambient"
 #define FL_CLASS_ASSET_TILE "fl-asset-tile"
 #define FL_CLASS_ASSET_CARD "fl-asset-card"
 #define FL_CLASS_ASSET_CARD_SELECTED "fl-asset-card selected"
@@ -423,6 +455,15 @@
 #define FL_CLASS_PLAY_ACTIVE "fl-play active"
 #define FL_CLASS_EMPTY "fl-empty"
 #define FL_CLASS_EMPTY_ICON "fl-empty-icon"
+#define FL_STYLE_SCENE_THUMB_DISPLAY_W 116.0f
+#define FL_STYLE_SCENE_THUMB_DISPLAY_H 66.0f
+#define FL_STYLE_SCENE_THUMB_RADIUS 12.0f
+#define FL_STYLE_SCENE_THUMB_W 232u
+#define FL_STYLE_SCENE_THUMB_H 132u
+#define FL_STYLE_SCENE_THUMB_CANVAS_RGBA {0,0,0,255}
+#define FL_STYLE_SCENE_THUMB_ARTBOARD_RGBA {21,26,40,255}
+#define FL_STYLE_SCENE_THUMB_SCRIM_START 0.45
+#define FL_STYLE_SCENE_THUMB_SCRIM_STRENGTH 0.78
 #define FL_STYLE_THUMBNAIL_PIXELS 192u
 #define FL_STYLE_THUMBNAIL_W 82.0f
 #define FL_STYLE_THUMBNAIL_H 56.0f
@@ -573,4 +614,4 @@
 #define FL_STYLE_CSS_MOTION \
     ".ca-titlebar-menu-item, .ca-titlebar-control, .ca-popup-btn, .ca-dock-tab, .fl-action, .fl-icon-action, " \
     ".fl-recent, .fl-entity, .fl-widget-card, .fl-asset-card, .fl-font-row, .fl-chip, .fl-file-row, " \
-    ".fl-scene-card { transition: " FL_MOTION_FADE "; }"
+    ".fl-scene-card { transition: " FL_MOTION_FADE ", " FL_MOTION_FADE_BORDER "; }"
