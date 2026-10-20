@@ -666,7 +666,7 @@
     ".fl-tl-beat-empty { height: 28px; padding: 0px 10px; align-items: center; }" \
     ".fl-tl-beat { cursor: grab; }" \
     ".fl-tl-beat:active { cursor: grabbing; }" \
-    ".fl-tl-beat-label { left: 0px; top: 0px; width: 100%; height: 100%; z-index: 2; padding: 0px 8px; gap: 6px; align-items: center; justify-content: space-between; background: transparent; pointer-events: none; }" \
+    ".fl-tl-beat-label { left: 0px; top: 0px; width: 100%; height: 100%; z-index: 1; padding: 0px 8px; gap: 6px; align-items: center; justify-content: space-between; background: transparent; pointer-events: none; }" \
     ".fl-tl-beat:hover { background: " FL_COLOR_CONTROL_HOVER "; }" \
     ".fl-tl-beat.selected { background: " FL_COLOR_SELECTION "; }" \
     ".fl-tl-beat-text { font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MEDIUM "; white-space: nowrap; overflow: hidden; }" \
@@ -683,7 +683,6 @@
     ".fl-tl-beat-drop { background: " FL_COLOR_ACCENT "; z-index: 5; }" \
     ".fl-tl-edge { z-index: 3; cursor: ew-resize; align-items: center; justify-content: center; background: transparent; }" \
     ".fl-tl-edge-mark { width: 2px; height: 20px; background: " FL_COLOR_TEXT_DIM "; }" \
-    ".fl-tl-edge:hover { background: " FL_COLOR_ACCENT "; }" \
     ".fl-tl-span { background: " FL_COLOR_GLASS_BORDER "; }" \
     ".fl-tl-key { align-items: center; justify-content: center; }" \
     ".fl-tl-key-text { font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MUTED "; }" \

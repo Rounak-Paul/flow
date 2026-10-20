@@ -586,6 +586,23 @@ static void rename_beat(Fl_TimelinePanel *p, const Fl_Beat *beat)
     ca_ui_end(); ca_input_focus(p->rename_input);
 }
 
+/* Remove beat and its keys, preserving the scene's required final beat. */
+static void remove_beat(Fl_TimelinePanel *p, Fl_Id beat)
+{
+    const Fl_Scene *scene = scene_of(p);
+    if (!scene || scene->beat_count < 2 || !fl_scene_beat_range(scene, beat, NULL, NULL)) return;
+    fl_playback_pause(p->playback);
+    apply(p, (Fl_Op){.kind = FL_OP_BEAT_REMOVE, .scene = scene->id, .beat = beat}, NULL);
+}
+
+/* Delete the selected beat through the same path as its context menu. */
+static void delete_beat(Ca_Button *button, void *data)
+{
+    (void)button;
+    Fl_TimelinePanel *p = data;
+    remove_beat(p, p->selected_beat);
+}
+
 /* Beat actions: rename, split at the playhead, delete. */
 static void beat_menu(int index, void *data)
 {
@@ -601,7 +618,7 @@ static void beat_menu(int index, void *data)
         Fl_Id id;
         if (apply(p, (Fl_Op){.kind = FL_OP_BEAT_SPLIT, .scene = s->id, .beat = it->id,
             .name = name, .tick = now}, &id)) {p->selected_beat = id; invalidate(p);}
-    } else if (index == 2) apply(p, (Fl_Op){.kind = FL_OP_BEAT_REMOVE, .scene = s->id, .beat = it->id}, NULL);
+    } else if (index == 2) remove_beat(p, it->id);
 }
 
 /* Key actions: easing choices, delete. */
@@ -660,6 +677,7 @@ static bool changed(const Fl_Event *event, void *data)
     const Fl_Track *track;
     if (!fl_scene_key(scene_of(p), p->selected_key, &track) || !fl_scene_edit_contains(p->edit, track->entity))
         p->selected_key = 0;
+    if (!fl_scene_beat_range(scene_of(p), p->selected_beat, NULL, NULL)) p->selected_beat = 0;
     invalidate(p); return false;
 }
 static bool time_changed(const Fl_Event *event, void *data) { (void)event; sync_playhead(data); return false; }
@@ -855,6 +873,12 @@ void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
         .tooltip = "Fit the scene in the visible timeline"});
     fl_button(&(Fl_ButtonDesc){.text = CA_ICON_NF_MD_PLUS, .on_click = add_beat, .click_data = p, .kind = FL_BUTTON_ICON, .tooltip = "Add beat at the playhead"});
 
+    if (p->selected_beat) {
+        fl_button(&(Fl_ButtonDesc){.kind = FL_BUTTON_ICON, .text = CA_ICON_NF_MD_DELETE_OUTLINE,
+            .id = "timeline-delete-beat", .on_click = delete_beat, .click_data = p,
+            .disabled = playing || s->beat_count < 2,
+            .tooltip = s->beat_count < 2 ? "The scene must keep one beat" : "Delete selected beat and its keyframes"});
+    }
     ca_div_end();
 
     /* Show contextual key editing only while a visible key is selected. */
@@ -956,7 +980,7 @@ void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
         ca_text(&(Ca_TextDesc){.text = duration, .style = FL_CLASS_TL_BEAT_DURATION});
         ca_div_end();
         ca_div_end();
-        if (it) ca_context_menu(&(Ca_CtxMenuDesc){.items = beat_items, .item_count = 3, .on_select = beat_menu, .select_data = it});
+        if (it) ca_context_menu(&(Ca_CtxMenuDesc){.items = beat_items, .item_count = s->beat_count > 1 ? 3 : 2, .on_select = beat_menu, .select_data = it});
         at += (Fl_Tick)b->duration;
     }
     at = 0;
@@ -964,10 +988,13 @@ void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
         const Fl_Beat *b = &s->beats[i];
         at += (Fl_Tick)b->duration;
         char id[48]; snprintf(id, sizeof(id), "beat-edge-%llu", (unsigned long long)b->id);
-        element(p, item(p, ITEM_BEAT_EDGE, b->id), id, FL_CLASS_TL_EDGE,
+        Fl_TimelineItem *edge = item(p, ITEM_BEAT_EDGE, b->id);
+        element(p, edge, id, FL_CLASS_TL_EDGE,
             x_of(p, at) - FL_STYLE_TL_EDGE_W * 0.5f, FL_STYLE_TL_EDGE_W, FL_STYLE_TL_LANE_H, FL_STYLE_TL_LANE_H);
         ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_TL_EDGE_MARK, .no_hover = true});
         ca_div_end(); ca_div_end();
+        if (edge) ca_context_menu(&(Ca_CtxMenuDesc){.items = beat_items, .item_count = s->beat_count > 1 ? 3 : 2,
+            .on_select = beat_menu, .select_data = edge});
     }
     ca_div_end();
 

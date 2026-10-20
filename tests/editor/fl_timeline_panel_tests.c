@@ -26,6 +26,35 @@ static void check_playback_scroll(void)
     CHECK(playback_scroll(870, 900, 0, 3600, 1.5f) == 42);
 }
 
+/* Both delete entry points clear selection, pause playback and retain the final beat. */
+static void check_beat_deletion(Fl_TimelinePanel *panel)
+{
+    const Fl_Scene *scene = scene_of(panel);
+    CHECK(scene->beat_count > 1);
+    Fl_Id id = scene->beats[scene->beat_count - 1].id;
+    size_t count = scene->beat_count;
+    panel->selected_beat = id;
+    panel->playback->playing = true;
+    Fl_TimelineItem edge = {panel, ITEM_BEAT_EDGE, id};
+    beat_menu(2, &edge);
+    CHECK(scene_of(panel)->beat_count == count - 1);
+    CHECK(!fl_playback_playing(panel->playback) && panel->selected_beat == 0);
+    for (size_t remaining = scene_of(panel)->beat_count - 1; remaining > 0; --remaining) {
+        scene = scene_of(panel);
+        panel->selected_beat = scene->beats[scene->beat_count - 1].id;
+        count = scene->beat_count;
+        delete_beat(NULL, panel);
+        CHECK(scene_of(panel)->beat_count == count - 1 && panel->selected_beat == 0);
+    }
+    scene = scene_of(panel);
+    panel->selected_beat = scene->beats[0].id;
+    uint64_t revision = scene->revision;
+    delete_beat(NULL, panel);
+    CHECK(scene_of(panel)->beat_count == 1 && scene_of(panel)->revision == revision);
+    remove_beat(panel, UINT64_MAX);
+    CHECK(scene_of(panel)->revision == revision);
+}
+
 /* Verify ordered insertion, resize snapping, release handling and split ownership. */
 static void check_beat_interactions(Fl_TimelinePanel *panel)
 {
@@ -165,6 +194,7 @@ int main(int argc, char **argv)
     check_playback_scroll();
     check_beat_interactions(panel);
     check_beat_reordering(panel);
+    check_beat_deletion(panel);
     fl_timeline_panel_destroy(panel); fl_scene_edit_destroy(edit); fl_project_destroy(project);
     CHECK(fl_event_bus_destroy(bus)); fl_fs_remove(path);
     return FLOW_TEST_RESULT("fl_timeline_panel_tests");
