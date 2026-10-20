@@ -638,11 +638,10 @@
 #define FL_STYLE_CSS_TIMELINE \
     ".fl-timeline { width: 100%; height: 100%; gap: 0px; overflow: hidden; background: transparent; padding: 0px " FL_SPACE_SM " " FL_SPACE_SM "; }" \
     ".fl-tl-transport, .fl-tl-authoring { width: 100%; height: 34px; flex-shrink: 0; gap: 6px; padding: 0px 4px; align-items: center; overflow: hidden; }" \
-    ".fl-tl-authoring { border-top: 1px solid " FL_COLOR_GLASS_BORDER "; }" \
     ".fl-tl-selection { width: 100%; min-width: 0px; flex-shrink: 1; overflow: hidden; white-space: nowrap; font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MEDIUM "; }" \
     ".fl-tl-header, .fl-tl-label-header { height: 48px; flex-shrink: 0; overflow: hidden; gap: 0px; }" \
     ".fl-tl-label-header { width: 100%; padding: 0px; }" \
-    ".fl-tl-object-header { width: 100%; flex-shrink: 0; padding: 0px 10px; align-items: center; overflow: hidden; border-bottom: 1px solid " FL_COLOR_GLASS_BORDER "; }" \
+    ".fl-tl-object-header { width: 100%; flex-shrink: 0; padding: 0px 10px; align-items: center; overflow: hidden; }" \
     ".fl-tl-tick { background: " FL_COLOR_GLASS_BORDER "; }" \
     ".fl-tl-tick.major { background: " FL_COLOR_TEXT_DIM "; }" \
     ".fl-tl-tick-text { font-size: " FL_FONT_XS "; color: " FL_COLOR_TEXT_DIM "; white-space: nowrap; }" \
@@ -651,18 +650,18 @@
     ".fl-tl-clock { font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MEDIUM "; padding: 0px 8px; flex-shrink: 0; }" \
     ".fl-tl-spacer { flex-grow: 1; height: 1px; }" \
     ".fl-tl-scroll { width: 100%; flex-grow: 1; min-height: 0px; overflow: auto; gap: 0px; }" \
-    ".fl-tl-labels { width: 240px; flex-shrink: 0; gap: 0px; border-right: 1px solid " FL_COLOR_GLASS_BORDER "; }" \
+    ".fl-tl-labels { width: 240px; flex-shrink: 0; gap: 0px; }" \
     ".fl-tl-label-viewport { width: 100%; flex-grow: 1; min-height: 0px; overflow: hidden; }" \
     ".fl-tl-label-content, .fl-tl-key-content { flex-shrink: 0; gap: 0px; }" \
     ".fl-tl-lane-label { width: 100%; height: 28px; flex-shrink: 0; padding: 0px 10px; align-items: center; }" \
     ".fl-tl-lane-label-text { font-size: " FL_FONT_XS "; color: " FL_COLOR_TEXT_DIM "; white-space: nowrap; }" \
-    ".fl-tl-label { width: 100%; height: 28px; flex-shrink: 0; padding: 0px 10px; gap: 4px; align-items: center; overflow: hidden; border-bottom: 1px solid " FL_COLOR_GLASS_BORDER "; }" \
+    ".fl-tl-label { width: 100%; height: 28px; flex-shrink: 0; padding: 0px 10px; gap: 4px; align-items: center; overflow: hidden; }" \
     ".fl-tl-row.selected, .fl-tl-label.selected { background: " FL_COLOR_SELECTION "; }" \
     ".fl-tl-label-text { font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MEDIUM "; white-space: nowrap; }" \
     ".fl-tl-lanes { flex-grow: 1; min-width: 0px; min-height: 0px; overflow: hidden; gap: 0px; }" \
     ".fl-tl-beat-segments { width: 100%; height: 28px; flex-shrink: 0; overflow: hidden; gap: 0px; }" \
     ".fl-tl-content { flex-shrink: 0; gap: 0px; }" \
-    ".fl-tl-row { height: 28px; flex-shrink: 0; border-bottom: 1px solid " FL_COLOR_GLASS_BORDER "; }" \
+    ".fl-tl-row { height: 28px; flex-shrink: 0; }" \
     ".fl-tl-beat-empty { height: 28px; padding: 0px 10px; align-items: center; }" \
     ".fl-tl-beat { cursor: grab; }" \
     ".fl-tl-beat:active { cursor: grabbing; }" \
@@ -672,7 +671,7 @@
     ".fl-tl-beat-text { font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MEDIUM "; white-space: nowrap; overflow: hidden; }" \
     ".fl-tl-beat-duration { font-size: " FL_FONT_XS "; color: " FL_COLOR_TEXT_DIM "; white-space: nowrap; flex-shrink: 0; }"
 #define FL_STYLE_CSS_TIMELINE_BEATS \
-    ".fl-tl-body { position: relative; width: 100%; flex-grow: 1; min-height: 0px; overflow: hidden; gap: 0px; padding: 0px; border-radius: " FL_RADIUS_CARD_GUTTER "; box-shadow: inset 0px 3px 8px " FL_COLOR_TAB_GUTTER_SHADE "; border: 1px solid " FL_COLOR_TAB_GUTTER_EDGE "; border-bottom-color: " FL_COLOR_TAB_GUTTER_LIP "; background: linear-gradient(to bottom, " FL_COLOR_TAB_GUTTER_TOP ", " FL_COLOR_TAB_GUTTER_BOTTOM "); }" \
+    ".fl-tl-body { position: relative; width: 100%; flex-grow: 1; min-height: 0px; overflow: hidden; gap: 0px; padding: 0px; border-radius: " FL_RADIUS_CARD_GUTTER "; box-shadow: inset 0px 3px 8px " FL_COLOR_TAB_GUTTER_SHADE "; background: linear-gradient(to bottom, " FL_COLOR_TAB_GUTTER_TOP ", " FL_COLOR_TAB_GUTTER_BOTTOM "); }" \
     ".fl-tl-time-ruler { height: 20px; flex-shrink: 0; overflow: hidden; background: transparent; }" \
     ".fl-tl-needle { z-index: 0; background: " FL_COLOR_DANGER "; cursor: ew-resize; }" \
     ".fl-tl-beat { z-index: 1; backdrop-filter: blur(2px); padding: 0px; align-items: center; overflow: hidden; border-radius: " FL_RADIUS_SM "; background: linear-gradient(to bottom, " FL_COLOR_CARD_GLASS_TOP ", " FL_COLOR_CARD_GLASS_BOTTOM "); border: 1px solid " FL_COLOR_TAB_PILL_RIM "; border-top-color: " FL_COLOR_TAB_PILL_SPECULAR "; border-bottom-color: " FL_COLOR_TAB_PILL_UNDER "; }" \
@@ -683,7 +682,7 @@
     ".fl-tl-beat-drop { background: " FL_COLOR_ACCENT "; z-index: 5; }" \
     ".fl-tl-edge { z-index: 3; cursor: ew-resize; align-items: center; justify-content: center; background: transparent; }" \
     ".fl-tl-edge-mark { width: 2px; height: 20px; background: " FL_COLOR_TEXT_DIM "; }" \
-    ".fl-tl-span { background: " FL_COLOR_GLASS_BORDER "; }" \
+    ".fl-tl-span { background: " FL_COLOR_CONTROL "; }" \
     ".fl-tl-key { align-items: center; justify-content: center; }" \
     ".fl-tl-key-text { font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MUTED "; }" \
     ".fl-tl-key-text.selected { color: " FL_COLOR_ACCENT "; }" \

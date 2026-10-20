@@ -1018,7 +1018,7 @@ void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
             if (when > last) last = when;
         }
         if (t->key_count > 1) {
-            element(p, NULL, NULL, FL_CLASS_TL_SPAN, x_of(p, first), x_of(p, last) - x_of(p, first), 2, FL_STYLE_TL_ROW_H);
+            element(p, NULL, NULL, FL_CLASS_TL_SPAN, x_of(p, first), x_of(p, last) - x_of(p, first), 1, FL_STYLE_TL_ROW_H);
             ca_div_end();
         }
         for (size_t k = 0; k < t->key_count; ++k) {
