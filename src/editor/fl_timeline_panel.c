@@ -49,6 +49,8 @@ struct Fl_TimelinePanel {
 static const char *const PROPERTY_NAMES[FL_PROP_COUNT] = {
     "X", "Y", "Width", "Height", "Rotation", "Scale X", "Scale Y", "Opacity", "Fill", "Stroke", "Stroke width", "Font size", "Crop X", "Crop Y", "Crop width", "Crop height"};
 
+static void sync_playhead(Fl_TimelinePanel *p);
+
 /* Align fixed headers and labels with the two axes of the key viewport. */
 static void sync_scroll(void *data)
 {
@@ -62,6 +64,7 @@ static void sync_scroll(void *data)
     Ca_Signal *horizontal = ca_get_scroll_x_signal(p->window, "timeline-scroll");
     float x = horizontal ? ca_signal_get_float(horizontal) : 0;
     ca_div_set_absolute_rect(p->header_content, -x, 0, p->content_width * scale, FL_STYLE_TL_HEADER_H * scale);
+    if (fl_playback_playing(p->playback)) sync_playhead(p);
 }
 
 /* Wheel input over property names scrolls their matching key rows. */
@@ -130,6 +133,16 @@ static Fl_TimelineItem *item(Fl_TimelinePanel *p, Fl_ItemKind kind, Fl_Id id)
     return it;
 }
 
+/* Keep cursor inside a viewport margin; inputs and result are resolved pixels. */
+static float playback_scroll(float cursor, float width, float offset, float content, float scale)
+{
+    if (width <= 0) return offset;
+    float margin = fminf(48 * scale, width * 0.2f);
+    if (cursor < offset + margin) offset = cursor - margin;
+    else if (cursor > offset + width - margin) offset = cursor - width + margin;
+    return fminf(fmaxf(0, offset), fmaxf(0, content - width));
+}
+
 /* Move the two scroll-locked playhead segments and clock without rebuilding. */
 static void sync_playhead(Fl_TimelinePanel *p)
 {
@@ -143,6 +156,17 @@ static void sync_playhead(Fl_TimelinePanel *p)
         FL_STYLE_TL_PLAYHEAD_W * scale, FL_STYLE_TL_HEADER_H * scale);
     if (p->playhead) ca_div_set_absolute_rect(p->playhead, x, FL_STYLE_TL_PLAYHEAD_INSET * scale,
         w, fmaxf(0, p->label_height - FL_STYLE_TL_PLAYHEAD_INSET * 2) * scale);
+    if (p->window && p->scroll && p->header_content && fl_playback_playing(p->playback)) {
+        float width = 0;
+        ca_div_content_screen_rect(p->scroll, NULL, NULL, &width, NULL);
+        Ca_Signal *horizontal = ca_get_scroll_x_signal(p->window, "timeline-scroll");
+        if (horizontal && width > 0) {
+            const float *value = ca_signal_peek(horizontal);
+            float offset = value ? *value : 0;
+            float next = playback_scroll(x_of(p, now) * scale, width, offset, p->content_width * scale, scale);
+            if (next != offset) ca_set_scroll_x(p->window, "timeline-scroll", next);
+        }
+    }
     if (p->clock) {
         char a[32], b[32], text[72];
         format_time(now, a, sizeof(a)); format_time(fl_scene_length(scene), b, sizeof(b));
@@ -728,11 +752,11 @@ static void label_row(const char *text, const char *style)
     ca_div_end();
 }
 
-/* Draw a bounded time scale with readable labels at every zoom level. */
+/* Draw bounded clock-style subdivisions with labeled major ticks at each zoom level. */
 static void build_time_ruler(Fl_TimelinePanel *p, Fl_Tick length, float width)
 {
     double seconds = (double)length / FL_TICKS_PER_SECOND;
-    double target = fmax(72.0 / p->zoom, seconds / 512.0);
+    double target = fmax(72.0 / p->zoom, seconds / 200.0);
     double unit = pow(10, floor(log10(target)));
     double step = unit * (target <= unit ? 1 : target <= 2 * unit ? 2 : target <= 5 * unit ? 5 : 10);
     Fl_TimelineItem *handle = item(p, ITEM_RULER, 0);
@@ -744,15 +768,24 @@ static void build_time_ruler(Fl_TimelinePanel *p, Fl_Tick length, float width)
     ca_div_end();
     ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = "fl-tl-time-ruler", .width = width,
         .on_drag_start = handle ? handle_drag : NULL, .on_drag = handle ? handle_drag : NULL, .drag_data = handle});
-    size_t count = (size_t)fmin(512, floor(seconds / step));
+    size_t count = (size_t)fmin(2000, floor(seconds / (step / 10)));
     for (size_t i = 0; i <= count; ++i) {
-        char text[40];
-        double time = (double)i * step;
-        snprintf(text, sizeof(text), step < 1 ? "%.2fs" : "%.0fs", time);
-        ca_div_begin(&(Ca_DivDesc){.position = CA_POSITION_ABSOLUTE, .pos_x = FL_STYLE_TL_PAD + (float)(time * p->zoom),
-            .width = 68, .height = FL_STYLE_TL_RULER_H, .style = "fl-tl-tick", .no_hover = true});
-        ca_text(&(Ca_TextDesc){.text = text, .style = "fl-tl-tick-text"});
+        bool major = i % 10 == 0;
+        float height = major ? 9 : i % 5 == 0 ? 6 : 3;
+        double time = (double)i * step / 10;
+        float x = FL_STYLE_TL_PAD + (float)(time * p->zoom);
+        ca_div_begin(&(Ca_DivDesc){.position = CA_POSITION_ABSOLUTE, .pos_x = x,
+            .pos_y = 0, .width = 1, .height = height,
+            .style = major ? "fl-tl-tick major" : "fl-tl-tick", .no_hover = true});
         ca_div_end();
+        if (major) {
+            char text[40];
+            snprintf(text, sizeof(text), step < 1 ? "%.2fs" : "%.0fs", time);
+            ca_div_begin(&(Ca_DivDesc){.position = CA_POSITION_ABSOLUTE, .pos_x = x + 4,
+                .width = 68, .height = FL_STYLE_TL_RULER_H - 6, .no_hover = true});
+            ca_text(&(Ca_TextDesc){.text = text, .style = "fl-tl-tick-text"});
+            ca_div_end();
+        }
     }
     ca_div_end();
 }

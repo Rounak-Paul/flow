@@ -10,6 +10,22 @@ void fl_playback_pause(Fl_Playback *playback) {playback->playing = false;}
 void fl_playback_toggle(Fl_Playback *playback) {playback->playing = !playback->playing;}
 void fl_playback_seek(Fl_Playback *playback, Fl_Tick tick) {fl_scene_edit_set_time(playback->edit, tick);}
 
+/* Playback follow preserves the safe band, clamps scene bounds and scales with the UI. */
+static void check_playback_scroll(void)
+{
+    CHECK(playback_scroll(300, 600, 0, 2400, 1) == 0);
+    CHECK(playback_scroll(552, 600, 0, 2400, 1) == 0);
+    CHECK(playback_scroll(580, 600, 0, 2400, 1) == 28);
+    CHECK(playback_scroll(1400, 600, 0, 2400, 1) == 848);
+    CHECK(playback_scroll(100, 600, 900, 2400, 1) == 52);
+    CHECK(playback_scroll(0, 600, 900, 2400, 1) == 0);
+    CHECK(playback_scroll(2400, 600, 900, 2400, 1) == 1800);
+    CHECK(playback_scroll(200, 600, 0, 300, 1) == 0);
+    CHECK(playback_scroll(580, 0, 100, 2400, 1) == 100);
+    CHECK(playback_scroll(90, 100, 0, 1000, 1) == 10);
+    CHECK(playback_scroll(870, 900, 0, 3600, 1.5f) == 42);
+}
+
 /* Verify ordered insertion, resize snapping, release handling and split ownership. */
 static void check_beat_interactions(Fl_TimelinePanel *panel)
 {
@@ -146,6 +162,7 @@ int main(int argc, char **argv)
     CHECK(fl_scene_track(scene_of(panel), rectangle, FL_PROP_FILL)->key_count == 1);
     CHECK(fl_project_apply(project, &(Fl_Op){.kind = FL_OP_ENTITY_REMOVE, .scene = scene, .entity = rectangle}, NULL));
     CHECK(panel->selected_key == 0);
+    check_playback_scroll();
     check_beat_interactions(panel);
     check_beat_reordering(panel);
     fl_timeline_panel_destroy(panel); fl_scene_edit_destroy(edit); fl_project_destroy(project);

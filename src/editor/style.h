@@ -643,7 +643,8 @@
     ".fl-tl-header, .fl-tl-label-header { height: 48px; flex-shrink: 0; overflow: hidden; gap: 0px; }" \
     ".fl-tl-label-header { width: 100%; padding: 0px; }" \
     ".fl-tl-object-header { width: 100%; flex-shrink: 0; padding: 0px 10px; align-items: center; overflow: hidden; border-bottom: 1px solid " FL_COLOR_GLASS_BORDER "; }" \
-    ".fl-tl-tick { border-left: 1px solid " FL_COLOR_GLASS_BORDER "; padding: 3px 4px; }" \
+    ".fl-tl-tick { background: " FL_COLOR_GLASS_BORDER "; }" \
+    ".fl-tl-tick.major { background: " FL_COLOR_TEXT_DIM "; }" \
     ".fl-tl-tick-text { font-size: " FL_FONT_XS "; color: " FL_COLOR_TEXT_DIM "; white-space: nowrap; }" \
     ".fl-tl-select { width: 112px; flex-shrink: 0; }" \
     ".fl-tl-track-name { flex-grow: 1; min-width: 0px; overflow: hidden; white-space: nowrap; font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MEDIUM "; }" \

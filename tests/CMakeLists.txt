@@ -59,3 +59,11 @@ target_link_libraries(fl_scene_renderer_tests PRIVATE flow_editor causality Vulk
 target_compile_definitions(fl_scene_renderer_tests PRIVATE $<$<PLATFORM_ID:Windows>:CA_API=>)
 flow_target_warnings(fl_scene_renderer_tests)
 add_test(NAME fl_scene_renderer_tests COMMAND fl_scene_renderer_tests "${CMAKE_CURRENT_BINARY_DIR}/scratch/fl_scene_renderer_tests")
+
+add_executable(fl_timeline_playback_tests editor/fl_timeline_playback_tests.c)
+target_include_directories(fl_timeline_playback_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(fl_timeline_playback_tests PRIVATE flow_editor causality)
+target_compile_definitions(fl_timeline_playback_tests PRIVATE $<$<PLATFORM_ID:Windows>:CA_API=>)
+flow_target_warnings(fl_timeline_playback_tests)
+add_test(NAME fl_timeline_playback_tests COMMAND fl_timeline_playback_tests "${CMAKE_CURRENT_BINARY_DIR}/scratch/fl_timeline_playback_tests")
+set_tests_properties(fl_timeline_playback_tests PROPERTIES TIMEOUT 30)
