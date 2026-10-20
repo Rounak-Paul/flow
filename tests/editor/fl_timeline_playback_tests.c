@@ -21,6 +21,17 @@ static bool count_time(const Fl_Event *event, void *data)
     return false;
 }
 
+/* The needle is a viewport overlay, independent of track count and vertical scroll. */
+static void check_needle_area(Fl_TimelinePanel *panel)
+{
+    float viewport_y = 0, viewport_height = 0, needle_y = 0, needle_height = 0;
+    ca_div_content_screen_rect(panel->scroll, NULL, &viewport_y, NULL, &viewport_height);
+    ca_div_screen_rect(panel->playhead, NULL, &needle_y, NULL, &needle_height);
+    CHECK(viewport_height > 0);
+    CHECK(fabsf(viewport_y - needle_y) < 0.1f);
+    CHECK(fabsf(viewport_height - needle_height) < 0.1f);
+}
+
 /* Run real GPU frames: crossing the edge must not schedule extra playback ticks. */
 int main(int argc, char **argv)
 {
@@ -70,6 +81,7 @@ int main(int argc, char **argv)
     CHECK(ca_dock_mount(dock));
     ca_ui_end();
     for (int i = 0; i < 6; ++i) CHECK(ca_instance_tick(instance));
+    CHECK(panel->selected_beat == 0 && panel->split_button != NULL);
     unsigned notifications = 0;
     CHECK(fl_event_subscribe(bus, &(Fl_SubscribeDesc){.type = fl_event_type_find(bus, FL_EVENT_TIME_CHANGED),
         .fn = count_time, .user_data = &notifications, .owner = &notifications}).generation);
@@ -91,6 +103,39 @@ int main(int argc, char **argv)
     ca_set_scroll_x(window, "timeline-scroll", 0);
     for (int i = 0; i < 3; ++i) CHECK(ca_instance_tick(instance));
     CHECK(ca_signal_get_float(ca_get_scroll_x_signal(window, "timeline-scroll")) == 0);
+    Fl_Id beat = scene_of(panel)->beats[0].id;
+    Fl_TimelineItem beat_item = {panel, ITEM_BEAT, beat};
+    Ca_DragEvent click = {.window = window, .x = 300, .y = 60};
+    item_drag_start(&click, &beat_item);
+    item_drag_end(&click, &beat_item);
+    CHECK(!panel->rename_window);
+    panel->click_ns = fl_clock_monotonic_ns();
+    item_drag_start(&click, &beat_item);
+    item_drag_end(&click, &beat_item);
+    CHECK(panel->rename_window && panel->rename_beat == beat);
+    CHECK(panel->rename_input && !strcmp(ca_input_text(panel->rename_input), scene_of(panel)->beats[0].name));
+    if (panel->rename_window) ca_window_close(panel->rename_window);
+    check_needle_area(panel);
+    ca_set_scroll_y(window, "timeline-scroll", 1000000);
+    CHECK(ca_get_scroll_y(window, "timeline-scroll") == 0);
+    CHECK(fl_scene_edit_select(edit, scene, 0, false));
+    for (int i = 0; i < 6; ++i) CHECK(ca_instance_tick(instance));
+    check_needle_area(panel);
+    ca_set_scroll_y(window, "timeline-scroll", 1000000);
+    CHECK(ca_get_scroll_y(window, "timeline-scroll") == 0);
+    CHECK(fl_scene_edit_select(edit, scene, entity, false));
+    for (int prop = FL_PROP_Y; prop <= FL_PROP_OPACITY; ++prop) {
+        panel->property = (Fl_AnimProperty)prop;
+        key_selection(NULL, panel);
+    }
+    for (int i = 0; i < 6; ++i) CHECK(ca_instance_tick(instance));
+    ca_set_scroll_y(window, "timeline-scroll", 1000000);
+    for (int i = 0; i < 3; ++i) CHECK(ca_instance_tick(instance));
+    CHECK(ca_get_scroll_y(window, "timeline-scroll") > 0);
+    check_needle_area(panel);
+    ca_instance_set_scale(instance, 1.5f);
+    for (int i = 0; i < 6; ++i) CHECK(ca_instance_tick(instance));
+    check_needle_area(panel);
     fl_event_unsubscribe_owner(bus, &notifications);
     ca_dock_destroy(dock);
     ca_window_close(window);

@@ -14,6 +14,7 @@ typedef struct Fl_ButtonDesc {
     Fl_ButtonKind kind;
     bool active;
     bool disabled;
+    bool destructive;
 } Fl_ButtonDesc;
 
 /* Emit an action using desc content, callback and state, followed by its tooltip.

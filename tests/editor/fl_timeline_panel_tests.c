@@ -26,6 +26,51 @@ static void check_playback_scroll(void)
     CHECK(playback_scroll(870, 900, 0, 3600, 1.5f) == 42);
 }
 
+/* Double-clicks require the same beat, nearby pointer positions and a bounded interval. */
+static void check_beat_double_click(Fl_TimelinePanel *panel)
+{
+    Ca_DragEvent click = {.x = 20, .y = 30};
+    panel->click_beat = 0;
+    CHECK(!beat_double_clicked(panel, 1, &click, 1000000000ull));
+    CHECK(beat_double_clicked(panel, 1, &click, 1200000000ull));
+    CHECK(!beat_double_clicked(panel, 1, &click, 1300000000ull));
+    CHECK(!beat_double_clicked(panel, 2, &click, 1400000000ull));
+    CHECK(!beat_double_clicked(panel, 2, &click, 1900000000ull));
+    click.x += 20;
+    CHECK(!beat_double_clicked(panel, 2, &click, 2000000000ull));
+    CHECK(beat_double_clicked(panel, 2, &click, 2100000000ull));
+    panel->click_beat = 0;
+}
+
+/* Scissors share menu splitting semantics and reject endpoints or playback edits. */
+static void check_split_button(Fl_TimelinePanel *panel)
+{
+    const Fl_Scene *scene = scene_of(panel);
+    Fl_Id beat = scene->beats[scene->beat_count - 1].id;
+    Fl_Tick start, end, length = fl_scene_length(scene);
+    CHECK(fl_scene_beat_range(scene, beat, &start, &end));
+    panel->selected_beat = beat;
+    size_t count = scene->beat_count;
+    fl_scene_edit_set_time(panel->edit, start);
+    CHECK(!can_split_beat(panel, beat));
+    split_selected_beat(NULL, panel);
+    CHECK(scene_of(panel)->beat_count == count);
+    fl_scene_edit_set_time(panel->edit, end);
+    CHECK(!can_split_beat(panel, beat));
+    split_selected_beat(NULL, panel);
+    CHECK(scene_of(panel)->beat_count == count);
+    fl_scene_edit_set_time(panel->edit, start + (end - start) / 2);
+    CHECK(can_split_beat(panel, beat));
+    panel->playback->playing = true;
+    split_selected_beat(NULL, panel);
+    CHECK(scene_of(panel)->beat_count == count);
+    panel->playback->playing = false;
+    split_selected_beat(NULL, panel);
+    CHECK(scene_of(panel)->beat_count == count + 1 && panel->selected_beat != beat);
+    CHECK(fl_scene_length(scene_of(panel)) == length);
+    CHECK(!can_split_beat(panel, panel->selected_beat));
+}
+
 /* Both delete entry points clear selection, pause playback and retain the final beat. */
 static void check_beat_deletion(Fl_TimelinePanel *panel)
 {
@@ -194,6 +239,8 @@ int main(int argc, char **argv)
     check_playback_scroll();
     check_beat_interactions(panel);
     check_beat_reordering(panel);
+    check_beat_double_click(panel);
+    check_split_button(panel);
     check_beat_deletion(panel);
     fl_timeline_panel_destroy(panel); fl_scene_edit_destroy(edit); fl_project_destroy(project);
     CHECK(fl_event_bus_destroy(bus)); fl_fs_remove(path);

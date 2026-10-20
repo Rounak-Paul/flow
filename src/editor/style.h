@@ -585,7 +585,6 @@
 #define FL_STYLE_TL_RULER_H 20.0f
 #define FL_STYLE_TL_HEADER_H (FL_STYLE_TL_RULER_H + FL_STYLE_TL_LANE_H)
 #define FL_STYLE_TL_PLAYHEAD_W 2.0f
-#define FL_STYLE_TL_PLAYHEAD_INSET 0.0f
 #define FL_STYLE_TL_KEY 14.0f
 #define FL_STYLE_TL_EDGE_W 14.0f
 #define FL_STYLE_TL_SNAP 6.0
@@ -687,6 +686,7 @@
     ".fl-tl-key-text { font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MUTED "; }" \
     ".fl-tl-key-text.selected { color: " FL_COLOR_ACCENT "; }" \
     ".fl-tl-key-detail { font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MEDIUM "; white-space: nowrap; flex-shrink: 0; }" \
+    ".fl-tl-playhead-viewport { overflow: hidden; z-index: 5; pointer-events: none; }" \
     ".fl-tl-playhead { z-index: 5; background: " FL_COLOR_DANGER "; cursor: ew-resize; }"
 
 
