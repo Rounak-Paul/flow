@@ -5,7 +5,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define INLINE_KEYS 32
 
 double fl_ease_apply(Fl_Ease ease, double t)
 {
@@ -26,37 +25,26 @@ static double to_srgb(double v) { v = v <= 0.0031308 ? v * 12.92 : 1.055 * pow(v
 bool fl_track_sample(const Fl_Scene *s, const Fl_Track *t, Fl_Tick tick, double out[4])
 {
     if (!t || !t->key_count || !out) return false;
-    size_t inline_order[INLINE_KEYS]; Fl_Tick inline_times[INLINE_KEYS];
-    size_t *order = t->key_count <= INLINE_KEYS ? inline_order : malloc(t->key_count * sizeof(*order));
-    Fl_Tick *times = t->key_count <= INLINE_KEYS ? inline_times : malloc(t->key_count * sizeof(*times));
-    if (!order || !times) {
-        if (order != inline_order) free(order);
-        if (times != inline_times) free(times);
-        memcpy(out, t->keys[0].value, 4 * sizeof(double)); return true;
-    }
+    const Fl_Keyframe *first = NULL, *before = NULL, *after = NULL;
+    Fl_Tick first_tick = 0, before_tick = 0, after_tick = 0;
     for (size_t i = 0; i < t->key_count; ++i) {
-        times[i] = fl_anchor_resolve(s, &t->keys[i].at);
-        size_t j = i;
-        while (j && times[order[j - 1]] > times[i]) { order[j] = order[j - 1]; --j; }
-        order[j] = i;
+        Fl_Tick time;
+        if (!fl_anchor_sample(s, &t->keys[i].at, &time)) return false;
+        if (!first || time < first_tick) {first = &t->keys[i]; first_tick = time;}
+        if (time <= tick && (!before || time >= before_tick)) {before = &t->keys[i]; before_tick = time;}
+        if (time > tick && (!after || time < after_tick)) {after = &t->keys[i]; after_tick = time;}
     }
-    size_t last = t->key_count - 1, segment = 0;
-    while (segment < last && times[order[segment + 1]] <= tick) ++segment;
-    const Fl_Keyframe *a = &t->keys[order[segment]];
-    if (segment == last || tick <= times[order[0]]) {
-        memcpy(out, (tick <= times[order[0]] ? &t->keys[order[0]] : a)->value, 4 * sizeof(double));
-    } else {
-        const Fl_Keyframe *b = &t->keys[order[segment + 1]];
-        Fl_Tick span = times[order[segment + 1]] - times[order[segment]];
-        double w = span > 0 ? fl_ease_apply(a->ease, (double)(tick - times[order[segment]]) / (double)span) : 1;
+    if (tick <= first_tick || !before) memcpy(out, first->value, 4 * sizeof(double));
+    else if (!after) memcpy(out, before->value, 4 * sizeof(double));
+    else {
+        double progress = (double)(((long double)tick - before_tick) / ((long double)after_tick - before_tick));
+        double weight = fl_ease_apply(before->ease, progress);
         bool colour = t->property == FL_PROP_FILL || t->property == FL_PROP_STROKE;
         for (int c = 0; c < 4; ++c) {
-            if (colour && c < 3) out[c] = to_srgb(to_linear(a->value[c]) + (to_linear(b->value[c]) - to_linear(a->value[c])) * w);
-            else out[c] = a->value[c] + (b->value[c] - a->value[c]) * w;
+            if (colour && c < 3) out[c] = to_srgb(to_linear(before->value[c]) + (to_linear(after->value[c]) - to_linear(before->value[c])) * weight);
+            else out[c] = before->value[c] + (after->value[c] - before->value[c]) * weight;
         }
     }
-    if (order != inline_order) free(order);
-    if (times != inline_times) free(times);
     return true;
 }
 
@@ -83,23 +71,36 @@ void fl_entity_state_apply(Fl_EntityState *e, Fl_AnimProperty property, const do
     }
 }
 
-bool fl_scene_state_update(Fl_SceneState *st, const Fl_Scene *s, Fl_Tick tick)
+bool fl_entity_state_sample(const Fl_Scene *scene, size_t index, Fl_Tick tick, Fl_EntityState *out)
+{
+    if (!scene || !out || index>=scene->entity_count) return false;
+    const Fl_Entity *entity=&scene->entities[index];
+    *out=(Fl_EntityState){.transform={.scale_x=1,.scale_y=1}};
+    fl_transform_decode(fl_entity_component(entity,FL_COMPONENT_TRANSFORM),&out->transform);
+    out->appearance=fl_widget_appearance(entity); out->opacity=fl_widget_opacity(entity);
+    Fl_Style style=fl_entity_style(entity); memcpy(out->crop,style.crop,sizeof(out->crop));
+    const Fl_Animation *animation=fl_entity_animation(entity); double value[4];
+    for (size_t i=0; animation && i<animation->track_count; ++i)
+        if (fl_track_sample(scene,&animation->tracks[i],tick,value)) fl_entity_state_apply(out,animation->tracks[i].property,value);
+    return true;
+}
+
+bool fl_scene_state_update_cancel(Fl_SceneState *st, const Fl_Scene *s, Fl_Tick tick, const atomic_bool *cancel)
 {
     if (!st) return false;
+    if (cancel && atomic_load_explicit(cancel,memory_order_relaxed)) {st->valid=false; return false;}
     if (!s) { fl_scene_state_clear(st); return true; }
     if (st->valid && st->scene == s->id && st->revision == s->revision && st->tick == tick) return true;
     bool replace_scripts = st->scene != s->id || st->revision != s->revision;
     Fl_ScriptRuntime *scripts = st->scripts;
     if (replace_scripts) {
         scripts = NULL;
-        for (size_t i = 0; i < s->entity_count; ++i) {
+        bool attached=false;
+        for (size_t i=0;i<s->entity_count && !attached;++i) for (size_t j=0;j<s->entities[i].component_count;++j) {
             Fl_Script script;
-            if (fl_script_decode(fl_entity_component(&s->entities[i], FL_COMPONENT_SCRIPT), &script) && script.enabled && fl_scene_script(s, script.script)) {
-                scripts = fl_script_runtime_create(s);
-                if (!scripts) return false;
-                break;
-            }
+            if (fl_script_decode(&s->entities[i].components[j],&script) && script.enabled) {attached=true; break;}
         }
+        if (attached) {scripts=fl_script_runtime_create(s); if (!scripts) return false;}
     }
     if (s->entity_count > st->capacity) {
         if (s->entity_count > SIZE_MAX / sizeof(Fl_EntityState)) {
@@ -111,26 +112,29 @@ bool fl_scene_state_update(Fl_SceneState *st, const Fl_Scene *s, Fl_Tick tick)
         st->entities = grown; st->capacity = s->entity_count;
     }
     if (replace_scripts) {fl_script_runtime_destroy(st->scripts); st->scripts = scripts;}
-    for (size_t i = 0; i < s->entity_count; ++i) {
-        const Fl_Entity *e = &s->entities[i];
-        Fl_EntityState *v = &st->entities[i];
-        v->transform = (Fl_Transform){.scale_x = 1, .scale_y = 1};
-        fl_transform_decode(fl_entity_component(e, FL_COMPONENT_TRANSFORM), &v->transform);
-        v->appearance = fl_widget_appearance(e);
-        v->opacity = fl_widget_opacity(e);
-        v->text_override = false;
-        const Fl_Style style = fl_entity_style(e);
-        memcpy(v->crop, style.crop, sizeof(v->crop));
+    fl_script_runtime_begin_frame(st->scripts);
+    fl_script_runtime_set_cancel(st->scripts,cancel);
+    for (size_t i=0;i<s->entity_count;++i) {
+        if (cancel && atomic_load_explicit(cancel,memory_order_relaxed)) {
+            fl_script_runtime_set_cancel(st->scripts,NULL); st->valid=false; return false;
+        }
+        fl_entity_state_sample(s,i,tick,&st->entities[i]);
     }
-    double value[4];
-    for (size_t i = 0; i < s->entity_count; ++i) {
-        const Fl_Animation *animation = fl_entity_animation(&s->entities[i]);
-        for (size_t t = 0; animation && t < animation->track_count; ++t)
-            if (fl_track_sample(s, &animation->tracks[t], tick, value)) fl_entity_state_apply(&st->entities[i], animation->tracks[t].property, value);
-        if (st->scripts) fl_script_runtime_evaluate(st->scripts, s, i, tick, &st->entities[i]);
+    for (size_t i=0;i<s->entity_count;++i) {
+        if (cancel && atomic_load_explicit(cancel,memory_order_relaxed)) {
+            fl_script_runtime_set_cancel(st->scripts,NULL); st->valid=false; return false;
+        }
+        if (st->scripts) fl_script_runtime_evaluate(st->scripts,s,i,tick,&st->entities[i]);
     }
+    fl_script_runtime_set_cancel(st->scripts,NULL);
+    if (cancel && atomic_load_explicit(cancel,memory_order_relaxed)) {st->valid=false; return false;}
     st->scene = s->id; st->revision = s->revision; st->tick = tick; st->count = s->entity_count; st->valid = true;
     return true;
+}
+
+bool fl_scene_state_update(Fl_SceneState *state, const Fl_Scene *scene, Fl_Tick tick)
+{
+    return fl_scene_state_update_cancel(state,scene,tick,NULL);
 }
 
 void fl_scene_state_clear(Fl_SceneState *st)

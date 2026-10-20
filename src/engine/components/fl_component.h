@@ -13,7 +13,7 @@ enum { FL_COMPONENT_TRANSFORM = 1, FL_COMPONENT_RECTANGLE = 2, FL_COMPONENT_TEXT
        FL_COMPONENT_IMAGE = 7, FL_COMPONENT_OPACITY = 8,
        FL_COMPONENT_ANIMATION = 9, FL_COMPONENT_SCRIPT = 10, FL_COMPONENT_STYLE = 11, FL_COMPONENT_VIDEO = 12 };
 /* Canonical byte payloads, except Animation which owns typed track storage through its codec. */
-typedef struct Fl_Component { uint64_t type, version; size_t size; const unsigned char *data; } Fl_Component;
+typedef struct Fl_Component { uint64_t type, version; size_t size; const unsigned char *data; Fl_Id id; } Fl_Component;
 
 /* Deep-copy a component into out; out is unchanged on failure. */
 bool fl_component_clone(const Fl_Component *component, Fl_Component *out);
@@ -31,3 +31,8 @@ const char *fl_component_name(uint64_t type);
 
 /* Borrow component of schema type from entity, or NULL. Valid until mutation. */
 const Fl_Component *fl_entity_component(const Fl_Entity *entity, uint64_t type);
+
+/* Borrow an entity-owned component by stable instance id; NULL when absent. */
+const Fl_Component *fl_entity_component_instance(const Fl_Entity *entity, Fl_Id id);
+/* Remove a particular optional component instance; Transform remains mandatory. */
+bool fl_entity_remove_component_instance(Fl_Entity *entity, Fl_Id id);

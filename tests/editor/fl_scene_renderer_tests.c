@@ -1,6 +1,7 @@
+#include "fl_render_host.h"
 #include "flow_test.h"
-#include "fl_exporter.h"
-#include "fl_scene_renderer.h"
+#include "render/gpu/fl_exporter.h"
+#include "render/gpu/fl_scene_renderer.h"
 #include "components/fl_script.h"
 #include "core/fl_event.h"
 #include "core/fl_job.h"
@@ -44,7 +45,7 @@ static Fl_Id make(Fl_Project *p, Fl_Id scene, Fl_WidgetKind kind, double x, doub
     memcpy(a.fill, fill, 4); memcpy(a.stroke, fill, 4);
     unsigned char transform[56], style[24];
     fl_transform_encode(&t, transform); fl_appearance_encode(&a, style);
-    Fl_Component components[2] = {{FL_COMPONENT_TRANSFORM, 1, 56, transform}, {FL_COMPONENT_APPEARANCE, 1, 24, style}};
+    Fl_Component components[2] = {{.type=FL_COMPONENT_TRANSFORM, .version=1, .size=56, .data=transform}, {.type=FL_COMPONENT_APPEARANCE, .version=1, .size=24, .data=style}};
     CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ENTITY_CONFIGURE, .scene = scene, .entity = id, .name = e->name, .visible = true,
         .components = components, .component_count = 2}, NULL));
     return id;
@@ -55,7 +56,7 @@ int main(int argc, char **argv)
 {
     if (argc != 2) return 2;
     char dir[FL_PATH_MAX], manifest[FL_PATH_MAX];
-    CHECK(fl_fs_join(dir, sizeof(dir), argv[1], "renderer") && fl_fs_mkdir_p(dir) && fl_fs_join(manifest, sizeof(manifest), dir, "project.flow"));
+    CHECK(fl_fs_join(dir, sizeof(dir), argv[1], "renderer") && fl_fs_mkdir_p(dir) && fl_fs_join(manifest, sizeof(manifest), dir, "project.flow.json"));
     fl_fs_remove(manifest);
     Fl_EventBus *bus = fl_event_bus_create(&(Fl_EventBusDesc){0});
     Fl_JobSystem *jobs = fl_jobs_create(&(Fl_JobSystemDesc){.bus = bus});
@@ -65,7 +66,7 @@ int main(int argc, char **argv)
     CHECK(bus && jobs && fonts && p);
     if (!instance) {printf("fl_scene_renderer_tests: skipped (no Vulkan device)\n"); return 0;}
     if (!bus || !jobs || !fonts || !p) return 1;
-    Fl_SceneRenderer *renderer = fl_scene_renderer_create(&(Fl_SceneRendererDesc){.instance = instance, .fonts = fonts, .jobs = jobs});
+    Fl_SceneRenderer *renderer = fl_scene_renderer_create(&(Fl_SceneRendererDesc){.gpu=fl_render_host_context(instance), .fonts = fonts, .jobs = jobs});
     CHECK(renderer != NULL);
     if (!renderer) return 1;
     Fl_Id scene_id = fl_project_scene_at(p, 0)->id;
@@ -105,7 +106,7 @@ int main(int argc, char **argv)
 
     /* Half-opaque red blends in linear light over the backdrop: sRGB red lands near 188. */
     CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_COMPONENT_SET, .scene = scene_id, .entity = box,
-        .component = {FL_COMPONENT_OPACITY, 1, 8, (unsigned char[8]){0, 0, 0, 0, 0, 0, 0xe0, 0x3f}}}, NULL));
+        .component = {.type=FL_COMPONENT_OPACITY,.version=1,.size=8,.data=(unsigned char[8]){0, 0, 0, 0, 0, 0, 0xe0, 0x3f}}}, NULL));
     scene = fl_project_scene(p, scene_id);
     CHECK(fl_scene_renderer_render(renderer, p, scene, 0, 960, &frame));
     Pixel half = at(&frame, 200, 100);
@@ -124,11 +125,11 @@ int main(int argc, char **argv)
     fl_frame_free(&frame);
 
     /* Lua scripts apply to the frame. */
-    const char *source = "function on_evaluate(self, t) self.transform.x = 1500 end";
+    const char *source = "return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.transform.x = 1500 end }";
     Fl_Component script = {0};
     Fl_Id script_id = 0;
-    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_SCRIPT_SET, .scene = scene_id, .name = "Jump", .source = source, .source_size = strlen(source)}, &script_id));
-    CHECK(fl_script_encode(&(Fl_Script){script_id, true}, &script));
+    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ASSET_SOURCE_SET, .source_kind=FL_ASSET_LUA, .scene = scene_id, .name = "Jump", .source = source, .source_size = strlen(source)}, &script_id));
+    CHECK(fl_script_encode(&(Fl_Script){.script=script_id,.enabled=true}, &script));
     CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_COMPONENT_SET, .scene = scene_id, .entity = box, .component = script}, NULL));
     free((void *)script.data);
     scene = fl_project_scene(p, scene_id);
@@ -195,7 +196,7 @@ int main(int argc, char **argv)
             if (i == 0) {look.clip = true; look.radius = 60;}
             if (i == 2) look.blur = 20;
             fl_style_encode(&look, style_bytes);
-            Fl_Component components[3] = {{FL_COMPONENT_TRANSFORM, 1, 56, transform}, {FL_COMPONENT_STYLE, 1, FL_STYLE_BYTES, style_bytes}, {FL_COMPONENT_APPEARANCE, 1, 24, appearance}};
+            Fl_Component components[3] = {{.type=FL_COMPONENT_TRANSFORM, .version=1, .size=56, .data=transform}, {.type=FL_COMPONENT_STYLE, .version=1, .size=FL_STYLE_BYTES, .data=style_bytes}, {.type=FL_COMPONENT_APPEARANCE, .version=1, .size=24, .data=appearance}};
             CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ENTITY_CONFIGURE, .scene = effects_scene, .entity = ids[i], .name = e->name, .visible = true,
                 .components = components, .component_count = i == 0 ? 2 : 3}, NULL));
         }
@@ -214,7 +215,7 @@ int main(int argc, char **argv)
     fl_frame_free(&frame);
     CHECK(!fl_scene_renderer_render(renderer, p, scene, -1, 500, &frame) && !fl_scene_renderer_render(renderer, p, scene, 0, 16384, &frame));
 
-    /* Export pipes every frame to ffmpeg and finishes on its own; invalid requests and cancellation leave no file behind. */
+    /* Export commits complete output atomically, retains the captured document and preserves prior output on cancellation. */
     if (fl_ffmpeg_path()) {
         Fl_Exporter *exporter = fl_exporter_create(bus, renderer);
         char output[FL_PATH_MAX], error[128];
@@ -229,6 +230,18 @@ int main(int argc, char **argv)
         Fl_ExportStatus status = fl_exporter_status(exporter);
         CHECK(status.state == FL_EXPORT_DONE && status.frames_done == 50 && status.frames_total == 50 && status.width == 320 && status.height == 320);
         CHECK(fl_fs_file_size(output) > 1000);
+        int64_t completed_size=fl_fs_file_size(output);
+        CHECK(fl_exporter_start(exporter,p,&(Fl_ExportDesc){.path=output,.width=320,.fps=10,.scenes=&first_scene,.scene_count=1},error,sizeof(error)));
+        fl_exporter_cancel(exporter);
+        CHECK(fl_exporter_status(exporter).state==FL_EXPORT_CANCELLED && fl_fs_file_size(output)==completed_size);
+        CHECK(fl_exporter_start(exporter,p,&(Fl_ExportDesc){.path=output,.width=320,.fps=10,.scenes=&first_scene,.scene_count=1},error,sizeof(error)));
+        fl_exporter_abort(exporter,"test failure");
+        CHECK(fl_exporter_status(exporter).state==FL_EXPORT_FAILED && fl_fs_file_size(output)==completed_size);
+        CHECK(fl_exporter_start(exporter,p,&(Fl_ExportDesc){.path=output,.width=320,.fps=10,.scenes=&first_scene,.scene_count=1},error,sizeof(error)));
+        CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_SCENE_ASPECT,.scene=first_scene,.aspect_width=2,.aspect_height=1},NULL));
+        while (fl_exporter_status(exporter).state==FL_EXPORT_RUNNING) fl_event_bus_dispatch(bus);
+        CHECK(fl_exporter_status(exporter).state==FL_EXPORT_DONE && fl_exporter_status(exporter).width==320 && fl_exporter_status(exporter).height==320);
+        CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_SCENE_ASPECT,.scene=first_scene,.aspect_width=1,.aspect_height=1},NULL));
         fl_fs_remove(output);
         CHECK(fl_exporter_start(exporter, p, &(Fl_ExportDesc){.path = output, .width = 320, .fps = 10, .scenes = &first_scene, .scene_count = 1}, error, sizeof(error)));
         fl_exporter_cancel(exporter);
@@ -242,8 +255,43 @@ int main(int argc, char **argv)
         status = fl_exporter_status(exporter);
         CHECK(status.state == FL_EXPORT_DONE && status.frames_done == 90 && status.frames_total == 90);
         fl_fs_remove(output);
+        CHECK(fl_exporter_start(exporter, p, &(Fl_ExportDesc){.path=output,.width=320,.fps=10,.scenes=&first_scene,.scene_count=1}, error, sizeof(error)));
+        fl_exporter_destroy(exporter);
+        exporter = fl_exporter_create(bus, renderer);
+        CHECK(exporter);
+        fl_event_bus_dispatch(bus);
+        CHECK(fl_exporter_status(exporter).state == FL_EXPORT_IDLE);
+        CHECK(fl_exporter_start(exporter, p, &(Fl_ExportDesc){.path=output,.width=320,.fps=10,.scenes=&first_scene,.scene_count=1}, error, sizeof(error)));
+        while (fl_exporter_status(exporter).state == FL_EXPORT_RUNNING) fl_event_bus_dispatch(bus);
+        CHECK(fl_exporter_status(exporter).state == FL_EXPORT_DONE);
+        fl_fs_remove(output);
         fl_exporter_destroy(exporter);
     }
+
+    /* Exact rendering reuses simulation checkpoints and rejects callback errors instead of exporting base values. */
+    Fl_Id simulated_scene=0, simulated_asset=0;
+    CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_SCENE_ADD,.name="Simulation"},&simulated_scene));
+    CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_SCENE_SETTINGS,.scene=simulated_scene,.width=100,.height=100,.duration=5*FL_TICKS_PER_SECOND},NULL));
+    Fl_Id simulated_entity=make(p,simulated_scene,FL_WIDGET_RECTANGLE,0,0,20,20,red);
+    const char *simulation_source="return {step_hz=60,initialize=function(ctx) ctx.state={x=0} end,step=function(ctx) ctx.state.x=ctx.state.x+10*ctx.time.dt end,sample=function(ctx) ctx.entity.transform.x=ctx.state.x end}";
+    CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET, .source_kind=FL_ASSET_LUA,.name="GPU simulation",.source=simulation_source,.source_size=strlen(simulation_source)},&simulated_asset));
+    Fl_Component behavior={0}; CHECK(fl_script_encode(&(Fl_Script){.script=simulated_asset,.enabled=true},&behavior));
+    CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_COMPONENT_SET,.scene=simulated_scene,.entity=simulated_entity,.component=behavior},NULL));
+    fl_component_clear(&behavior);
+    const Fl_Scene *simulation=fl_project_scene(p,simulated_scene);
+    Fl_Frame expected={0}, repeated={0};
+    CHECK(fl_scene_renderer_render(renderer,p,simulation,FL_TICKS_PER_SECOND,100,&expected));
+    CHECK(fl_scene_renderer_render(renderer,p,simulation,3*FL_TICKS_PER_SECOND,100,&repeated)); fl_frame_free(&repeated);
+    CHECK(fl_scene_renderer_render(renderer,p,simulation,FL_TICKS_PER_SECOND,100,&repeated));
+    CHECK(expected.rgba && repeated.rgba && !memcmp(expected.rgba,repeated.rgba,100*100*4));
+    fl_frame_free(&expected); fl_frame_free(&repeated);
+    const char *broken="return {sample=function(ctx) error('frame failure') end}";
+    CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET, .source_kind=FL_ASSET_LUA,.asset =simulated_asset,.source=broken,.source_size=strlen(broken)},NULL));
+    CHECK(!fl_scene_renderer_render(renderer,p,simulation,FL_TICKS_PER_SECOND,100,&repeated));
+    CHECK(strstr(fl_scene_renderer_error(renderer),"frame failure"));
+    CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET, .source_kind=FL_ASSET_LUA,.asset =simulated_asset,.source=simulation_source,.source_size=strlen(simulation_source)},NULL));
+    CHECK(fl_scene_renderer_render(renderer,p,simulation,FL_TICKS_PER_SECOND,100,&repeated) && !fl_scene_renderer_error(renderer)[0]);
+    fl_frame_free(&repeated);
 
     fl_scene_renderer_destroy(renderer);
     fl_project_destroy(p);

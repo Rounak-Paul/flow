@@ -9,13 +9,27 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #define LOG_TAG "export"
 #define SLICE_NS UINT64_C(25000000)
 #define MAX_AUDIO_CLIPS 48
 #define PATH_MAX_ARG 64
 
-typedef struct Fl_ExportStep { Fl_Exporter *exporter; uint64_t job; } Fl_ExportStep;
+typedef struct Fl_ExportStep { uint64_t job; } Fl_ExportStep;
+
+static atomic_uint_fast64_t next_job = 1;
+
+/* Reserve a process-wide identity; exhaustion disables new jobs rather than reusing a queued identity. */
+static uint64_t reserve_job(void)
+{
+    uint_fast64_t value = atomic_load_explicit(&next_job, memory_order_relaxed);
+    while (value != UINT64_MAX) {
+        if (atomic_compare_exchange_weak_explicit(&next_job, &value, value + 1,
+                                                memory_order_relaxed, memory_order_relaxed)) return value;
+    }
+    return 0;
+}
 
 struct Fl_Exporter {
     Fl_EventBus *bus;
@@ -27,6 +41,7 @@ struct Fl_Exporter {
     size_t scene_count, scene_index;
     uint64_t frame_in_scene, frames_in_scene, overlap, job, started_ns;
     FILE *pipe;
+    char temporary[FL_PATH_MAX];
     Fl_ExportStatus status;
 };
 
@@ -73,7 +88,7 @@ static bool render_scene(Fl_Exporter *e, const Fl_Scene *scene, uint64_t index, 
     if (!fl_frame_dimensions(scene, e->status.width, &w, &h) || w != e->status.width || h != e->status.height) {
         *reason = "a scene changed size or aspect during the export"; return false;
     }
-    if (!fl_scene_renderer_render(e->renderer, e->project, scene, tick, w, frame)) {*reason = "a frame could not be rendered"; return false;}
+    if (!fl_scene_renderer_render(e->renderer, e->project, scene, tick, w, frame)) {*reason = fl_scene_renderer_error(e->renderer); return false;}
     return true;
 }
 
@@ -100,7 +115,9 @@ static size_t collect_audio(Fl_Project *project, const Fl_Id *scenes, size_t cou
             const Fl_Asset *asset = fl_project_asset(project, c->asset);
             Fl_ExportAudio a = {.gain = c->gain};
             if (!asset || !fl_project_asset_path(project, asset, a.path, sizeof(a.path))) continue;
-            const double start = (double)fl_anchor_resolve(scene, &c->start) / FL_TICKS_PER_SECOND;
+            Fl_Tick start_tick;
+            if (!fl_anchor_sample(scene, &c->start, &start_tick)) continue;
+            const double start = (double)start_tick / FL_TICKS_PER_SECOND;
             a.offset = (double)c->source_offset / FL_TICKS_PER_SECOND;
             double natural = c->duration ? (double)c->duration / FL_TICKS_PER_SECOND : asset->duration ? (double)asset->duration / FL_TICKS_PER_SECOND - a.offset : 0;
             double room = length - (start > 0 ? start : 0);
@@ -156,30 +173,39 @@ static bool append_audio(char *command, size_t size, const Fl_ExportAudio *audio
 static void finish(Fl_Exporter *e, Fl_ExportState state, const char *reason)
 {
     bool encoded = e->pipe ? fl_command_close(e->pipe) : true;
-    e->pipe = NULL; e->project = NULL;
+    e->pipe = NULL; fl_project_destroy(e->project); e->project = NULL;
     free(e->scenes); e->scenes = NULL;
     e->status.elapsed_seconds = (double)(fl_clock_monotonic_ns() - e->started_ns) / 1e9;
     if (state == FL_EXPORT_DONE && !encoded) {state = FL_EXPORT_FAILED; reason = "ffmpeg did not finish cleanly";}
+    if (state==FL_EXPORT_DONE) {
+        FILE *output=fl_fs_fopen(e->temporary,"r+b");
+        bool flushed=output && fl_fs_flush(output);
+        if (output && fclose(output)) flushed=false;
+        if (!flushed || !fl_fs_commit(e->temporary,e->status.path)) {
+            state=FL_EXPORT_FAILED; reason="could not commit the completed export";
+        }
+    }
     e->status.state = state;
     if (reason) set_message(e, "%s", reason);
-    if (state != FL_EXPORT_DONE) fl_fs_remove(e->status.path);
+    if (state != FL_EXPORT_DONE) fl_fs_remove(e->temporary);
     else FL_LOG_INFO(LOG_TAG, "wrote %s (%llu frames)", e->status.path, (unsigned long long)e->status.frames_done);
+    e->temporary[0]=0;
     if (state == FL_EXPORT_FAILED) FL_LOG_ERROR(LOG_TAG, "%s", e->status.message);
 }
 
 static void queue_step(Fl_Exporter *e)
 {
-    Fl_ExportStep step = {e, e->job};
+    Fl_ExportStep step = {.job = e->job};
     if (!fl_event_post(e->bus, e->step_event, &step, sizeof(step))) finish(e, FL_EXPORT_FAILED, "the editor could not schedule the next frames");
 }
 
 /* UI-thread slice: render frames for a bounded time, then yield. */
 static bool on_step(const Fl_Event *event, void *data)
 {
-    (void)data;
+    Fl_Exporter *e = data;
     const Fl_ExportStep *step = event->payload;
-    Fl_Exporter *e = step->exporter;
-    if (e->status.state != FL_EXPORT_RUNNING || step->job != e->job) return true;
+    if (step->job != e->job) return false;
+    if (e->status.state != FL_EXPORT_RUNNING) return true;
     uint64_t slice_start = fl_clock_monotonic_ns();
     while (e->status.state == FL_EXPORT_RUNNING && fl_clock_monotonic_ns() - slice_start < SLICE_NS) {
         const Fl_Scene *scene = fl_project_scene(e->project, e->scenes[e->scene_index]);
@@ -245,8 +271,11 @@ bool fl_exporter_start(Fl_Exporter *e, Fl_Project *project, const Fl_ExportDesc 
     if (d->fps < 1 || d->fps > 120 || d->crf > 51) {snprintf(error, error_size, "fps is 1..120 and crf 0..51"); return false;}
     const char *ffmpeg = fl_ffmpeg_path();
     if (!ffmpeg) {snprintf(error, error_size, "ffmpeg was not found; install it or set FLOW_FFMPEG"); return false;}
+    const uint64_t job = reserve_job();
+    if (!job) {snprintf(error, error_size, "export job identities exhausted"); return false;}
     size_t count = d->scenes ? d->scene_count : fl_project_scene_count(project);
     if (!count) {snprintf(error, error_size, "there is nothing to export"); return false;}
+    if (count>SIZE_MAX/sizeof(Fl_Id)) {snprintf(error,error_size,"too many export scenes"); return false;}
     Fl_Id *scenes = malloc(count * sizeof(*scenes));
     if (!scenes) {snprintf(error, error_size, "out of memory"); return false;}
     uint64_t total = 0, shortest = UINT64_MAX;
@@ -256,7 +285,9 @@ bool fl_exporter_start(Fl_Exporter *e, Fl_Project *project, const Fl_ExportDesc 
         uint32_t w, h;
         if (!s || !fl_frame_dimensions(s, d->width, &w, &h)) {snprintf(error, error_size, "scene %zu is missing or width %u is not a valid size", i + 1, d->width); free(scenes); return false;}
         if (i && (w != width || h != height)) {snprintf(error, error_size, "scenes have different aspect ratios; export them separately"); free(scenes); return false;}
-        width = w; height = h; scenes[i] = s->id; total += scene_frames(s, d->fps);
+        uint64_t frames=scene_frames(s,d->fps);
+        if (frames>UINT64_MAX-total) {snprintf(error,error_size,"export frame count exceeds supported range"); free(scenes); return false;}
+        width = w; height = h; scenes[i] = s->id; total += frames;
         if (scene_frames(s, d->fps) < shortest) shortest = scene_frames(s, d->fps);
     }
     if ((width | height) & 1) {snprintf(error, error_size, "the output size %ux%u must be even; choose another width", width, height); free(scenes); return false;}
@@ -266,26 +297,36 @@ bool fl_exporter_start(Fl_Exporter *e, Fl_Project *project, const Fl_ExportDesc 
     total -= overlap * (count - 1);
     char command[4 * FL_PATH_MAX], size[32], rate[16], crf[8];
     snprintf(size, sizeof(size), "%ux%u", width, height); snprintf(rate, sizeof(rate), "%u", d->fps); snprintf(crf, sizeof(crf), "%u", d->crf ? d->crf : 16);
+    char temporary[FL_PATH_MAX];
+    int length=snprintf(temporary,sizeof(temporary),"%s.flow-%016llx-%016llx.mp4",d->path,
+        (unsigned long long)fl_clock_monotonic_ns(),(unsigned long long)job);
+    if (length<0 || (size_t)length>=sizeof(temporary)) {snprintf(error,error_size,"export path is too long"); free(scenes); return false;}
+    Fl_Project *view=fl_project_read_view(project);
+    if (!view) {snprintf(error,error_size,"could not capture the export document"); free(scenes); return false;}
     Fl_ExportAudio audio[MAX_AUDIO_CLIPS];
     bool overflow;
-    const size_t audio_count = collect_audio(project, scenes, count, d->fps, overlap, audio, &overflow);
-    if (overflow) {snprintf(error, error_size, "more than %d audio clips in the exported scenes", MAX_AUDIO_CLIPS); free(scenes); return false;}
+    const size_t audio_count = collect_audio(view, scenes, count, d->fps, overlap, audio, &overflow);
+    if (overflow) {snprintf(error, error_size, "more than %d audio clips in the exported scenes", MAX_AUDIO_CLIPS); fl_project_destroy(view); free(scenes); return false;}
     static const char video_filter[] = "scale=out_color_matrix=bt709:flags=accurate_rnd+full_chroma_int";
     command[0] = 0;
     const char *head[] = {ffmpeg, "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", size, "-r", rate, "-i", "-"};
     const char *tail[] = {"-c:v", "libx264", "-preset", "medium", "-crf", crf, "-pix_fmt", "yuv420p", "-colorspace", "bt709",
-        "-color_primaries", "bt709", "-color_trc", "bt709", "-movflags", "+faststart", d->path};
+        "-color_primaries", "bt709", "-color_trc", "bt709", "-movflags", "+faststart", temporary};
     bool built = true;
     for (size_t i = 0; built && i < sizeof(head) / sizeof(*head); ++i) built = fl_command_append(command, sizeof(command), head[i]);
     if (built && audio_count) built = append_audio(command, sizeof(command), audio, audio_count, video_filter, (double)total / d->fps);
     else if (built) built = fl_command_append(command, sizeof(command), "-an") && fl_command_append(command, sizeof(command), "-vf") && fl_command_append(command, sizeof(command), video_filter);
     for (size_t i = 0; built && i < sizeof(tail) / sizeof(*tail); ++i) built = fl_command_append(command, sizeof(command), tail[i]);
-    FILE *pipe = built ? fl_command_open_writer(command) : NULL;
-    if (!pipe) {snprintf(error, error_size, "could not start ffmpeg"); free(scenes); return false;}
-    ++e->job;
+    FILE *reserved=built ? fl_fs_fopen(temporary,"wbx") : NULL;
+    bool owned=reserved!=NULL;
+    if (reserved && fclose(reserved)) built=false;
+    FILE *pipe = built && owned ? fl_command_open_writer(command) : NULL;
+    if (!pipe) {snprintf(error, error_size, "could not start ffmpeg"); if (owned) fl_fs_remove(temporary); fl_project_destroy(view); free(scenes); return false;}
+    e->job = job;
     free(e->scenes);
-    e->scenes = scenes; e->scene_count = count; e->scene_index = 0; e->frame_in_scene = 0; e->overlap = overlap; e->pipe = pipe; e->project = project;
-    e->frames_in_scene = scene_frames(fl_project_scene(project, scenes[0]), d->fps);
+    e->scenes = scenes; e->scene_count = count; e->scene_index = 0; e->frame_in_scene = 0; e->overlap = overlap; e->pipe = pipe; e->project = view;
+    snprintf(e->temporary,sizeof(e->temporary),"%s",temporary);
+    e->frames_in_scene = scene_frames(fl_project_scene(view, scenes[0]), d->fps);
     e->started_ns = fl_clock_monotonic_ns();
     e->status = (Fl_ExportStatus){.state = FL_EXPORT_RUNNING, .frames_total = total, .width = width, .height = height, .fps = d->fps};
     snprintf(e->status.path, sizeof(e->status.path), "%s", d->path);

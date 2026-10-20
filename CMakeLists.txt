@@ -62,6 +62,7 @@ add_custom_command(
 
 # Engine: platform-independent core with no UI dependency.
 file(GLOB_RECURSE FLOW_ENGINE_SOURCES CONFIGURE_DEPENDS src/engine/*.c)
+list(FILTER FLOW_ENGINE_SOURCES EXCLUDE REGEX "/render/gpu/")
 add_library(flow_engine STATIC ${FLOW_ENGINE_SOURCES} "${FLOW_EMBEDDED_FONT_SOURCE}")
 target_include_directories(flow_engine PUBLIC "${PROJECT_SOURCE_DIR}/src/engine")
 target_include_directories(flow_engine SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/vendors/lua" "${PROJECT_SOURCE_DIR}/vendors/stb" "${PROJECT_SOURCE_DIR}/vendors/miniaudio")
@@ -93,12 +94,20 @@ if(WIN32)
 endif()
 flow_target_warnings(flow_engine)
 
+# Engine GPU rendering consumes a borrowed driver contract and has no UI library dependency.
+file(GLOB FLOW_RENDER_SOURCES CONFIGURE_DEPENDS src/engine/render/gpu/*.c)
+add_library(flow_renderer STATIC ${FLOW_RENDER_SOURCES})
+target_include_directories(flow_renderer PUBLIC "${PROJECT_SOURCE_DIR}/src/engine")
+target_include_directories(flow_renderer SYSTEM PUBLIC $<TARGET_PROPERTY:VulkanMemoryAllocator,INTERFACE_INCLUDE_DIRECTORIES>)
+target_link_libraries(flow_renderer PUBLIC flow_engine Vulkan::Vulkan)
+flow_target_warnings(flow_renderer)
+
 # Editor: causality-based UI on top of the engine.
 file(GLOB_RECURSE FLOW_EDITOR_SOURCES CONFIGURE_DEPENDS src/editor/*.c)
 add_library(flow_editor STATIC ${FLOW_EDITOR_SOURCES})
 target_include_directories(flow_editor PUBLIC "${PROJECT_SOURCE_DIR}/src/editor")
 target_include_directories(flow_editor SYSTEM PRIVATE $<TARGET_PROPERTY:VulkanMemoryAllocator,INTERFACE_INCLUDE_DIRECTORIES>)
-target_link_libraries(flow_editor PUBLIC flow_engine PRIVATE causality Vulkan::Vulkan VulkanMemoryAllocator freetype)
+target_link_libraries(flow_editor PUBLIC flow_engine flow_renderer PRIVATE causality Vulkan::Vulkan VulkanMemoryAllocator freetype)
 # causality is linked statically into the executable, so its public symbols
 # must resolve as plain declarations rather than DLL imports on Windows.
 target_compile_definitions(flow_editor PRIVATE

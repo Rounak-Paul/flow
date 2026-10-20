@@ -14,6 +14,7 @@
 #include "core/fl_log.h"
 #include "platform/fl_fs.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -37,7 +38,6 @@ struct Fl_Workspace {
     Fl_Inspector *inspector;
     Fl_AssetImporter *importer;
     Fl_AssetPanel *assets;
-    Fl_ScriptSync *script_sync;
     Fl_ScriptPanel *scripts;
     Fl_AudioPlayer *player;
     Fl_Playback *playback;
@@ -53,6 +53,8 @@ struct Fl_Workspace {
     bool         mounted;
     bool         save_pending;
     uint64_t     save_after_ns;
+    uint64_t     document_poll_ns;
+    char         document_error[256];
 };
 
 /*
@@ -136,6 +138,17 @@ static bool on_layout_changed(const Fl_Event *event, void *user_data)
 static void flush_pending_save(void *user_data)
 {
     Fl_Workspace *workspace = user_data;
+    uint64_t now=fl_clock_monotonic_ns();
+    if (now-workspace->document_poll_ns>=UINT64_C(500000000)) {
+        workspace->document_poll_ns=now;
+        Fl_Project *project=fl_scene_edit_project(workspace->edit);
+        Fl_ReloadResult result=fl_project_reload(project);
+        const char *error=fl_project_diagnostic(project);
+        if ((result==FL_RELOAD_INVALID || result==FL_RELOAD_CONFLICT) && strcmp(error,workspace->document_error)) {
+            FL_LOG_WARN(LOG_TAG,"%s",error); snprintf(workspace->document_error,sizeof(workspace->document_error),"%s",error);
+        } else if (result==FL_RELOAD_APPLIED) workspace->document_error[0]=0;
+    }
+    ca_instance_request_frame_after(workspace->instance,0.5);
     if (workspace->save_pending && fl_clock_monotonic_ns() >= workspace->save_after_ns)
         fl_workspace_save(workspace);
 }
@@ -275,7 +288,7 @@ Fl_Workspace *fl_workspace_create(const Fl_WorkspaceDesc *desc)
     }
     workspace->fonts=desc->fonts;
     fl_fonts_set_project(workspace->fonts,desc->project);
-    workspace->edit=fl_scene_edit_create(desc->project,desc->bus);
+    workspace->edit=fl_scene_edit_create(desc->project,desc->bus,desc->jobs);
     workspace->importer=fl_asset_importer_create(desc->project,desc->jobs,desc->bus);
     workspace->scene=fl_scene_panel_create(workspace->edit,desc->fonts,desc->jobs,desc->bus);
     workspace->widgets=fl_widget_library_create(workspace->edit,workspace->scene,desc->bus);
@@ -284,8 +297,7 @@ Fl_Workspace *fl_workspace_create(const Fl_WorkspaceDesc *desc)
     workspace->timeline=workspace->playback ? fl_timeline_panel_create(workspace->edit,workspace->playback,desc->bus) : NULL;
     workspace->assets=workspace->player&&workspace->timeline ? fl_asset_panel_create(workspace->edit,workspace->scene,workspace->importer,desc->jobs,
                                                                 workspace->player,workspace->timeline,desc->bus) : NULL;
-    workspace->script_sync=fl_script_sync_create(desc->project,desc->bus,workspace->instance);
-    workspace->scripts=workspace->script_sync&&workspace->edit ? fl_script_panel_create(workspace->edit,workspace->script_sync,desc->bus) : NULL;
+    workspace->scripts=workspace->edit ? fl_script_panel_create(workspace->edit,desc->bus) : NULL;
     workspace->inspector=workspace->playback ? fl_inspector_create(workspace->edit,desc->fonts,workspace->playback,desc->bus) : NULL;
     if (!workspace->edit||!workspace->importer||!workspace->scene||!workspace->widgets||!workspace->assets||!workspace->scripts||
         !workspace->inspector||!create_dock(workspace, desc->window)) {
@@ -344,7 +356,6 @@ void fl_workspace_destroy(Fl_Workspace *workspace)
     fl_widget_library_destroy(workspace->widgets);
     fl_asset_panel_destroy(workspace->assets);
     fl_script_panel_destroy(workspace->scripts);
-    fl_script_sync_destroy(workspace->script_sync);
     fl_audio_player_destroy(workspace->player);
     fl_timeline_panel_destroy(workspace->timeline);
     fl_inspector_destroy(workspace->inspector);

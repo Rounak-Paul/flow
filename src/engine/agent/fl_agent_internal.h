@@ -1,6 +1,6 @@
 #pragma once
 #include "fl_agent.h"
-#include "fl_history.h"
+#include "project/fl_history.h"
 #include "schema/fl_widgets.h"
 #include "time/fl_scene_state.h"
 #include "render/fl_frame.h"
@@ -19,7 +19,6 @@ typedef struct Fl_AgentFrames {
 
 struct Fl_Agent {
     Fl_AgentHost host;
-    Fl_History *history;
     Fl_AgentFrames frames;
     void *bindings;             /* tool registrations handed to the MCP core */
 };
@@ -37,6 +36,10 @@ bool agent_object(const cJSON *value, Fl_Fail *fail, const char *ctx);
 bool agent_get_string(const cJSON *object, const char *key, bool required, const char **out, Fl_Fail *fail, const char *ctx);
 bool agent_get_number(const cJSON *object, const char *key, bool required, double *out, bool *present, Fl_Fail *fail, const char *ctx);
 bool agent_get_bool(const cJSON *object, const char *key, bool *out, bool *present, Fl_Fail *fail, const char *ctx);
+/* Parse one exact ID or same-batch name; safe numeric IDs and unsigned decimal strings are accepted. */
+bool agent_id_value(const cJSON *value, const Fl_AgentRefs *refs, Fl_Id *out, Fl_Fail *fail, const char *ctx);
+/* Emit exact IDs as numbers within JSON's safe range, otherwise as decimal strings. */
+cJSON *agent_id_json(Fl_Id id);
 bool agent_get_id(const cJSON *object, const char *key, const Fl_AgentRefs *refs, bool required, Fl_Id *out, Fl_Fail *fail, const char *ctx);
 bool agent_get_seconds(const cJSON *object, const char *key, bool required, Fl_Tick *out, bool *present, Fl_Fail *fail, const char *ctx);
 bool agent_parse_color(const cJSON *value, unsigned char rgba[4], Fl_Fail *fail, const char *ctx);
@@ -57,10 +60,8 @@ bool agent_ease_from_name(const char *name, Fl_Ease *ease);
 const Fl_Scene *agent_scene_of_entity(const Fl_Project *project, Fl_Id entity);
 const Fl_Scene *agent_scene_of_beat(const Fl_Project *project, Fl_Id beat);
 const Fl_Scene *agent_scene_of_clip(const Fl_Project *project, Fl_Id clip);
-/* Scene whose repository holds script, or NULL. */
-const Fl_Scene *agent_scene_of_script(const Fl_Project *project, Fl_Id script);
-/* One repository entry: id, name, bytes, the entities running it and, with source, its text. NULL on allocation failure. */
-cJSON *agent_script_json(const Fl_Scene *scene, const Fl_ScriptSource *script, bool with_source);
+/* One project Lua asset: id, name, bytes, the entities running it and, with source, its text. NULL on allocation failure. */
+cJSON *agent_script_json(const Fl_Project *project, const Fl_Asset *script, bool with_source);
 const Fl_Scene *agent_scene_of_key(const Fl_Project *project, Fl_Id key, const Fl_Track **track);
 
 /* JSON views of the document. */

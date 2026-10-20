@@ -1,25 +1,29 @@
 #pragma once
 #include "fl_animation.h"
+#include "time/fl_time_mapping.h"
 
 #define FL_SCRIPT_SOURCE_LIMIT (128u * 1024u)
-#define FL_SCRIPT_NAME_MAX 64u
-/* Wire schema version and size: the id of the scene script and an enabled flag, each a little-endian u64. */
-#define FL_SCRIPT_VERSION 3u
-#define FL_SCRIPT_BYTES 16u
+/* Script attachment schema: asset, local clock and independent JSON parameter values. */
+#define FL_SCRIPT_VERSION 5u
+#define FL_SCRIPT_PARAMETER_LIMIT (32u * 1024u)
 
-/* An entity's Lua component: which scene script it runs, and whether it is active. */
+/* An entity's Lua component: which Lua asset it runs, and whether it is active. */
 typedef struct Fl_Script {
     Fl_Id script;
     bool enabled;
+    Fl_TimeMapping time;
+    const char *parameters;       /* borrowed JSON object bytes; NULL means {} */
+    size_t parameters_size;
 } Fl_Script;
 
 /* Allocate a script payload in out; caller releases out->data with free. False when script.script is zero. */
 bool fl_script_encode(const Fl_Script *script, Fl_Component *out);
-/* Decode a script component, rejecting a malformed flag or a zero id. */
+/* Borrow an attachment from its owned payload; parameter bytes remain component-owned. */
 bool fl_script_decode(const Fl_Component *component, Fl_Script *out);
 /* Whether source is storable: 1..FL_SCRIPT_SOURCE_LIMIT bytes without NUL. */
 bool fl_script_source_valid(const char *source, size_t size);
-/* Whether name is a usable script name: 1..FL_SCRIPT_NAME_MAX bytes, no control characters. */
-bool fl_script_name_valid(const char *name);
-/* Return the stable Lua name for a property, or NULL when invalid. */
-const char *fl_property_name(Fl_AnimProperty property);
+/* Borrow the first Script attachment referencing asset, or NULL. */
+const Fl_Component *fl_entity_script_component(const Fl_Entity *entity, Fl_Id asset);
+
+/* Validate the complete attachment, including its bounded parameter object. */
+bool fl_script_component_valid(const Fl_Component *component);

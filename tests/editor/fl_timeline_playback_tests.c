@@ -44,11 +44,11 @@ int main(int argc, char **argv)
     if (!window) { ca_instance_destroy(instance); puts("fl_timeline_playback_tests: skipped (no window)"); return 0; }
     CHECK(fl_fs_mkdir_p(argv[1]));
     char manifest[FL_PATH_MAX];
-    CHECK(fl_fs_join(manifest, sizeof(manifest), argv[1], "project.flow"));
+    CHECK(fl_fs_join(manifest, sizeof(manifest), argv[1], "project.flow.json"));
     fl_fs_remove(manifest);
     Fl_EventBus *bus = fl_event_bus_create(NULL);
     Fl_Project *project = fl_project_create(argv[1], "Playback", bus);
-    Fl_SceneEdit *edit = fl_scene_edit_create(project, bus);
+    Fl_SceneEdit *edit = fl_scene_edit_create(project, bus, NULL);
     Fl_Playback *playback = fl_playback_create(&(Fl_PlaybackDesc){
         .instance = instance, .edit = edit, .bus = bus, .silent = true});
     Fl_TimelinePanel *panel = fl_timeline_panel_create(edit, playback, bus);
@@ -85,6 +85,11 @@ int main(int argc, char **argv)
     unsigned notifications = 0;
     CHECK(fl_event_subscribe(bus, &(Fl_SubscribeDesc){.type = fl_event_type_find(bus, FL_EVENT_TIME_CHANGED),
         .fn = count_time, .user_data = &notifications, .owner = &notifications}).generation);
+    float viewport_width=0;
+    ca_div_content_screen_rect(panel->scroll,NULL,NULL,&viewport_width,NULL);
+    CHECK(viewport_width>0);
+    Fl_Tick near_edge=(Fl_Tick)(viewport_width*0.8/(panel->zoom*panel_scale(panel))*FL_TICKS_PER_SECOND);
+    fl_playback_seek(playback,near_edge);
     fl_playback_play(playback);
     uint64_t start = fl_clock_monotonic_ns();
     while (fl_clock_monotonic_ns() - start < 600000000ull) {

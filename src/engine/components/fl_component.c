@@ -37,6 +37,7 @@ void fl_component_write(const Fl_Component *c, Fl_Binary *b)
         data = payload.data; size = payload.size;
         if (payload.failed) b->failed = true;
     }
+    fl_binary_u64(b,c->id);
     fl_binary_u64(b, c->type); fl_binary_u64(b, c->version); fl_binary_u64(b, size);
     fl_binary_write(b, data, size);
     free(payload.data);
@@ -44,6 +45,7 @@ void fl_component_write(const Fl_Component *c, Fl_Binary *b)
 
 bool fl_component_read(Fl_Component *c, Fl_Binary *b)
 {
+    c->id=fl_binary_get_u64(b);
     c->type = fl_binary_get_u64(b); c->version = fl_binary_get_u64(b);
     uint64_t size = fl_binary_get_u64(b);
     if (b->failed || size > SIZE_MAX || size > b->size - b->cursor) return false;
@@ -87,3 +89,17 @@ const Fl_Component *fl_entity_component(const Fl_Entity *e, uint64_t type)
     return NULL;
 }
 
+
+const Fl_Component *fl_entity_component_instance(const Fl_Entity *entity, Fl_Id id)
+{
+    for (size_t i=0;entity && id && i<entity->component_count;++i) if (entity->components[i].id==id) return &entity->components[i];
+    return NULL;
+}
+
+bool fl_entity_remove_component_instance(Fl_Entity *entity, Fl_Id id)
+{
+    Fl_Component *c=(Fl_Component *)fl_entity_component_instance(entity,id);
+    if (!c || c->type==FL_COMPONENT_TRANSFORM) return false;
+    size_t index=(size_t)(c-entity->components); fl_component_clear(c);
+    memmove(c,c+1,(entity->component_count-index-1)*sizeof(*c)); --entity->component_count; return true;
+}

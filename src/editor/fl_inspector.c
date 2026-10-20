@@ -2,6 +2,8 @@
 #include "ui/fl_button.h"
 #include "fl_file_browser.h"
 #include "components/fl_script.h"
+#include "doc/fl_json.h"
+#include "schema/fl_parameters.h"
 #include "fl_script_panel.h"
 #include "components/fl_animation.h"
 #include "components/fl_style.h"
@@ -19,6 +21,7 @@ enum { NAME,X,Y,WIDTH,HEIGHT,ROTATION,SCALE_X,SCALE_Y,FILL,STROKE,STROKE_WIDTH,F
        VIDEO_START,VIDEO_OFFSET,VIDEO_RATE,BLUR,FIELD_COUNT };
 #define WEIGHT_OPTIONS 32
 typedef struct Fl_InspectorField { struct Fl_Inspector *owner; char *value; bool dirty; } Fl_InspectorField;
+typedef struct Fl_ParameterField { Fl_InspectorField input; char *name, *label; char type[12]; } Fl_ParameterField;
 typedef struct Fl_FontChoice { struct Fl_Inspector *owner; size_t family; uint64_t generation; } Fl_FontChoice;
 struct Fl_Inspector {
     Fl_SceneEdit *edit;
@@ -28,9 +31,18 @@ struct Fl_Inspector {
     Ca_Dock *dock;
     Ca_Window *window;
     Fl_Id script;                   /* draft: repository script this entity runs, or 0 for none */
-    bool script_enabled;
+    bool script_enabled, script_new;
+    Fl_Id script_component, script_instances[65], loaded_script;
+    Fl_TimeMapping script_time;
+    Fl_InspectorField clock_fields[4];
+    Fl_Id *clock_beats;
+    size_t clock_beat_count;
+    size_t script_instance_count;
+    char script_instance_labels[65][96];
     Fl_Id *script_options;
     size_t script_option_count;
+    Fl_ParameterField *parameters;
+    size_t parameter_count;
     Ca_Label *status;
     Fl_Id scene,entity;
     uint64_t revision;
@@ -95,6 +107,47 @@ static void script_chosen(Ca_Select *select, void *data)
     if (p->script) p->script_enabled = true;
     drafted(p);
 }
+
+/* Select an attachment for editing; existing unsaved form edits must be applied first. */
+static void script_instance_chosen(Ca_Select *select, void *data)
+{
+    Fl_Inspector *p=data; int index=ca_select_get(select);
+    if (p->dirty || index<0 || (size_t)index>=p->script_instance_count) return;
+    p->script_component=p->script_instances[index]; p->script_new=p->script_component==0;
+    p->refresh=true;
+    if (p->dock) ca_dock_invalidate_panel(p->dock,"inspector");
+}
+
+/* Stage the selected start/end beat while retaining explicit local offsets. */
+static void clock_start_chosen(Ca_Select *select, void *data)
+{
+    Fl_Inspector *p=data; int i=ca_select_get(select);
+    if (i<=0 || (size_t)i>=p->clock_beat_count) return;
+    p->script_time.start.kind=FL_ANCHOR_BEAT; p->script_time.start.beat=p->clock_beats[i]; p->script_time.start.end=false; p->script_time.start.position=0; drafted(p);
+}
+static void clock_end_chosen(Ca_Select *select, void *data)
+{
+    Fl_Inspector *p=data; int i=ca_select_get(select);
+    if (i<=0 || (size_t)i>=p->clock_beat_count) return;
+    p->script_time.end.kind=FL_ANCHOR_BEAT; p->script_time.end.beat=p->clock_beats[i]; p->script_time.end.end=true; p->script_time.end.position=0; drafted(p);
+}
+static void clock_scope_changed(Ca_Checkbox *checkbox, void *data)
+{
+    Fl_Inspector *p=data; const Fl_Scene *scene=fl_project_scene(fl_scene_edit_project(p->edit),p->scene);
+    bool bound=ca_checkbox_get(checkbox);
+    if (bound && (!scene || !scene->beat_count)) {status(p,"Create a beat before binding this behavior."); return;}
+    p->script_time.explicit_range=bound;
+    if (bound && p->script_time.start.kind!=FL_ANCHOR_BEAT) p->script_time.start=(Fl_TimeAnchor){.kind=FL_ANCHOR_BEAT,.beat=scene->beats[0].id,.end=false,.offset=0};
+    if (bound && p->script_time.end.kind!=FL_ANCHOR_BEAT) p->script_time.end=(Fl_TimeAnchor){.kind=FL_ANCHOR_BEAT,.beat=scene->beats[0].id,.end=true,.offset=0};
+    drafted(p);
+}
+static void clock_mode_chosen(Ca_Select *select, void *data)
+{
+    Fl_Inspector *p=data; int i=ca_select_get(select); if (i<0 || i>1) return; p->script_time.mode=(Fl_RetimeMode)i; drafted(p);
+}
+static void clock_loop_changed(Ca_Checkbox *checkbox, void *data) {Fl_Inspector *p=data; p->script_time.loop=ca_checkbox_get(checkbox); drafted(p);}
+static void clock_before_changed(Ca_Checkbox *checkbox, void *data) {Fl_Inspector *p=data; p->script_time.before=ca_checkbox_get(checkbox) ? FL_TIME_HOLD : FL_TIME_INACTIVE; drafted(p);}
+static void clock_after_changed(Ca_Checkbox *checkbox, void *data) {Fl_Inspector *p=data; p->script_time.after=ca_checkbox_get(checkbox) ? FL_TIME_HOLD : FL_TIME_INACTIVE; drafted(p);}
 
 /* Show the entity's script in the Scripts panel. */
 static void script_edit(Ca_Button *button, void *data)
@@ -179,6 +232,33 @@ static bool color(const char *text,unsigned char rgba[4])
     return true;
 }
 /* Commit the form in one operation, preserving component schemas the Inspector does not own. */
+/* Serialize only edited parameter values; unchanged defaults continue to follow the Lua asset. */
+static char *parameter_drafts(Fl_Inspector *p, const Fl_Script *script)
+{
+    Fl_Json context={0};
+    if (p->script!=p->loaded_script) return cJSON_PrintUnformatted(&(cJSON){.type=cJSON_Object});
+    cJSON *values=script->parameters ? fl_json_parse(&context,script->parameters,script->parameters_size) : cJSON_CreateObject();
+    if (!values) return NULL;
+    for (size_t i=0;i<p->parameter_count;++i) {
+        Fl_ParameterField *field=&p->parameters[i]; if (!field->input.dirty) continue;
+        cJSON *value=NULL;
+        if (!strcmp(field->type,"string")) value=cJSON_CreateString(field->input.value);
+        else if (!strcmp(field->type,"boolean")) value=cJSON_CreateBool(!strcmp(field->input.value,"true"));
+        else if (!strcmp(field->type,"number") || !strcmp(field->type,"integer")) {
+            double n;
+            if (!number(field->input.value,&n) || (!strcmp(field->type,"integer") && (floor(n)!=n || fabs(n)>9007199254740991.0))) {cJSON_Delete(values); return NULL;}
+            value=cJSON_CreateNumber(n);
+        } else value=fl_json_parse(&context,field->input.value,strlen(field->input.value));
+        if (!value) {cJSON_Delete(values); return NULL;}
+        cJSON_DeleteItemFromObjectCaseSensitive(values,field->name);
+        if (!fl_json_add(&context,values,field->name,value)) {cJSON_Delete(values); return NULL;}
+    }
+    const Fl_SceneState *state=fl_scene_edit_state(p->edit);
+    const cJSON *schema=state ? fl_script_runtime_parameter_schema(state->scripts,p->script_component) : NULL;
+    if (schema && !fl_parameters_resolve(&context,schema,values,NULL)) {status(p,context.error); cJSON_Delete(values); return NULL;}
+    char *text=context.error[0] ? NULL : cJSON_PrintUnformatted(values); cJSON_Delete(values); return text;
+}
+
 static void apply(Ca_Button *button,void *data)
 {
     (void)button;Fl_Inspector *p=data;
@@ -203,18 +283,18 @@ static void apply(Ca_Button *button,void *data)
     unsigned char bytes[56],style[24],typography[3+FL_TYPOGRAPHY_FAMILY_MAX],image[8],alpha[8];
     fl_transform_encode(&transform,bytes);fl_appearance_encode(&appearance,style);fl_opacity_encode(opacity,alpha);
     unsigned char style_bytes[FL_STYLE_BYTES],clip_bytes[FL_VIDEO_CLIP_BYTES];
-    Fl_Component components[9]={{FL_COMPONENT_TRANSFORM,1,56,bytes},{FL_COMPONENT_OPACITY,1,8,alpha}};size_t count=2;
-    if (def&&def->kind!=FL_WIDGET_GROUP&&!def->has_image&&!def->has_video) components[count++]=(Fl_Component){FL_COMPONENT_APPEARANCE,1,24,style};
+    Fl_Component components[9]={{.type=FL_COMPONENT_TRANSFORM, .version=1, .size=56, .data=bytes},{.type=FL_COMPONENT_OPACITY, .version=1, .size=8, .data=alpha}};size_t count=2;
+    if (def&&def->kind!=FL_WIDGET_GROUP&&!def->has_image&&!def->has_video) components[count++]=(Fl_Component){.type = FL_COMPONENT_APPEARANCE, .version = 1, .size = 24, .data = style};
     if (def&&def->has_text) {
         size_t size=fl_typography_encode(&p->typography,typography);
         if (!size) {status(p,"Choose a font family.");return;}
-        components[count++]=(Fl_Component){FL_COMPONENT_TEXT,1,strlen(p->fields[CONTENT].value),(const unsigned char *)p->fields[CONTENT].value};
-        components[count++]=(Fl_Component){FL_COMPONENT_TYPOGRAPHY,1,size,typography};
+        components[count++]=(Fl_Component){.type = FL_COMPONENT_TEXT, .version = 1, .size = strlen(p->fields[CONTENT].value), .data = (const unsigned char *)p->fields[CONTENT].value};
+        components[count++]=(Fl_Component){.type = FL_COMPONENT_TYPOGRAPHY, .version = 1, .size = size, .data = typography};
     }
     if (def&&def->has_image) {
         if (!fl_project_asset(fl_scene_edit_project(p->edit),p->image)) {status(p,"Choose an image asset.");return;}
         fl_image_asset_encode(p->image,image);
-        components[count++]=(Fl_Component){FL_COMPONENT_IMAGE,1,8,image};
+        components[count++]=(Fl_Component){.type = FL_COMPONENT_IMAGE, .version = 1, .size = 8, .data = image};
     }
     Fl_Style look=fl_style_default();
     if (def) {
@@ -229,11 +309,11 @@ static void apply(Ca_Button *button,void *data)
         if (ok&&look.gradient) ok=color(to,look.gradient_to);
         look.align=p->align;look.clip=p->clip;
         unsigned char probe[FL_STYLE_BYTES];fl_style_encode(&look,probe);
-        Fl_Component probe_component={FL_COMPONENT_STYLE,1,FL_STYLE_BYTES,probe};
+        Fl_Component probe_component={.type = FL_COMPONENT_STYLE, .version = 1, .size = FL_STYLE_BYTES, .data = probe};
         if (!ok||!fl_widget_component_valid(&probe_component)) {status(p,"Check radius, blur, shadow, gradient and crop values.");return;}
         Fl_Style plain=fl_style_default();unsigned char plain_bytes[FL_STYLE_BYTES];fl_style_encode(&plain,plain_bytes);
         if (memcmp(probe,plain_bytes,sizeof(probe))||fl_entity_component(entity,FL_COMPONENT_STYLE)) {
-            memcpy(style_bytes,probe,sizeof(probe));components[count++]=(Fl_Component){FL_COMPONENT_STYLE,1,FL_STYLE_BYTES,style_bytes};
+            memcpy(style_bytes,probe,sizeof(probe));components[count++]=(Fl_Component){.type = FL_COMPONENT_STYLE, .version = 1, .size = FL_STYLE_BYTES, .data = style_bytes};
         }
     }
     if (def&&def->has_video) {
@@ -242,23 +322,46 @@ static void apply(Ca_Button *button,void *data)
         if (!number(p->fields[VIDEO_START].value,&start)||!number(p->fields[VIDEO_OFFSET].value,&offset)||!number(p->fields[VIDEO_RATE].value,&clip.rate)||
             offset<0||!(clip.rate>0&&clip.rate<=16)) {status(p,"Start and offset are seconds (offset not negative); rate is above 0 and at most 16.");return;}
         clip.start=(Fl_Tick)llround(start*FL_TICKS_PER_SECOND);clip.offset=(Fl_Tick)llround(offset*FL_TICKS_PER_SECOND);clip.loop=p->loop;
-        fl_video_clip_encode(&clip,clip_bytes);components[count++]=(Fl_Component){FL_COMPONENT_VIDEO,1,FL_VIDEO_CLIP_BYTES,clip_bytes};
+        fl_video_clip_encode(&clip,clip_bytes);components[count++]=(Fl_Component){.type = FL_COMPONENT_VIDEO, .version = 1, .size = FL_VIDEO_CLIP_BYTES, .data = clip_bytes};
     }
     Fl_Component script = {0};
-    const bool had_script = fl_entity_component(entity, FL_COMPONENT_SCRIPT) != NULL;
+    const bool had_script=fl_entity_component_instance(entity,p->script_component)!=NULL;
     if (p->script) {
-        if (!fl_script_encode(&(Fl_Script){.script = p->script, .enabled = p->script_enabled}, &script)) {status(p, "Invalid Lua script component."); return;}
+        const Fl_Component *attachment=fl_entity_component_instance(entity,p->script_component);
+        Fl_Script configuration={.script=p->script,.enabled=p->script_enabled};
+        if (attachment) {
+            fl_script_decode(attachment,&configuration);
+            if (configuration.script!=p->script) {configuration.parameters=NULL; configuration.parameters_size=0;}
+            configuration.script=p->script; configuration.enabled=p->script_enabled;
+        }
+        configuration.time=p->script_time;
+        double seconds;
+        if (p->clock_fields[0].dirty) {
+            if (!p->clock_fields[0].value[0]) configuration.time.duration=0;
+            else if (!number(p->clock_fields[0].value,&seconds) || seconds<0 || !fl_time_from_seconds(seconds,&configuration.time.duration)) {status(p,"Invalid canonical duration."); return;}
+        }
+        if (p->clock_fields[1].dirty && !number(p->clock_fields[1].value,&configuration.time.rate)) {status(p,"Invalid behavior rate."); return;}
+        if (p->clock_fields[2].dirty && (!number(p->clock_fields[2].value,&seconds) || !fl_time_from_seconds(seconds,&configuration.time.start.offset))) {status(p,"Invalid start offset."); return;}
+        if (p->clock_fields[3].dirty && (!number(p->clock_fields[3].value,&seconds) || !fl_time_from_seconds(seconds,&configuration.time.end.offset))) {status(p,"Invalid end offset."); return;}
+        char *parameters=parameter_drafts(p,&configuration);
+        if (!parameters) {status(p,"Invalid behavior parameter value."); return;}
+        configuration.parameters=parameters; configuration.parameters_size=strlen(parameters);
+        bool encoded=fl_script_encode(&configuration,&script); cJSON_free(parameters);
+        if (!encoded) {status(p,"Invalid Lua script component."); return;}
+        if (attachment) script.id=attachment->id;
         components[count++] = script;
     }
     p->applying=true;
-    bool ok=fl_project_apply(fl_scene_edit_project(p->edit),&(Fl_Op){.kind=FL_OP_ENTITY_CONFIGURE,.scene=p->scene,.entity=p->entity,
+    bool begun=fl_project_edit_begin(fl_scene_edit_project(p->edit),"Edit component properties",false);
+    bool ok=begun && fl_project_apply(fl_scene_edit_project(p->edit),&(Fl_Op){.kind=FL_OP_ENTITY_CONFIGURE,.scene=p->scene,.entity=p->entity,
         .name=p->fields[NAME].value,.visible=p->visible,.components=components,.component_count=count,
         .keyed=true,.tick=fl_scene_edit_time(p->edit)},NULL);
     if (ok&&!p->script&&had_script) ok=fl_project_apply(fl_scene_edit_project(p->edit),&(Fl_Op){.kind=FL_OP_COMPONENT_REMOVE,.scene=p->scene,
-        .entity=p->entity,.component={.type=FL_COMPONENT_SCRIPT}},NULL);
+        .entity=p->entity,.component={.type=FL_COMPONENT_SCRIPT,.id=p->script_component}},NULL);
+    if (begun) {if (ok) ok=fl_project_edit_commit(fl_scene_edit_project(p->edit)); else fl_project_edit_cancel(fl_scene_edit_project(p->edit));}
     p->applying=false;
     free((void *)script.data);
-    if (!ok) {status(p,"Invalid values or insufficient memory. Changes were not applied.");return;}
+    if (!ok) {const char *error=fl_project_diagnostic(fl_scene_edit_project(p->edit)); status(p,error[0] ? error : "Invalid values or insufficient memory. Changes were not applied.");return;}
     p->dirty=false;p->refresh=true;status(p,"Saved");
     if (p->dock) ca_dock_invalidate_panel(p->dock,"inspector");
 }
@@ -287,12 +390,56 @@ static bool changed(const Fl_Event *event,void *data)
     return false;
 }
 
+/* Release draft parameter strings independently of runtime metadata lifetime. */
+static void clear_parameters(Fl_Inspector *p)
+{
+    for (size_t i=0;i<p->parameter_count;++i) {free(p->parameters[i].name); free(p->parameters[i].label); free(p->parameters[i].input.value);}
+    free(p->parameters); p->parameters=NULL; p->parameter_count=0;
+}
+
+/* Order native controls by parameter name, independent of Lua table iteration. */
+static int compare_parameters(const void *a, const void *b)
+{
+    const cJSON *const *x=a,*const *y=b; return strcmp((*x)->string,(*y)->string);
+}
+
+/* Copy exposed definitions and effective values into editable native drafts. */
+static bool load_parameters(Fl_Inspector *p, const Fl_SceneState *state, const Fl_Script *script)
+{
+    clear_parameters(p);
+    const cJSON *schema=state ? fl_script_runtime_parameter_schema(state->scripts,p->script_component) : NULL;
+    if (!schema) return true;
+    size_t count=0; const cJSON *ordered[64];
+    for (const cJSON *item=schema->child;item && count<64;item=item->next) ordered[count++]=item;
+    if (count) qsort(ordered,count,sizeof(*ordered),compare_parameters);
+    p->parameters=count ? calloc(count,sizeof(*p->parameters)) : NULL;
+    if (count && !p->parameters) return false;
+    p->parameter_count=count;
+    Fl_Json context={0}; cJSON *values=fl_json_parse(&context,script->parameters,script->parameters_size);
+    if (!values) return false;
+    bool ok=true;
+    for (size_t i=0;i<count && ok;++i) {
+        const cJSON *spec=ordered[i], *type=cJSON_GetObjectItemCaseSensitive(spec,"type"), *label=cJSON_GetObjectItemCaseSensitive(spec,"label"),
+            *value=cJSON_GetObjectItemCaseSensitive(values,spec->string);
+        Fl_ParameterField *field=&p->parameters[i]; field->input.owner=p;
+        if (!cJSON_IsString(type) || strlen(type->valuestring)>=sizeof(field->type)) {ok=false; break;}
+        strcpy(field->type,type->valuestring); field->name=fl_json_string(&context,&(cJSON){.type=cJSON_String,.valuestring=spec->string});
+        field->label=fl_json_string(&context,cJSON_IsString(label) ? label : &(cJSON){.type=cJSON_String,.valuestring=spec->string});
+        if (!value) value=cJSON_GetObjectItemCaseSensitive(spec,"default");
+        char *formatted=value ? cJSON_PrintUnformatted(value) : NULL;
+        const char *text=cJSON_IsString(value) ? value->valuestring : formatted ? formatted : "";
+        ok=field->name && field->label && field_set(&field->input,text); cJSON_free(formatted);
+    }
+    cJSON_Delete(values); return ok;
+}
+
 /* Snapshot current values into controller-owned strings; no document pointers survive a build. */
 static bool load(Fl_Inspector *p,const Fl_Scene *scene,const Fl_Entity *entity)
 {
     const Fl_SceneState *state=fl_scene_edit_state(p->edit);
     Fl_Script attached;
-    bool scripted=fl_script_decode(fl_entity_component(entity,FL_COMPONENT_SCRIPT),&attached)&&attached.enabled;
+    bool scripted=false;
+    for (size_t i=0;i<entity->component_count;++i) if (fl_script_decode(&entity->components[i],&attached) && attached.enabled) scripted=true;
     bool evaluated=!scripted&&state&&state->scene==scene->id&&state->count==scene->entity_count;
     const Fl_EntityState *now=evaluated ? &state->entities[entity-scene->entities] : NULL;
     Fl_Transform transform={.scale_x=1,.scale_y=1};
@@ -332,9 +479,23 @@ static bool load(Fl_Inspector *p,const Fl_Scene *scene,const Fl_Entity *entity)
     const double clip_values[]={(double)clip.start/FL_TICKS_PER_SECOND,(double)clip.offset/FL_TICKS_PER_SECOND,clip.rate};
     for (size_t i=0;i<3;++i) {snprintf(text,sizeof(text),"%.9g",clip_values[i]);if (!field_set(&p->fields[VIDEO_START+i],text)) return false;}
     Fl_Script script;
-    const bool has_script=fl_script_decode(fl_entity_component(entity,FL_COMPONENT_SCRIPT),&script);
+    bool same=p->entity==entity->id && p->scene==scene->id;
+    if (!same) p->script_new=false;
+    const Fl_Component *attachment=same ? fl_entity_component_instance(entity,p->script_component) : NULL;
+    if (!attachment && !p->script_new) attachment=fl_entity_component(entity,FL_COMPONENT_SCRIPT);
+    const bool has_script=fl_script_decode(attachment,&script);
+    p->script_component=has_script ? attachment->id : 0;
     p->script=has_script ? script.script : 0;
     p->script_enabled=has_script&&script.enabled;
+    p->loaded_script=p->script; p->script_time=has_script ? script.time : fl_time_mapping_default();
+    const double clocks[]={(double)p->script_time.duration/FL_TICKS_PER_SECOND,p->script_time.rate,(double)p->script_time.start.offset/FL_TICKS_PER_SECOND,(double)p->script_time.end.offset/FL_TICKS_PER_SECOND};
+    for (size_t i=0;i<4;++i) {
+        p->clock_fields[i].owner=p;
+        if (!i && !p->script_time.duration) text[0]=0; else snprintf(text,sizeof(text),"%.17g",clocks[i]);
+        if (!field_set(&p->clock_fields[i],text)) return false;
+        p->clock_fields[i].dirty=false;
+    }
+    if (has_script) {if (!load_parameters(p,state,&script)) return false;} else clear_parameters(p);
     for (size_t i=0;i<FIELD_COUNT;++i) p->fields[i].dirty=false;
     p->visible=entity->visible;p->scene=scene->id;p->entity=entity->id;p->revision=scene->revision;p->refresh=false;return true;
 }
@@ -395,7 +556,8 @@ void fl_inspector_destroy(Fl_Inspector *p)
 {
     if (!p) return;
     fl_event_unsubscribe_owner(p->bus,p);for (int i=0;i<FIELD_COUNT;++i) free(p->fields[i].value);
-    free(p->image_options);free(p->script_options);free(p);
+    for (size_t i=0;i<4;++i) free(p->clock_fields[i].value);
+    free(p->clock_beats);clear_parameters(p);free(p->image_options);free(p->script_options);free(p);
 }
 /* Describe a CSS weight with its conventional name. */
 static void weight_label(unsigned weight,const char *style,char *out,size_t capacity)
@@ -533,19 +695,85 @@ static void style_section(Fl_Inspector *p,const Fl_WidgetDef *def)
         ca_checkbox(&(Ca_CheckboxDesc){.text="Loop",.checked=p->loop,.on_change=loop_changed,.change_data=p,.id="property-loop"});
     }
 }
+/* Capture a boolean parameter in the same atomic Inspector draft. */
+static void parameter_toggled(Ca_Checkbox *checkbox, void *data)
+{
+    Fl_ParameterField *field=data;
+    if (field_set(&field->input,ca_checkbox_get(checkbox) ? "true" : "false")) {field->input.dirty=true; drafted(field->input.owner);}
+}
+
+/* Expose the same local-clock mapping available in component JSON and MCP. */
+static void clock_controls(Fl_Inspector *p, const Fl_Scene *scene)
+{
+    ca_checkbox(&(Ca_CheckboxDesc){.text="Bind to beats",.checked=p->script_time.explicit_range,.on_change=clock_scope_changed,.change_data=p,.id="script-clock-scope"});
+    if (p->script_time.explicit_range) {
+        size_t count=scene->beat_count+1; const char **options=calloc(count,sizeof(*options)); Fl_Id *ids=calloc(count,sizeof(*ids));
+        if (!options || !ids) {free(options); free(ids); return;}
+        options[0]="Custom or missing anchor"; int start=0,end=0;
+        for (size_t i=0;i<scene->beat_count;++i) {
+            ids[i+1]=scene->beats[i].id; options[i+1]=scene->beats[i].name;
+            if (p->script_time.start.kind==FL_ANCHOR_BEAT && p->script_time.start.beat==ids[i+1]) start=(int)i+1;
+            if (p->script_time.end.kind==FL_ANCHOR_BEAT && p->script_time.end.beat==ids[i+1]) end=(int)i+1;
+        }
+        free(p->clock_beats); p->clock_beats=ids; p->clock_beat_count=count;
+        ca_div_begin(&(Ca_DivDesc){.direction=CA_HORIZONTAL,.style=FL_CLASS_PROPERTY_ROW});
+        ca_text(&(Ca_TextDesc){.text="Start beat",.style=FL_CLASS_PROPERTY_LABEL});
+        ca_select(&(Ca_SelectDesc){.options=options,.option_count=(int)count,.selected=start,.id="script-clock-start",.style=FL_CLASS_PROPERTY_SELECT,.on_change=clock_start_chosen,.change_data=p}); ca_div_end();
+        ca_div_begin(&(Ca_DivDesc){.direction=CA_HORIZONTAL,.style=FL_CLASS_PROPERTY_ROW});
+        ca_text(&(Ca_TextDesc){.text="End beat",.style=FL_CLASS_PROPERTY_LABEL});
+        ca_select(&(Ca_SelectDesc){.options=options,.option_count=(int)count,.selected=end,.id="script-clock-end",.style=FL_CLASS_PROPERTY_SELECT,.on_change=clock_end_chosen,.change_data=p}); ca_div_end();
+        free(options);
+    }
+    static const char *const modes[]={"Stretch","Fixed speed"};
+    ca_div_begin(&(Ca_DivDesc){.direction=CA_HORIZONTAL,.style=FL_CLASS_PROPERTY_ROW});
+    ca_text(&(Ca_TextDesc){.text="Timing",.style=FL_CLASS_PROPERTY_LABEL});
+    ca_select(&(Ca_SelectDesc){.options=modes,.option_count=2,.selected=p->script_time.mode,.id="script-clock-mode",.style=FL_CLASS_PROPERTY_SELECT,.on_change=clock_mode_chosen,.change_data=p}); ca_div_end();
+    static const char *const labels[]={"Duration (s)","Rate","Start offset (s)","End offset (s)"}, *const ids[]={"script-clock-duration","script-clock-rate","script-clock-start-offset","script-clock-end-offset"};
+    size_t fields=p->script_time.explicit_range ? 4 : 2;
+    for (size_t i=0;i<fields;++i) {
+        ca_div_begin(&(Ca_DivDesc){.direction=CA_HORIZONTAL,.style=FL_CLASS_PROPERTY_ROW}); ca_text(&(Ca_TextDesc){.text=labels[i],.style=FL_CLASS_PROPERTY_LABEL});
+        ca_input(&(Ca_InputDesc){.text=p->clock_fields[i].value,.placeholder=i==0 ? "Auto" : NULL,.id=ids[i],.style=FL_CLASS_PROPERTY_INPUT,.on_change=edited,.change_data=&p->clock_fields[i]}); ca_div_end();
+    }
+    ca_checkbox(&(Ca_CheckboxDesc){.text="Loop",.checked=p->script_time.loop,.on_change=clock_loop_changed,.change_data=p,.id="script-clock-loop"});
+    ca_div_begin(&(Ca_DivDesc){.direction=CA_HORIZONTAL,.style=FL_CLASS_PROPERTY_ROW});
+    ca_checkbox(&(Ca_CheckboxDesc){.text="Hold before",.checked=p->script_time.before==FL_TIME_HOLD,.on_change=clock_before_changed,.change_data=p,.id="script-clock-before"});
+    ca_checkbox(&(Ca_CheckboxDesc){.text="Hold after",.checked=p->script_time.after==FL_TIME_HOLD,.on_change=clock_after_changed,.change_data=p,.id="script-clock-after"}); ca_div_end();
+}
+
 /* Show which repository script the entity runs, whether it is enabled and the evaluator's current diagnostic. */
 static void script_section(Fl_Inspector *p, const Fl_Scene *scene)
 {
-    ca_text(&(Ca_TextDesc){.text="Lua Script",.style=FL_CLASS_HEADING});
-    const char **options=calloc(scene->script_count+1,sizeof(*options));
-    Fl_Id *ids=calloc(scene->script_count+1,sizeof(*ids));
+    ca_text(&(Ca_TextDesc){.text="Lua behaviors",.style=FL_CLASS_HEADING});
+    const Fl_Entity *owner=fl_scene_entity(scene,p->entity);
+    const char *attachments[65]; size_t attachment_count=0; int chosen=0;
+    for (size_t i=0;owner && i<owner->component_count;++i) {
+        const Fl_Component *component=&owner->components[i]; Fl_Script script;
+        if (!fl_script_decode(component,&script)) continue;
+        const Fl_Asset *asset=fl_project_asset(scene->project,script.script);
+        p->script_instances[attachment_count]=component->id;
+        snprintf(p->script_instance_labels[attachment_count],sizeof(p->script_instance_labels[0]),"%s · %llu",asset ? asset->name : "Missing Lua asset",(unsigned long long)component->id);
+        attachments[attachment_count]=p->script_instance_labels[attachment_count];
+        if (component->id==p->script_component) chosen=(int)attachment_count;
+        ++attachment_count;
+    }
+    p->script_instances[attachment_count]=0; attachments[attachment_count]="New attachment";
+    if (!p->script_component) chosen=(int)attachment_count;
+    p->script_instance_count=attachment_count+1;
+    ca_select(&(Ca_SelectDesc){.options=attachments,.option_count=(int)p->script_instance_count,.selected=chosen,.id="inspector-script-instance",
+        .style=FL_CLASS_PROPERTY_SELECT,.on_change=script_instance_chosen,.change_data=p,.disabled=p->dirty});
+    size_t total=fl_project_asset_count(scene->project), count=1;
+    const char **options=calloc(total+1,sizeof(*options));
+    Fl_Id *ids=calloc(total+1,sizeof(*ids));
     if (!options||!ids) {free(options);free(ids);return;}
     options[0]="None";int selected=0;
-    for (size_t i=0;i<scene->script_count;++i) {
-        ids[i+1]=scene->scripts[i].id;options[i+1]=scene->scripts[i].name;
-        if (scene->scripts[i].id==p->script) selected=(int)i+1;
+    for (size_t i=0;i<total;++i) {
+        const Fl_Asset *asset=fl_project_asset_at(scene->project,i);
+        if (asset->kind!=FL_ASSET_LUA) continue;
+        ids[count]=asset->id;options[count]=asset->name;
+        if (asset->id==p->script) selected=(int)count;
+        ++count;
     }
-    free(p->script_options);p->script_options=ids;p->script_option_count=scene->script_count+1;
+    free(p->script_options);p->script_options=ids;p->script_option_count=count;
     ca_div_begin(&(Ca_DivDesc){.direction=CA_HORIZONTAL,.style=FL_CLASS_PROPERTY_ROW});
     ca_text(&(Ca_TextDesc){.text="Script",.style=FL_CLASS_PROPERTY_LABEL});
     ca_select(&(Ca_SelectDesc){.options=options,.option_count=(int)p->script_option_count,.selected=selected,.id="inspector-script",
@@ -553,10 +781,20 @@ static void script_section(Fl_Inspector *p, const Fl_Scene *scene)
     ca_div_end();
     free(options);
     if (!p->script) return;
+    clock_controls(p,scene);
+    for (size_t i=0;i<p->parameter_count;++i) {
+        Fl_ParameterField *field=&p->parameters[i]; char id[128];
+        snprintf(id,sizeof(id),"script-param-%llu-%s",(unsigned long long)p->script_component,field->name);
+        ca_div_begin(&(Ca_DivDesc){.direction=CA_HORIZONTAL,.style=FL_CLASS_PROPERTY_ROW});
+        ca_text(&(Ca_TextDesc){.text=field->label,.style=FL_CLASS_PROPERTY_LABEL});
+        if (!strcmp(field->type,"boolean")) ca_checkbox(&(Ca_CheckboxDesc){.checked=!strcmp(field->input.value,"true"),.on_change=parameter_toggled,.change_data=field,.id=id});
+        else ca_input(&(Ca_InputDesc){.text=field->input.value,.id=id,.style=FL_CLASS_PROPERTY_INPUT,.on_change=edited,.change_data=&field->input});
+        ca_div_end();
+    }
     ca_checkbox(&(Ca_CheckboxDesc){.text="Enabled",.checked=p->script_enabled,.on_change=script_enabled,.change_data=p,.id="inspector-script-enabled"});
     const Fl_SceneState *state=fl_scene_edit_state(p->edit);
     const Fl_Entity *entity=fl_scene_entity(scene,p->entity);
-    const char *error=state&&entity ? fl_script_runtime_error(state->scripts,(size_t)(entity-scene->entities)) : "";
+    const char *error=state&&entity ? fl_script_runtime_component_error(state->scripts,p->script_component) : "";
     if (*error) ca_text(&(Ca_TextDesc){.text=error,.style=FL_CLASS_WARNING,.wrap=true});
     fl_button(&(Fl_ButtonDesc){.text="Edit script",.id="inspector-script-edit",.on_click=script_edit,.click_data=p,.disabled=p->dirty});
 }

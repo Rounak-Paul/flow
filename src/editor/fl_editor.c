@@ -87,7 +87,7 @@ static void pump_bus(void *user_data)
             }
         }
     }
-    if (editor->project && fl_project_dirty(editor->project) &&
+    if (editor->project && fl_project_dirty(editor->project) && !fl_project_edit_active(editor->project) &&
         fl_clock_monotonic_ns() >= editor->save_after) {
         if (!fl_project_save(editor->project)) FL_LOG_ERROR(LOG_TAG, "automatic save failed; retrying in five seconds");
         editor->save_after = fl_clock_monotonic_ns() + UINT64_C(5000000000);

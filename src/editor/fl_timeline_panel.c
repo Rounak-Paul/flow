@@ -1,3 +1,4 @@
+#include "schema/fl_properties.h"
 #include "fl_timeline_panel.h"
 #include "ui/fl_button.h"
 #include "components/fl_script.h"
@@ -51,9 +52,6 @@ struct Fl_TimelinePanel {
     uint64_t click_ns;
     float click_x, click_y;
 };
-
-static const char *const PROPERTY_NAMES[FL_PROP_COUNT] = {
-    "X", "Y", "Width", "Height", "Rotation", "Scale X", "Scale Y", "Opacity", "Fill", "Stroke", "Stroke width", "Font size", "Crop X", "Crop Y", "Crop width", "Crop height"};
 
 static void sync_playhead(Fl_TimelinePanel *p);
 
@@ -291,26 +289,11 @@ static void add_beat(Ca_Button *b, void *data)
     }
 }
 
-/* Report whether this entity exposes the property in the authoring UI. */
-static bool property_supported(const Fl_Entity *entity, Fl_AnimProperty property)
-{
-    if (!entity) return false;
-    if (property < 0 || property >= FL_PROP_COUNT) return false;
-    if (property <= FL_PROP_OPACITY) return fl_entity_component(entity, FL_COMPONENT_TRANSFORM) != NULL;
-    const Fl_WidgetDef *def = fl_widget_for_entity(entity);
-    if (!def) return false;
-    if (property == FL_PROP_FILL) return def->has_fill;
-    if (property == FL_PROP_STROKE || property == FL_PROP_STROKE_WIDTH) return def->has_stroke;
-    if (property >= FL_PROP_CROP_X) return def->has_image || def->has_video;
-    return property == FL_PROP_FONT_SIZE && def->has_text;
-}
-
-/* Capture only the requested evaluated channel; same-time keys are updated in place. */
 static void key_property(Fl_TimelinePanel *p, Fl_Id entity, Fl_AnimProperty property)
 {
     const Fl_Scene *s = scene_of(p);
     const Fl_Entity *e = fl_scene_entity(s, entity);
-    if (fl_playback_playing(p->playback) || !property_supported(e, property)) return;
+    if (fl_playback_playing(p->playback) || !fl_property_supported(e, property)) return;
     const Fl_SceneState *state = fl_scene_edit_state(p->edit);
     if (!state) return;
     const Fl_EntityState *v = &state->entities[e - s->entities];
@@ -328,7 +311,8 @@ static void key_property(Fl_TimelinePanel *p, Fl_Id entity, Fl_AnimProperty prop
     const Fl_Track *track = fl_scene_track(s, entity, property);
     Fl_Tick previous = INT64_MIN;
     for (size_t i = 0; track && i < track->key_count; ++i) {
-        Fl_Tick tick = fl_anchor_resolve(s, &track->keys[i].at);
+        Fl_Tick tick;
+        if (!fl_anchor_sample(s, &track->keys[i].at, &tick)) continue;
         if (tick <= now && tick >= previous) {previous = tick; op.ease = track->keys[i].ease;}
     }
     Fl_Id id;
@@ -372,7 +356,8 @@ static void seek_track(Fl_TimelineItem *it, bool forward)
     for (const Fl_Track *track; (track = fl_scene_track_next(&tracks));) if (track->id == it->id)
         for (size_t k = 0; k < track->key_count; ++k) {
             const Fl_Keyframe *key = &track->keys[k];
-            Fl_Tick tick = fl_anchor_resolve(s, &key->at);
+            Fl_Tick tick;
+            if (!fl_anchor_sample(s, &key->at, &tick)) continue;
             if (forward ? tick > now && tick < best : tick < now && tick > best) {best = tick; id = key->id;}
         }
     if (id) {p->selected_key = id; fl_playback_seek(p->playback, best); invalidate(p);}
@@ -588,7 +573,7 @@ static void item_drag_end(const Ca_DragEvent *event, void *data)
     if (it->kind == ITEM_KEY) {
         const Fl_Keyframe *k = fl_scene_key(s, it->id, NULL);
         p->selected_key = it->id;
-        if (k) fl_playback_seek(p->playback, fl_anchor_resolve(s, &k->at));
+        if (k) {Fl_Tick time; if (fl_anchor_sample(s, &k->at, &time)) fl_playback_seek(p->playback, time);}
     } else if ((it->kind == ITEM_BEAT || it->kind == ITEM_BEAT_EDGE) && fl_scene_beat_range(s, it->id, &start, NULL)) {
         p->selected_beat = it->id;
         if (it->kind == ITEM_BEAT) {
@@ -916,9 +901,9 @@ void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
         const char *options[FL_PROP_COUNT];
         p->property_count = 0;
         int property_index = 0;
-        for (int prop = 0; prop < FL_PROP_COUNT; ++prop) if (property_supported(entity, (Fl_AnimProperty)prop)) {
+        for (int prop = 0; prop < FL_PROP_COUNT; ++prop) if (fl_property_supported(entity, (Fl_AnimProperty)prop)) {
             if (p->property == (Fl_AnimProperty)prop) property_index = (int)p->property_count;
-            options[p->property_count] = PROPERTY_NAMES[prop];
+            options[p->property_count] = fl_property_definition(prop)->label;
             p->properties[p->property_count++] = (Fl_AnimProperty)prop;
         }
         if (p->property_count) p->property = p->properties[property_index];
@@ -956,8 +941,10 @@ void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
     if (selected_key && fl_scene_edit_contains(p->edit, selected_track->entity)) {
         ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = "fl-tl-authoring"});
         char time[32], detail[160];
-        format_time(fl_anchor_resolve(s, &selected_key->at), time, sizeof(time));
-        snprintf(detail, sizeof(detail), "%s at %s", PROPERTY_NAMES[selected_track->property], time);
+        Fl_Tick selected_time;
+        if (fl_anchor_sample(s, &selected_key->at, &selected_time)) format_time(selected_time, time, sizeof(time));
+        else snprintf(time, sizeof(time), "Unbound");
+        snprintf(detail, sizeof(detail), "%s at %s", fl_property_definition(selected_track->property)->label, time);
         ca_text(&(Ca_TextDesc){.text = detail, .style = FL_CLASS_TL_KEY_DETAIL});
         static const char *eases[] = {"Linear", "Ease in", "Ease out", "Ease in-out", "Hold"};
         ca_select(&(Ca_SelectDesc){.options = eases, .option_count = FL_EASE_COUNT, .selected = selected_key->ease,
@@ -995,7 +982,7 @@ void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
         char label[192]; snprintf(label, sizeof(label), "%s%s%s",
             selected > 1 && e ? e->name : "",
             selected > 1 && e ? " · " : "",
-            PROPERTY_NAMES[t->property]);
+            fl_property_definition(t->property)->label);
         ca_text(&(Ca_TextDesc){.text = label, .style = FL_CLASS_TL_TRACK_NAME});
         Fl_TimelineItem *it = item(p, ITEM_TRACK, t->id);
         fl_button(&(Fl_ButtonDesc){.text = CA_ICON_NF_MD_SKIP_PREVIOUS, .on_click = previous_key, .click_data = it, .disabled = !it || playing,
@@ -1082,20 +1069,23 @@ void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
             .width = content, .height = FL_STYLE_TL_ROW_H});
         Fl_Tick first = INT64_MAX, last = INT64_MIN;
         for (size_t k = 0; k < t->key_count; ++k) {
-            Fl_Tick when = fl_anchor_resolve(s, &t->keys[k].at);
+            Fl_Tick when;
+            if (!fl_anchor_sample(s, &t->keys[k].at, &when)) continue;
             if (when < first) first = when;
             if (when > last) last = when;
         }
-        if (t->key_count > 1) {
+        if (first != INT64_MAX && last > first) {
             element(p, NULL, NULL, FL_CLASS_TL_SPAN, x_of(p, first), x_of(p, last) - x_of(p, first), 1, FL_STYLE_TL_ROW_H);
             ca_div_end();
         }
         for (size_t k = 0; k < t->key_count; ++k) {
             const Fl_Keyframe *key = &t->keys[k];
+            Fl_Tick key_time;
+            if (!fl_anchor_sample(s, &key->at, &key_time)) continue;
             char id[48]; snprintf(id, sizeof(id), "key-%llu", (unsigned long long)key->id);
             Fl_TimelineItem *it = item(p, ITEM_KEY, key->id);
             element(p, it, id, p->selected_key == key->id ? FL_CLASS_TL_KEY_SELECTED : FL_CLASS_TL_KEY,
-                    x_of(p, fl_anchor_resolve(s, &key->at)) - FL_STYLE_TL_KEY * 0.5f, FL_STYLE_TL_KEY, FL_STYLE_TL_KEY, FL_STYLE_TL_ROW_H);
+                    x_of(p, key_time) - FL_STYLE_TL_KEY * 0.5f, FL_STYLE_TL_KEY, FL_STYLE_TL_KEY, FL_STYLE_TL_ROW_H);
             ca_text(&(Ca_TextDesc){.text = CA_ICON_NF_FA_DIAMOND,
                 .style = p->selected_key == key->id ? FL_CLASS_TL_KEY_TEXT_SELECTED : FL_CLASS_TL_KEY_TEXT});
             ca_div_end();
@@ -1109,7 +1099,11 @@ void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
         const Fl_AudioClip *c = &s->clips[i];
         const Fl_Asset *a = fl_project_asset(project, c->asset);
         ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_TL_ROW, .width = content, .height = FL_STYLE_TL_ROW_H});
-        Fl_Tick start = fl_anchor_resolve(s, &c->start);
+        Fl_Tick start;
+        if (!fl_anchor_sample(s, &c->start, &start)) {
+            ca_text(&(Ca_TextDesc){.text="Unbound audio start", .style=FL_CLASS_TL_BEAT_TEXT});
+            ca_div_end(); continue;
+        }
         char id[48], text[192];
         snprintf(id, sizeof(id), "clip-%llu", (unsigned long long)c->id);
         if (c->gain < 0.001) snprintf(text, sizeof(text), "%s  muted", a ? a->name : "?");

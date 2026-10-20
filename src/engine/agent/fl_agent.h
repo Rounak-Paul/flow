@@ -21,8 +21,6 @@ typedef struct Fl_AgentHost {
 Fl_Agent *fl_agent_create(const Fl_AgentHost *host);
 /* Release history and state. NULL is safe. */
 void fl_agent_destroy(Fl_Agent *agent);
-/* Forget undo history; call when the open project changes. */
-void fl_agent_reset(Fl_Agent *agent);
 /* Register every document tool with the MCP core. */
 bool fl_agent_register(Fl_Agent *agent, Fl_Mcp *mcp);
 /* Run a document tool synchronously. Returns the result object, or NULL with *error = {code, message, ...}.

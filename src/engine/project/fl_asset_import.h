@@ -6,11 +6,11 @@
 typedef enum Fl_ImportStatus {
     FL_IMPORT_ADDED,            /* new asset record created */
     FL_IMPORT_EXISTING,         /* identical content already imported; asset is the existing record */
-    FL_IMPORT_UNSUPPORTED,      /* not a recognised image, video, audio or font file */
+    FL_IMPORT_UNSUPPORTED,      /* not a recognised source asset or media file */
     FL_IMPORT_FAILED            /* unreadable source, storage failure, or rejected operation */
 } Fl_ImportStatus;
 
-/* Result of copying one source file into a project's content-addressed store. */
+/* Imported resource metadata plus privately owned staging bytes for editable source assets. */
 typedef struct Fl_StoredAsset {
     Fl_AssetKind kind;
     unsigned char hash[32];
@@ -18,18 +18,23 @@ typedef struct Fl_StoredAsset {
     uint64_t size, width, height;
     uint64_t duration;          /* ticks (FL_TICKS_PER_SECOND) for audio/video; zero when unknown */
     uint32_t sample_rate, channels;
+    char *source;               /* owned editable source staging bytes; record consumes, caller frees if abandoned */
     bool created;               /* this call created the store file */
 } Fl_StoredAsset;
 
 /*
- * Copy source into <directory>/assets/<sha256>.<ext>, hashing while streaming
- * and validating the media. Thread-safe; touches no project state.
+ * Hash and validate an import on any thread. Media is stored at assets/<sha256>.<ext>.
+ * Editable documents return owned source bytes instead of a shared staging file; fl_asset_record consumes
+ * them, or the caller must free out->source when abandoning the result. Touches no project state.
  */
 Fl_ImportStatus fl_asset_store_file(const char *directory, const char *source, Fl_StoredAsset *out);
 
+/* Record through the shared project owner; consumes stored->source on success or failure, retaining metadata. */
+Fl_ImportStatus fl_asset_record(Fl_Project *project, Fl_StoredAsset *stored, const char *name, Fl_Id *out_id);
+
 /*
  * Asynchronous importer: files are stored on worker threads, then recorded
- * with FL_OP_ASSET_ADD on the owner thread. Each request ends with exactly
+ * through shared asset operations on the owner thread. Each request ends with exactly
  * one FL_EVENT_ASSET_IMPORTED.
  */
 typedef struct Fl_AssetImporter Fl_AssetImporter;

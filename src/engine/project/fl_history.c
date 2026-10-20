@@ -1,4 +1,4 @@
-#include "fl_history.h"
+#include "project/fl_history.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -93,6 +93,12 @@ bool fl_history_begin(Fl_History *h, const Fl_Project *p, const char *label)
     bool current = (h->undo_count && h->undo[h->undo_count - 1].expected == generation) ||
                    (h->redo_count && h->redo[h->redo_count - 1].expected == generation);
     if (!current) fl_history_clear(h);
+    if (h->undo_count==h->undo_capacity) {
+        size_t capacity=h->undo_capacity ? h->undo_capacity*2 : 8;
+        Fl_HistoryEntry *entries=realloc(h->undo,capacity*sizeof(*entries));
+        if (!entries) return false;
+        h->undo=entries; h->undo_capacity=capacity;
+    }
     h->open = (Fl_HistoryEntry){0};
     snprintf(h->open.label, sizeof(h->open.label), "%s", label && label[0] ? label : "Agent changeset");
     h->open.before = fl_project_snapshot(p);
@@ -134,6 +140,7 @@ bool fl_history_commit(Fl_History *h, const Fl_Project *p)
    The destination push is the only fallible step, so it happens before the project is touched. */
 static bool transfer(Fl_History *h, Fl_Project *p, bool undo, char label[FL_HISTORY_LABEL_MAX], bool *conflict)
 {
+    if (!h || !p) return false;
     Fl_HistoryEntry **from = undo ? &h->undo : &h->redo, **to = undo ? &h->redo : &h->undo;
     size_t *from_count = undo ? &h->undo_count : &h->redo_count, *to_count = undo ? &h->redo_count : &h->undo_count;
     size_t *to_capacity = undo ? &h->redo_capacity : &h->undo_capacity;
@@ -166,3 +173,20 @@ size_t fl_history_undo_count(const Fl_History *h) {return h ? h->undo_count : 0;
 size_t fl_history_redo_count(const Fl_History *h) {return h ? h->redo_count : 0;}
 const char *fl_history_undo_label(const Fl_History *h) {return h && h->undo_count ? h->undo[h->undo_count - 1].label : NULL;}
 const char *fl_history_redo_label(const Fl_History *h) {return h && h->redo_count ? h->redo[h->redo_count - 1].label : NULL;}
+
+bool fl_history_has_asset(const Fl_History *h, const unsigned char hash[32])
+{
+    if (!h || !hash) return false;
+    if (fl_snapshot_has_asset(h->open.before,hash) || fl_snapshot_has_asset(h->open.after,hash)) return true;
+    for (size_t i=0;i<h->undo_count;++i) if (fl_snapshot_has_asset(h->undo[i].before,hash) || fl_snapshot_has_asset(h->undo[i].after,hash)) return true;
+    for (size_t i=0;i<h->redo_count;++i) if (fl_snapshot_has_asset(h->redo[i].before,hash) || fl_snapshot_has_asset(h->redo[i].after,hash)) return true;
+    return false;
+}
+
+void fl_history_cancel_restored(Fl_History *h, const Fl_Project *p)
+{
+    if (!h || !p) return;
+    fl_history_discard(h);
+    if (h->undo_count) h->undo[h->undo_count-1].expected=fl_project_generation(p);
+    if (h->redo_count) h->redo[h->redo_count-1].expected=fl_project_generation(p);
+}

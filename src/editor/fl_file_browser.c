@@ -74,23 +74,24 @@ static void home_folder(char *out, size_t capacity)
     if (!home || !home[0] || !fl_fs_absolute(home, out, capacity)) snprintf(out, capacity, "%s", fallback);
 }
 
-/* Lowercase extension after the last dot, or "" when absent. */
-static void extension_of(const char *name, char out[16])
-{
-    const char *dot = strrchr(name, '.');
-    size_t n = 0;
-    if (dot && dot != name) for (++dot; *dot && n < 15; ++dot) out[n++] = (char)(*dot >= 'A' && *dot <= 'Z' ? *dot + 32 : *dot);
-    out[n] = 0;
-}
-
 /* Apply the active extension filter to a file name. */
 static bool accepted(const Fl_FileBrowser *b, const char *name)
 {
     if (!b->filter_count) return true;
     const Fl_StoredFilter *f = &b->filters[b->active_filter];
     if (!f->count) return true;
-    char ext[16]; extension_of(name, ext);
-    for (size_t i = 0; i < f->count; ++i) if (!strcmp(ext, f->extensions[i])) return true;
+    size_t length=strlen(name);
+    for (size_t i=0;i<f->count;++i) {
+        size_t suffix=strlen(f->extensions[i]);
+        if (!suffix || length<=suffix+1 || name[length-suffix-1]!='.') continue;
+        bool match=true;
+        for (size_t j=0;j<suffix;++j) {
+            unsigned char ch=(unsigned char)name[length-suffix+j];
+            if (ch>='A' && ch<='Z') ch=(unsigned char)(ch+32);
+            if (ch!=(unsigned char)f->extensions[i][j]) {match=false; break;}
+        }
+        if (match) return true;
+    }
     return false;
 }
 

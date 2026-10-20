@@ -1,4 +1,7 @@
+#include "project/fl_source_asset.h"
 #include "fl_script_panel.h"
+#include "platform/fl_process.h"
+#include "platform/fl_paths.h"
 #include "ui/fl_button.h"
 #include "fl_file_browser.h"
 #include "style.h"
@@ -12,13 +15,12 @@
 #define PANEL_ID "scripts"
 #define PREVIEW_LINES 120u
 #define USER_NAMES 6u
-#define NEW_SCRIPT_SOURCE "function on_evaluate(self, time)\nend\n"
+#define NEW_SCRIPT_SOURCE "return { sample = function(ctx) local self=ctx.entity; local time=ctx.time.seconds; \nend\n }"
 
 typedef struct Fl_ScriptRow { struct Fl_ScriptPanel *panel; Fl_Id script; } Fl_ScriptRow;
 
 struct Fl_ScriptPanel {
     Fl_SceneEdit *edit;
-    Fl_ScriptSync *sync;
     Fl_EventBus *bus;
     Ca_Dock *dock;
     Ca_Window *window;
@@ -27,7 +29,7 @@ struct Fl_ScriptPanel {
     Fl_ScriptRow *rows;
     size_t row_count;
     Fl_Id selected;
-    char name_draft[FL_SCRIPT_NAME_MAX + 1];
+    char name_draft[FL_SOURCE_NAME_MAX + 1];
     Fl_Id name_draft_for;
     char message[256];
 };
@@ -52,26 +54,14 @@ static const Fl_Scene *active_scene(const Fl_ScriptPanel *p)
     return fl_project_scene(fl_scene_edit_project(p->edit), fl_scene_edit_scene(p->edit));
 }
 
-/* Pick a name based on base that no script of scene uses, writing it to out (FL_SCRIPT_NAME_MAX + 1 bytes). */
-static void unique_name(const Fl_Scene *scene, const char *base, char *out)
-{
-    snprintf(out, FL_SCRIPT_NAME_MAX + 1, "%s", base);
-    for (unsigned n = 2; fl_scene_script_named(scene, out) && n < 10000; ++n) {
-        char suffix[16];
-        int length = snprintf(suffix, sizeof(suffix), " %u", n);
-        snprintf(out, FL_SCRIPT_NAME_MAX + 1, "%.*s%s", (int)(FL_SCRIPT_NAME_MAX - (size_t)length), base, suffix);
-    }
-}
-
-/* Create a script in the active scene and select it; reports a failure on the status line. */
+/* Create a project script and select it; reports a failure on the status line. */
 static bool create_script(Fl_ScriptPanel *p, const char *base, const char *source, size_t size)
 {
-    const Fl_Scene *scene = active_scene(p);
-    char name[FL_SCRIPT_NAME_MAX + 1];
+    Fl_Project *project=fl_scene_edit_project(p->edit);
+    char name[FL_SOURCE_NAME_MAX + 1];
     Fl_Id id = 0;
-    if (!scene) return false;
-    unique_name(scene, base, name);
-    if (!fl_project_apply(fl_scene_edit_project(p->edit), &(Fl_Op){.kind = FL_OP_SCRIPT_SET, .scene = scene->id, .name = name,
+    if (!fl_source_asset_unique_name(project,FL_ASSET_LUA,base,name)) {status(p,"Could not name the script."); return false;}
+    if (!fl_project_apply(fl_scene_edit_project(p->edit), &(Fl_Op){.kind = FL_OP_ASSET_SOURCE_SET, .source_kind=FL_ASSET_LUA, .name = name,
                           .source = source, .source_size = size}, &id)) {
         status(p, "The script could not be created.");
         return false;
@@ -98,11 +88,11 @@ static void import_chosen(const char *const *paths, size_t count, void *data)
     if (!source || !fl_script_source_valid(source, size)) {free(source); status(p, "That file is empty, too large or not text."); return;}
     const char *leaf = strrchr(paths[0], '/'), *back = strrchr(paths[0], '\\');
     leaf = leaf && back ? (leaf > back ? leaf : back) + 1 : leaf ? leaf + 1 : back ? back + 1 : paths[0];
-    char base[FL_SCRIPT_NAME_MAX + 1];
+    char base[FL_SOURCE_NAME_MAX + 1];
     snprintf(base, sizeof(base), "%s", leaf);
     char *dot = strrchr(base, '.');
     if (dot && dot != base) *dot = 0;
-    if (!fl_script_name_valid(base)) snprintf(base, sizeof(base), "Imported script");
+    if (!fl_source_asset_name_valid(base)) snprintf(base, sizeof(base), "Imported script");
     create_script(p, base, source, size);
     free(source);
 }
@@ -137,11 +127,11 @@ static void name_changed(Ca_TextInput *input, void *data)
 static void rename_clicked(Ca_Button *button, void *data)
 {
     (void)button; Fl_ScriptPanel *p = data;
-    const Fl_Scene *scene = active_scene(p);
-    if (!scene || !fl_scene_script(scene, p->selected)) return;
-    if (!fl_project_apply(fl_scene_edit_project(p->edit), &(Fl_Op){.kind = FL_OP_SCRIPT_SET, .scene = scene->id, .script = p->selected,
+    Fl_Project *project=fl_scene_edit_project(p->edit);
+    if (!fl_project_asset(project,p->selected)) return;
+    if (!fl_project_apply(fl_scene_edit_project(p->edit), &(Fl_Op){.kind = FL_OP_ASSET_SOURCE_SET, .source_kind=FL_ASSET_LUA, .asset = p->selected,
                           .name = p->name_draft}, NULL)) {
-        status(p, "Names are 1 to 64 characters and unique within the scene.");
+        status(p, "Names are 1 to 64 characters and unique within the project.");
         return;
     }
     status(p, "Renamed.");
@@ -150,22 +140,25 @@ static void rename_clicked(Ca_Button *button, void *data)
 static void edit_clicked(Ca_Button *button, void *data)
 {
     (void)button; Fl_ScriptPanel *p = data;
-    char error[160] = "";
-    if (!fl_script_sync_open(p->sync, fl_scene_edit_scene(p->edit), p->selected, error, sizeof(error))) {status(p, error); return;}
+    Fl_Project *project=fl_scene_edit_project(p->edit);
+    const Fl_Asset *asset=fl_project_asset(project,p->selected); char path[FL_PATH_MAX];
+    if (!asset || asset->kind!=FL_ASSET_LUA || !fl_project_save(project) || !fl_project_asset_path(project,asset,path,sizeof(path)) || !fl_open_path(path)) {
+        status(p,"Could not save or open the Lua asset."); return;
+    }
     status(p, "Open in your editor. Saving there updates the script.");
 }
 
 static void duplicate_clicked(Ca_Button *button, void *data)
 {
     (void)button; Fl_ScriptPanel *p = data;
-    const Fl_ScriptSource *script = fl_scene_script(active_scene(p), p->selected);
+    const Fl_Asset *script = fl_project_asset(fl_scene_edit_project(p->edit), p->selected);
     if (!script) return;
-    char base[FL_SCRIPT_NAME_MAX + 1];
-    snprintf(base, sizeof(base), "%.*s copy", (int)(FL_SCRIPT_NAME_MAX - 5), script->name);
-    char *source = malloc(script->source_size + 1);
+    char base[FL_SOURCE_NAME_MAX + 1];
+    snprintf(base, sizeof(base), "%.*s copy", (int)(FL_SOURCE_NAME_MAX - 5), script->name);
+    char *source = malloc(script->size + 1);
     if (!source) return;
-    memcpy(source, script->source, script->source_size + 1);
-    create_script(p, base, source, script->source_size);
+    memcpy(source, script->source, script->size + 1);
+    create_script(p, base, source, script->size);
     free(source);
 }
 
@@ -176,11 +169,13 @@ static void attach_clicked(Ca_Button *button, void *data)
     const Fl_Scene *scene = active_scene(p);
     Fl_Project *project = fl_scene_edit_project(p->edit);
     Fl_Component component = {0};
-    if (!scene || !fl_scene_script(scene, p->selected) || !fl_script_encode(&(Fl_Script){p->selected, true}, &component)) return;
+    if (!scene || !fl_project_asset(scene->project, p->selected) || !fl_script_encode(&(Fl_Script){.script=p->selected,.enabled=true}, &component)) return;
     size_t attached = 0;
     for (size_t i = 0; i < scene->entity_count; ++i) {
         Fl_Id entity = scene->entities[i].id;
         if (!fl_scene_edit_contains(p->edit, entity)) continue;
+        const Fl_Component *existing=fl_entity_script_component(&scene->entities[i],p->selected);
+        component.id=existing ? existing->id : 0;
         attached += fl_project_apply(project, &(Fl_Op){.kind = FL_OP_COMPONENT_SET, .scene = scene->id, .entity = entity, .component = component}, NULL);
     }
     free((void *)component.data);
@@ -191,56 +186,58 @@ static void attach_clicked(Ca_Button *button, void *data)
 static void delete_clicked(Ca_Button *button, void *data)
 {
     (void)button; Fl_ScriptPanel *p = data;
-    const Fl_Scene *scene = active_scene(p);
-    const Fl_ScriptSource *script = fl_scene_script(scene, p->selected);
+    Fl_Project *project=fl_scene_edit_project(p->edit);
+    const Fl_Asset *script = fl_project_asset(project, p->selected);
     if (!script) return;
-    size_t uses = fl_scene_script_uses(scene, script->id);
+    size_t uses = fl_project_asset_uses(project, script->id);
     char text[160];
     if (uses) {
-        snprintf(text, sizeof(text), "\"%s\" runs on %zu entit%s. Detach it first.", script->name, uses, uses == 1 ? "y" : "ies");
+        snprintf(text, sizeof(text), "\"%s\" has %zu attachment%s. Detach it first.", script->name, uses, uses == 1 ? "" : "s");
         status(p, text);
         return;
     }
     snprintf(text, sizeof(text), "Deleted \"%s\".", script->name);
-    if (fl_project_apply(fl_scene_edit_project(p->edit), &(Fl_Op){.kind = FL_OP_SCRIPT_REMOVE, .scene = scene->id, .script = script->id}, NULL)) {
+    if (fl_project_apply(fl_scene_edit_project(p->edit), &(Fl_Op){.kind = FL_OP_ASSET_REMOVE, .asset = script->id}, NULL)) {
         p->selected = 0;
         status(p, text);
     } else status(p, "The script could not be deleted.");
 }
 
 /* The first line-limited slice of source for display, with a note when more follows. Caller frees. */
-static char *preview_of(const Fl_ScriptSource *script)
+static char *preview_of(const Fl_Asset *script)
 {
     size_t end = 0, lines = 0;
-    while (end < script->source_size && lines < PREVIEW_LINES) {
-        const char *newline = memchr(script->source + end, '\n', script->source_size - end);
-        end = newline ? (size_t)(newline - script->source) + 1 : script->source_size;
+    while (end < script->size && lines < PREVIEW_LINES) {
+        const char *newline = memchr(script->source + end, '\n', script->size - end);
+        end = newline ? (size_t)(newline - script->source) + 1 : script->size;
         ++lines;
     }
     size_t more = 0;
-    for (size_t i = end; i < script->source_size; ++i) more += script->source[i] == '\n';
+    for (size_t i = end; i < script->size; ++i) more += script->source[i] == '\n';
     char *text = malloc(end + 48);
     if (!text) return NULL;
     memcpy(text, script->source, end);
     text[end] = 0;
-    if (end < script->source_size) snprintf(text + end, 48, "… %zu more lines", more + 1);
+    if (end < script->size) snprintf(text + end, 48, "… %zu more lines", more + 1);
     return text;
 }
 
 /* Names of the entities that run script, joined for one muted line. */
-static void users_text(const Fl_Scene *scene, Fl_Id script, char *out, size_t size)
+static void users_text(const Fl_Project *project, Fl_Id script, char *out, size_t size)
 {
     size_t shown = 0, total = 0, length = 0;
-    Fl_Script attached;
     out[0] = 0;
-    for (size_t i = 0; i < scene->entity_count; ++i) {
-        if (!fl_script_decode(fl_entity_component(&scene->entities[i], FL_COMPONENT_SCRIPT), &attached) || attached.script != script) continue;
+    for (size_t j=0;j<fl_project_scene_count(project);++j) {
+      const Fl_Scene *scene=fl_project_scene_at(project,j);
+      for (size_t i = 0; i < scene->entity_count; ++i) {
+        if (!fl_entity_script_component(&scene->entities[i],script)) continue;
         ++total;
         if (shown < USER_NAMES && length + 2 < size) {
             length += (size_t)snprintf(out + length, size - length, "%s%s", shown ? ", " : "", scene->entities[i].name);
             if (length >= size) length = size - 1;
             ++shown;
         }
+    }
     }
     if (total > shown && length + 16 < size) snprintf(out + length, size - length, " and %zu more", total - shown);
 }
@@ -249,22 +246,21 @@ static void users_text(const Fl_Scene *scene, Fl_Id script, char *out, size_t si
 static const char *runtime_error(Fl_ScriptPanel *p, const Fl_Scene *scene, Fl_Id script)
 {
     const Fl_SceneState *state = fl_scene_edit_state(p->edit);
-    Fl_Script attached;
-    for (size_t i = 0; state && state->scripts && state->scene == scene->id && i < scene->entity_count; ++i) {
-        if (!fl_script_decode(fl_entity_component(&scene->entities[i], FL_COMPONENT_SCRIPT), &attached) || attached.script != script) continue;
+    for (size_t i = 0; scene && state && state->scripts && state->scene == scene->id && i < scene->entity_count; ++i) {
+        if (!fl_entity_script_component(&scene->entities[i],script)) continue;
         const char *error = fl_script_runtime_error(state->scripts, i);
         if (error && error[0]) return error;
     }
     return "";
 }
 
-static void emit_row(Fl_ScriptPanel *p, const Fl_Scene *scene, const Fl_ScriptSource *script)
+static void emit_row(Fl_ScriptPanel *p, const Fl_Asset *script)
 {
     Fl_ScriptRow *row = &p->rows[p->row_count++];
     *row = (Fl_ScriptRow){p, script->id};
     char id[48], uses[24];
     snprintf(id, sizeof(id), "script-%llu", (unsigned long long)script->id);
-    snprintf(uses, sizeof(uses), "%zu", fl_scene_script_uses(scene, script->id));
+    snprintf(uses, sizeof(uses), "%zu", fl_project_asset_uses(fl_scene_edit_project(p->edit), script->id));
     ca_btn_begin(&(Ca_BtnDesc){.on_click = row_clicked, .click_data = row, .id = id,
         .style = p->selected == script->id ? FL_CLASS_SCRIPT_ROW_SELECTED : FL_CLASS_SCRIPT_ROW});
     ca_text(&(Ca_TextDesc){.text = CA_ICON_NF_FA_CODE, .style = FL_CLASS_SCRIPT_ICON});
@@ -273,7 +269,7 @@ static void emit_row(Fl_ScriptPanel *p, const Fl_Scene *scene, const Fl_ScriptSo
     ca_btn_end();
 }
 
-static void emit_detail(Fl_ScriptPanel *p, const Fl_Scene *scene, const Fl_ScriptSource *script)
+static void emit_detail(Fl_ScriptPanel *p, const Fl_Scene *scene, const Fl_Asset *script)
 {
     if (p->name_draft_for != script->id) {
         snprintf(p->name_draft, sizeof(p->name_draft), "%s", script->name);
@@ -281,9 +277,19 @@ static void emit_detail(Fl_ScriptPanel *p, const Fl_Scene *scene, const Fl_Scrip
     }
     ca_input(&(Ca_InputDesc){.text = p->name_draft, .id = "script-name", .style = FL_CLASS_PROPERTY_INPUT, .on_change = name_changed, .change_data = p});
     char users[256], summary[320];
-    users_text(scene, script->id, users, sizeof(users));
+    users_text(fl_scene_edit_project(p->edit), script->id, users, sizeof(users));
     if (users[0]) snprintf(summary, sizeof(summary), "Runs on %s", users);
-    else snprintf(summary, sizeof(summary), "Not attached to any entity");
+    else snprintf(summary, sizeof(summary), "No scene attachments");
+    size_t prototype_uses=0;
+    Fl_Project *project=fl_scene_edit_project(p->edit);
+    for (size_t i=0;i<fl_project_asset_count(project);++i) {
+        const Fl_Asset *asset=fl_project_asset_at(project,i);
+        for (size_t j=0;j<asset->reference_count;++j) prototype_uses+=asset->references[j]==script->id;
+    }
+    if (prototype_uses) {
+        size_t length=strlen(summary);
+        snprintf(summary+length,sizeof(summary)-length," · %zu prototype attachment%s",prototype_uses,prototype_uses==1 ? "" : "s");
+    }
     ca_text(&(Ca_TextDesc){.text = summary, .style = FL_CLASS_MUTED, .wrap = true});
     ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_SCRIPT_ACTIONS});
     static const struct { const char *label, *id; Ca_ClickFn fn; } actions[] = {
@@ -294,7 +300,7 @@ static void emit_detail(Fl_ScriptPanel *p, const Fl_Scene *scene, const Fl_Scrip
     }
     ca_div_end();
     char error[256];
-    const char *problem = fl_script_check(script->source, script->source_size, error, sizeof(error)) ? runtime_error(p, scene, script->id) : error;
+    const char *problem = fl_script_check(script->source, script->size, error, sizeof(error)) ? runtime_error(p, scene, script->id) : error;
     if (problem[0]) ca_text(&(Ca_TextDesc){.text = problem, .style = FL_CLASS_WARNING, .wrap = true});
     char *preview = preview_of(script);
     if (preview) {
@@ -308,29 +314,32 @@ static void emit_detail(Fl_ScriptPanel *p, const Fl_Scene *scene, const Fl_Scrip
 void fl_script_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
 {
     Fl_ScriptPanel *p = data; p->dock = dock; p->window = window;
-    const Fl_Scene *scene = active_scene(p);
-    free(p->rows); p->rows = scene && scene->script_count ? calloc(scene->script_count, sizeof(*p->rows)) : NULL; p->row_count = 0;
-    if (scene && scene->script_count && !p->rows) return;
-    if (!scene || !fl_scene_script(scene, p->selected)) p->selected = scene && scene->script_count ? scene->scripts[0].id : 0;
+    Fl_Project *project=fl_scene_edit_project(p->edit);
+    size_t total=fl_project_asset_count(project), count=0; Fl_Id first=0;
+    for (size_t i=0;i<total;++i) {const Fl_Asset *a=fl_project_asset_at(project,i); if (a->kind==FL_ASSET_LUA) {++count; if (!first) first=a->id;}}
+    free(p->rows); p->rows=count ? calloc(count,sizeof(*p->rows)) : NULL; p->row_count=0;
+    if (count && !p->rows) return;
+    const Fl_Asset *current=fl_project_asset(project,p->selected);
+    if (!current || current->kind!=FL_ASSET_LUA) p->selected=first;
     ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_SCRIPTS});
     ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_PROPERTY_ROW});
     fl_button(&(Fl_ButtonDesc){.text = CA_ICON_NF_FA_PLUS " New", .id = "script-new", .on_click = new_clicked, .click_data = p,
-                               .disabled = !scene});
+                               .disabled = !project});
     fl_button(&(Fl_ButtonDesc){.text = CA_ICON_NF_FA_FILE_IMPORT " Import…", .id = "script-import", .on_click = import_clicked, .click_data = p,
-                                .disabled = !scene});
+                                .disabled = !project});
     ca_div_end();
     p->status = p->message[0] ? ca_text(&(Ca_TextDesc){.text = p->message, .style = FL_CLASS_MUTED, .wrap = true}) : NULL;
-    if (!scene || !scene->script_count) {
+    if (!count) {
         ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_EMPTY});
         ca_text(&(Ca_TextDesc){.text = CA_ICON_NF_FA_CODE, .style = FL_CLASS_EMPTY_ICON});
-        ca_text(&(Ca_TextDesc){.text = "No scripts in this scene", .style = FL_CLASS_MUTED});
+        ca_text(&(Ca_TextDesc){.text = "No scripts in this project", .style = FL_CLASS_MUTED});
         ca_div_end();
     } else {
         ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_SCRIPT_LIST});
-        for (size_t i = 0; i < scene->script_count; ++i) emit_row(p, scene, &scene->scripts[i]);
+        for (size_t i=0;i<total;++i) {const Fl_Asset *a=fl_project_asset_at(project,i); if (a->kind==FL_ASSET_LUA) emit_row(p,a);}
         ca_div_end();
-        const Fl_ScriptSource *selected = fl_scene_script(scene, p->selected);
-        if (selected) emit_detail(p, scene, selected);
+        const Fl_Asset *selected = fl_project_asset(project, p->selected);
+        if (selected) emit_detail(p, active_scene(p), selected);
     }
     ca_div_end();
 }
@@ -362,19 +371,19 @@ static bool open_requested(const Fl_Event *event, void *data)
 {
     Fl_ScriptPanel *p = data;
     const Fl_ScriptOpen *request = event->payload;
-    if (request->scene != fl_scene_edit_scene(p->edit) || !fl_scene_script(active_scene(p), request->script)) return false;
+    if (request->scene != fl_scene_edit_scene(p->edit) || !fl_project_asset(fl_scene_edit_project(p->edit), request->script)) return false;
     p->selected = request->script;
     if (p->dock) {ca_dock_open_panel(p->dock, PANEL_ID); ca_dock_focus_panel(p->dock, PANEL_ID);}
     invalidate(p);
     return false;
 }
 
-Fl_ScriptPanel *fl_script_panel_create(Fl_SceneEdit *edit, Fl_ScriptSync *sync, Fl_EventBus *bus)
+Fl_ScriptPanel *fl_script_panel_create(Fl_SceneEdit *edit, Fl_EventBus *bus)
 {
-    if (!edit || !sync || !bus) return NULL;
+    if (!edit || !bus) return NULL;
     Fl_ScriptPanel *p = calloc(1, sizeof(*p));
     if (!p) return NULL;
-    p->edit = edit; p->sync = sync; p->bus = bus;
+    p->edit = edit; p->bus = bus;
     Fl_EventType open = fl_event_type_register(bus, FL_EVENT_SCRIPT_OPEN, sizeof(Fl_ScriptOpen));
     const struct { Fl_EventType type; Fl_EventFn fn; } handlers[] = {
         {fl_event_type_find(bus, FL_EVENT_PROJECT_CHANGED), project_changed}, {fl_event_type_find(bus, FL_EVENT_SELECTION_CHANGED), selection_changed},

@@ -1,6 +1,7 @@
+#include "fl_render_host.h"
 #include "fl_mcp_service.h"
-#include "fl_exporter.h"
-#include "fl_scene_renderer.h"
+#include "render/gpu/fl_exporter.h"
+#include "render/gpu/fl_scene_renderer.h"
 #include "agent/fl_agent.h"
 #include "agent/fl_mcp.h"
 #include "agent/fl_mcp_http.h"
@@ -270,7 +271,6 @@ void fl_mcp_service_detach(Fl_McpService *s)
     if (!s) return;
     fl_exporter_abort(s->exporter, "the project was closed during the export");
     s->project = NULL; s->window = NULL; s->workspace = NULL;
-    fl_agent_reset(s->agent);
 }
 
 void fl_mcp_service_attach(Fl_McpService *s, Fl_Project *project, Ca_Window *window, Fl_Workspace *workspace)
@@ -325,7 +325,7 @@ Fl_McpService *fl_mcp_service_create(Fl_EventBus *bus, Ca_Instance *instance, Fl
     s->bus = bus; s->instance = instance;
     s->task_event = fl_event_type_register(bus, "mcp.task", sizeof(Fl_McpTask));
     unsigned port = PREFERRED_PORT;
-    s->renderer = fl_scene_renderer_create(&(Fl_SceneRendererDesc){.instance = instance, .fonts = fonts, .jobs = jobs});
+    s->renderer = fl_scene_renderer_create(&(Fl_SceneRendererDesc){.gpu=fl_render_host_context(instance), .fonts = fonts, .jobs = jobs});
     s->exporter = s->renderer ? fl_exporter_create(bus, s->renderer) : NULL;
     s->agent = fl_agent_create(&(Fl_AgentHost){current_project, render_scene, s});
     s->mcp = fl_mcp_create(&(Fl_McpDesc){"flow", FLOW_VERSION, fl_agent_instructions(), post_task, s, 120000});

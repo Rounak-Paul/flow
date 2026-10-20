@@ -1,5 +1,6 @@
 #pragma once
 #include "doc/fl_scene_geometry.h"
+#include "core/fl_job.h"
 
 typedef struct Fl_SceneEdit Fl_SceneEdit;
 #define FL_EVENT_SELECTION_CHANGED "editor.selection_changed"
@@ -12,8 +13,8 @@ typedef struct Fl_SelectionChange { Fl_SceneEdit *edit; } Fl_SelectionChange;
 /* Current-time notifications carry the controller and the new scene time. */
 typedef struct Fl_TimeChange { Fl_SceneEdit *edit; Fl_Tick tick; } Fl_TimeChange;
 typedef enum Fl_EditGesture { FL_GESTURE_MOVE, FL_GESTURE_NW, FL_GESTURE_NE, FL_GESTURE_SE, FL_GESTURE_SW, FL_GESTURE_ROTATE } Fl_EditGesture;
-/* Create the shared selection/gesture owner, borrowing project and bus. */
-Fl_SceneEdit *fl_scene_edit_create(Fl_Project *project, Fl_EventBus *bus);
+/* Create the shared selection/gesture owner. jobs enables asynchronous scripted previews; NULL samples inline. */
+Fl_SceneEdit *fl_scene_edit_create(Fl_Project *project, Fl_EventBus *bus, Fl_JobSystem *jobs);
 /* Release selection and gesture state after all borrowing panels are destroyed. */
 void fl_scene_edit_destroy(Fl_SceneEdit *edit);
 /* Read borrowed project, active scene, primary selection and selection membership. */
@@ -33,6 +34,8 @@ Fl_Tick fl_scene_edit_time(const Fl_SceneEdit *edit);
 void fl_scene_edit_set_time(Fl_SceneEdit *edit, Fl_Tick tick);
 /* Borrow the active scene evaluated at the current time, or NULL on allocation failure. */
 const Fl_SceneState *fl_scene_edit_state(Fl_SceneEdit *edit);
+/* Whether scripted preview work is pending; the last complete frame remains available. */
+bool fl_scene_edit_evaluating(const Fl_SceneEdit *edit);
 /* Borrow current resolved scene geometry at the current time, or NULL on allocation failure. */
 const Fl_SceneGeometry *fl_scene_edit_geometry(Fl_SceneEdit *edit);
 /* Capture a gesture at scene x/y; selected descendants move with selected ancestors once. */

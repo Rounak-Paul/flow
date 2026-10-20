@@ -1,4 +1,6 @@
+#include "doc/fl_json.h"
 #include "fl_agent_internal.h"
+#include "doc/fl_document.h"
 #include "components/fl_script.h"
 #include "components/fl_style.h"
 #include "components/fl_video_clip.h"
@@ -34,8 +36,7 @@ cJSON *fl_fail_json(const Fl_Fail *fail)
 bool agent_seconds_to_ticks(double seconds, Fl_Tick *ticks)
 {
     if (!isfinite(seconds) || fabs(seconds) > MAX_SECONDS) return false;
-    *ticks = (Fl_Tick)llround(seconds * FL_TICKS_PER_SECOND);
-    return true;
+    return fl_time_from_seconds(seconds,ticks);
 }
 
 double agent_ticks_to_seconds(int64_t ticks) { return (double)ticks / FL_TICKS_PER_SECOND; }
@@ -85,27 +86,30 @@ bool agent_get_bool(const cJSON *o, const char *key, bool *out, bool *present, F
     return true;
 }
 
-/* Resolve a numeric id, a decimal string, or a "$name" created earlier in the same batch. */
-bool agent_get_id(const cJSON *o, const char *key, const Fl_AgentRefs *refs, bool required, Fl_Id *out, Fl_Fail *f, const char *ctx)
+cJSON *agent_id_json(Fl_Id id)
 {
-    const cJSON *v = cJSON_GetObjectItemCaseSensitive(o, key);
+    return id <= UINT64_C(9007199254740991) ? cJSON_CreateNumber((double)id) : fl_json_u64(id);
+}
+
+bool agent_id_value(const cJSON *value, const Fl_AgentRefs *refs, Fl_Id *out, Fl_Fail *fail, const char *ctx)
+{
     *out = 0;
-    if (!v || cJSON_IsNull(v)) return !required || fl_fail(f, "missing_field", "%s requires \"%s\"", ctx, key);
-    if (cJSON_IsNumber(v)) {
-        if (!(v->valuedouble >= 1) || v->valuedouble != floor(v->valuedouble) || v->valuedouble > 9007199254740991.0)
-            return fl_fail(f, "invalid_argument", "%s: \"%s\" must be a positive integer id", ctx, key);
-        *out = (Fl_Id)v->valuedouble; return true;
-    }
-    if (cJSON_IsString(v)) {
-        const char *s = v->valuestring;
-        if (s[0] == '$') {
-            for (size_t i = 0; refs && i < refs->count; ++i) if (!strcmp(refs->names[i], s)) {*out = refs->ids[i]; return true;}
-            return fl_fail(f, "unknown_reference", "%s: \"%s\" refers to %s, which no earlier operation created", ctx, key, s);
+    if (cJSON_IsString(value) && value->valuestring[0] == '$') {
+        for (size_t i = 0; refs && i < refs->count; ++i) {
+            if (!strcmp(refs->names[i], value->valuestring)) {*out = refs->ids[i]; return true;}
         }
-        char *end; unsigned long long n = strtoull(s, &end, 10);
-        if (*s && !*end && n) {*out = (Fl_Id)n; return true;}
+        return fl_fail(fail, "unknown_reference", "%s: no earlier operation created %s", ctx, value->valuestring);
     }
-    return fl_fail(f, "invalid_argument", "%s: \"%s\" must be an id (number or \"$name\")", ctx, key);
+    Fl_Json json = {0};
+    return (fl_json_uint(&json, value, out) && *out) || fl_fail(fail, "invalid_argument", "%s requires a positive exact ID", ctx);
+}
+
+bool agent_get_id(const cJSON *object, const char *key, const Fl_AgentRefs *refs, bool required, Fl_Id *out, Fl_Fail *fail, const char *ctx)
+{
+    const cJSON *value = cJSON_GetObjectItemCaseSensitive(object, key);
+    *out = 0;
+    if (!value || cJSON_IsNull(value)) return !required || fl_fail(fail, "missing_field", "%s requires %s", ctx, key);
+    return agent_id_value(value, refs, out, fail, ctx);
 }
 
 bool agent_get_seconds(const cJSON *o, const char *key, bool required, Fl_Tick *out, bool *present, Fl_Fail *f, const char *ctx)
@@ -155,10 +159,13 @@ bool agent_parse_anchor(const cJSON *v, const Fl_AgentRefs *refs, Fl_TimeAnchor 
     if (cJSON_IsNumber(v)) {
         if (!agent_seconds_to_ticks(v->valuedouble, &anchor.offset)) return fl_fail(f, "invalid_argument", "%s is out of range", ctx);
     } else if (cJSON_IsObject(v)) {
-        static const char *const keys[] = {"time", "beat", "edge", "offset", NULL};
+        static const char *const keys[] = {"time", "beat", "edge", "offset", "position", NULL};
         if (!agent_only_keys(v, f, ctx, keys)) return false;
         bool has;
         if (cJSON_GetObjectItemCaseSensitive(v, "time")) {
+            if (cJSON_GetObjectItemCaseSensitive(v,"beat") || cJSON_GetObjectItemCaseSensitive(v,"edge") ||
+                cJSON_GetObjectItemCaseSensitive(v,"offset") || cJSON_GetObjectItemCaseSensitive(v,"position"))
+                return fl_fail(f,"invalid_argument","%s: absolute time cannot combine with beat fields",ctx);
             if (!agent_get_seconds(v, "time", true, &anchor.offset, &has, f, ctx)) return false;
         } else {
             const char *edge = "start";
@@ -168,6 +175,14 @@ bool agent_parse_anchor(const cJSON *v, const Fl_AgentRefs *refs, Fl_TimeAnchor 
             if (!edge) edge = "start";
             if (strcmp(edge, "start") && strcmp(edge, "end")) return fl_fail(f, "invalid_argument", "%s: edge must be \"start\" or \"end\"", ctx);
             anchor.end = !strcmp(edge, "end");
+            const cJSON *position = cJSON_GetObjectItemCaseSensitive(v, "position");
+            if (position) {
+                if (cJSON_GetObjectItemCaseSensitive(v, "edge") || !cJSON_IsNumber(position) ||
+                    !isfinite(position->valuedouble) || position->valuedouble < 0 || position->valuedouble > 1)
+                    return fl_fail(f, "invalid_argument", "%s: position must be 0..1 and cannot combine with edge", ctx);
+                anchor.kind = FL_ANCHOR_BEAT_POSITION; anchor.position = position->valuedouble;
+            }
+
         }
     } else return fl_fail(f, "invalid_argument", "%s must be seconds or {beat, edge, offset}", ctx);
     *out = anchor; return true;
@@ -218,26 +233,20 @@ const Fl_Scene *agent_scene_of_clip(const Fl_Project *p, Fl_Id id)
     }
     return NULL;
 }
-const Fl_Scene *agent_scene_of_script(const Fl_Project *p, Fl_Id id)
-{
-    for (size_t i = 0; i < fl_project_scene_count(p); ++i) {
-        const Fl_Scene *s = fl_project_scene_at(p, i);
-        if (fl_scene_script(s, id)) return s;
-    }
-    return NULL;
-}
-cJSON *agent_script_json(const Fl_Scene *s, const Fl_ScriptSource *script, bool with_source)
+cJSON *agent_script_json(const Fl_Project *project, const Fl_Asset *script, bool with_source)
 {
     cJSON *o = cJSON_CreateObject();
     if (!o) return NULL;
-    cJSON_AddNumberToObject(o, "id", (double)script->id);
+    cJSON_AddItemToObject(o, "id", agent_id_json(script->id));
     cJSON_AddStringToObject(o, "name", script->name);
-    cJSON_AddNumberToObject(o, "bytes", (double)script->source_size);
+    cJSON_AddNumberToObject(o, "bytes", (double)script->size);
     cJSON *users = cJSON_AddArrayToObject(o, "used_by");
-    Fl_Script attached;
-    for (size_t i = 0; users && i < s->entity_count; ++i)
-        if (fl_script_decode(fl_entity_component(&s->entities[i], FL_COMPONENT_SCRIPT), &attached) && attached.script == script->id)
-            cJSON_AddItemToArray(users, cJSON_CreateNumber((double)s->entities[i].id));
+    for (size_t n = 0; users && n < fl_project_scene_count(project); ++n) {
+        const Fl_Scene *s = fl_project_scene_at(project, n);
+        for (size_t i = 0; i < s->entity_count; ++i)
+            if (fl_entity_script_component(&s->entities[i], script->id))
+                cJSON_AddItemToArray(users, agent_id_json(s->entities[i].id));
+    }
     if (with_source) cJSON_AddStringToObject(o, "source", script->source);
     return o;
 }
@@ -261,9 +270,9 @@ cJSON *agent_scene_summary(const Fl_Scene *s)
 {
     cJSON *o = cJSON_CreateObject();
     if (!o) return NULL;
-    cJSON_AddNumberToObject(o, "id", (double)s->id);
+    cJSON_AddItemToObject(o, "id", agent_id_json(s->id));
     cJSON_AddStringToObject(o, "name", s->name);
-    cJSON_AddNumberToObject(o, "revision", (double)s->revision);
+    cJSON_AddItemToObject(o, "revision", agent_id_json(s->revision));
     cJSON_AddNumberToObject(o, "width", (double)s->width);
     cJSON_AddNumberToObject(o, "height", (double)s->height);
     cJSON_AddNumberToObject(o, "length_seconds", agent_ticks_to_seconds(fl_scene_length(s)));
@@ -274,12 +283,13 @@ cJSON *agent_scene_summary(const Fl_Scene *s)
 
 cJSON *agent_asset_json(const Fl_Asset *a, size_t uses)
 {
-    static const char *const kinds[] = {"", "image", "video", "audio", "font"};
+    static const char *const kinds[] = {"", "image", "video", "audio", "font", "lua", "flproto"};
     cJSON *o = cJSON_CreateObject();
     if (!o) return NULL;
-    cJSON_AddNumberToObject(o, "id", (double)a->id);
+    cJSON_AddItemToObject(o, "id", agent_id_json(a->id));
     cJSON_AddStringToObject(o, "name", a->name);
     cJSON_AddStringToObject(o, "kind", kinds[a->kind]);
+    if (a->path) cJSON_AddStringToObject(o,"path",a->path);
     cJSON_AddNumberToObject(o, "bytes", (double)a->size);
     if (a->width) {cJSON_AddNumberToObject(o, "width", (double)a->width); cJSON_AddNumberToObject(o, "height", (double)a->height);}
     if (a->duration) cJSON_AddNumberToObject(o, "duration_seconds", agent_ticks_to_seconds((int64_t)a->duration));
@@ -291,10 +301,13 @@ cJSON *agent_anchor_json(const Fl_Scene *s, const Fl_TimeAnchor *a)
 {
     cJSON *o = cJSON_CreateObject();
     if (!o) return NULL;
-    cJSON_AddNumberToObject(o, "time", agent_ticks_to_seconds(fl_anchor_resolve(s, a)));
-    if (a->kind == FL_ANCHOR_BEAT) {
-        cJSON_AddNumberToObject(o, "beat", (double)a->beat);
-        cJSON_AddStringToObject(o, "edge", a->end ? "end" : "start");
+    Fl_Tick tick;
+    if (fl_anchor_sample(s, a, &tick)) cJSON_AddNumberToObject(o, "time", agent_ticks_to_seconds(tick));
+    else cJSON_AddStringToObject(o, "diagnostic", "Unbound time anchor");
+    if (a->kind != FL_ANCHOR_ABSOLUTE) {
+        cJSON_AddItemToObject(o, "beat", agent_id_json(a->beat));
+        if (a->kind == FL_ANCHOR_BEAT_POSITION) cJSON_AddNumberToObject(o, "position", a->position);
+        else cJSON_AddStringToObject(o, "edge", a->end ? "end" : "start");
         cJSON_AddNumberToObject(o, "offset", agent_ticks_to_seconds(a->offset));
     }
     return o;
@@ -314,13 +327,13 @@ static cJSON *track_json(const Fl_Scene *s, const Fl_Track *t)
 {
     cJSON *o = cJSON_CreateObject(), *keys = o ? cJSON_AddArrayToObject(o, "keys") : NULL;
     if (!keys) {cJSON_Delete(o); return NULL;}
-    cJSON_AddNumberToObject(o, "id", (double)t->id);
+    cJSON_AddItemToObject(o, "id", agent_id_json(t->id));
     cJSON_AddStringToObject(o, "property", fl_property_name(t->property));
     for (size_t k = 0; k < t->key_count; ++k) {
         const Fl_Keyframe *key = &t->keys[k];
         cJSON *item = cJSON_CreateObject();
         if (!item) break;
-        cJSON_AddNumberToObject(item, "id", (double)key->id);
+        cJSON_AddItemToObject(item, "id", agent_id_json(key->id));
         cJSON_AddItemToObject(item, "at", agent_anchor_json(s, &key->at));
         track_value_json(item, t->property, key->value);
         cJSON_AddStringToObject(item, "ease", agent_ease_name(key->ease));
@@ -334,10 +347,10 @@ static cJSON *entity_json(const Fl_Scene *s, const Fl_Entity *e)
     const Fl_WidgetDef *def = fl_widget_for_entity(e);
     cJSON *o = cJSON_CreateObject();
     if (!o) return NULL;
-    cJSON_AddNumberToObject(o, "id", (double)e->id);
+    cJSON_AddItemToObject(o, "id", agent_id_json(e->id));
     cJSON_AddStringToObject(o, "name", e->name);
     cJSON_AddStringToObject(o, "kind", def ? agent_widget_name(def->kind) : "unknown");
-    if (e->parent) cJSON_AddNumberToObject(o, "parent", (double)e->parent);
+    if (e->parent) cJSON_AddItemToObject(o, "parent", agent_id_json(e->parent));
     cJSON_AddBoolToObject(o, "visible", e->visible);
     Fl_Transform t = {.scale_x = 1, .scale_y = 1};
     fl_transform_decode(fl_entity_component(e, FL_COMPONENT_TRANSFORM), &t);
@@ -364,10 +377,10 @@ static cJSON *entity_json(const Fl_Scene *s, const Fl_Entity *e)
         cJSON_AddBoolToObject(o, "italic", ty.italic);
     }
     Fl_Id asset;
-    if (fl_image_asset_decode(fl_entity_component(e, FL_COMPONENT_IMAGE), &asset)) cJSON_AddNumberToObject(o, "asset", (double)asset);
+    if (fl_image_asset_decode(fl_entity_component(e, FL_COMPONENT_IMAGE), &asset)) cJSON_AddItemToObject(o, "asset", agent_id_json(asset));
     Fl_VideoClip clip;
     if (fl_video_clip_decode(fl_entity_component(e, FL_COMPONENT_VIDEO), &clip)) {
-        cJSON_AddNumberToObject(o, "asset", (double)clip.asset); cJSON_AddNumberToObject(o, "start", agent_ticks_to_seconds(clip.start));
+        cJSON_AddItemToObject(o, "asset", agent_id_json(clip.asset)); cJSON_AddNumberToObject(o, "start", agent_ticks_to_seconds(clip.start));
         cJSON_AddNumberToObject(o, "offset", agent_ticks_to_seconds(clip.offset)); cJSON_AddNumberToObject(o, "rate", clip.rate);
         cJSON_AddBoolToObject(o, "loop", clip.loop);
     }
@@ -388,15 +401,17 @@ static cJSON *entity_json(const Fl_Scene *s, const Fl_Entity *e)
         if (def && def->has_text) cJSON_AddStringToObject(o, "align", style.align == FL_ALIGN_CENTER ? "center" : style.align == FL_ALIGN_RIGHT ? "right" : "left");
     }
     Fl_Script script;
-    const Fl_ScriptSource *source = fl_script_decode(fl_entity_component(e, FL_COMPONENT_SCRIPT), &script) ? fl_scene_script(s, script.script) : NULL;
+    const Fl_Asset *source = fl_script_decode(fl_entity_component(e, FL_COMPONENT_SCRIPT), &script) ? fl_project_asset(s->project, script.script) : NULL;
     if (source) {
         cJSON *item = cJSON_AddObjectToObject(o, "script");
         if (item) {
-            cJSON_AddNumberToObject(item, "id", (double)source->id);
+            cJSON_AddItemToObject(item, "id", agent_id_json(source->id));
             cJSON_AddStringToObject(item, "name", source->name);
             cJSON_AddBoolToObject(item, "enabled", script.enabled);
         }
     }
+    Fl_Json document={0}; cJSON *components=cJSON_AddArrayToObject(o,"components");
+    for (size_t i=0;components && i<e->component_count;++i) fl_json_add(&document,components,NULL,fl_document_component_write(&document,&e->components[i]));
     const Fl_Animation *animation = fl_entity_animation(e);
     cJSON *tracks = animation && animation->track_count ? cJSON_AddArrayToObject(o, "tracks") : NULL;
     for (size_t i = 0; tracks && i < animation->track_count; ++i) cJSON_AddItemToArray(tracks, track_json(s, &animation->tracks[i]));
@@ -421,7 +436,7 @@ cJSON *agent_scene_json(const Fl_Project *p, const Fl_Scene *s, bool with_source
         const Fl_Beat *b = &s->beats[i];
         cJSON *item = cJSON_CreateObject();
         if (!item) break;
-        cJSON_AddNumberToObject(item, "id", (double)b->id);
+        cJSON_AddItemToObject(item, "id", agent_id_json(b->id));
         cJSON_AddStringToObject(item, "name", b->name);
         cJSON_AddNumberToObject(item, "start", agent_ticks_to_seconds(start));
         cJSON_AddNumberToObject(item, "duration", agent_ticks_to_seconds((int64_t)b->duration));
@@ -434,8 +449,8 @@ cJSON *agent_scene_json(const Fl_Project *p, const Fl_Scene *s, bool with_source
         const Fl_AudioClip *c = &s->clips[i];
         cJSON *item = cJSON_CreateObject();
         if (!item) break;
-        cJSON_AddNumberToObject(item, "id", (double)c->id);
-        cJSON_AddNumberToObject(item, "asset", (double)c->asset);
+        cJSON_AddItemToObject(item, "id", agent_id_json(c->id));
+        cJSON_AddItemToObject(item, "asset", agent_id_json(c->asset));
         cJSON_AddItemToObject(item, "start", agent_anchor_json(s, &c->start));
         cJSON_AddNumberToObject(item, "source_offset", agent_ticks_to_seconds((int64_t)c->source_offset));
         cJSON_AddNumberToObject(item, "duration", agent_ticks_to_seconds((int64_t)c->duration));
@@ -445,7 +460,10 @@ cJSON *agent_scene_json(const Fl_Project *p, const Fl_Scene *s, bool with_source
         cJSON_AddItemToArray(clips, item);
     }
     cJSON *scripts = cJSON_AddArrayToObject(o, "scripts");
-    for (size_t i = 0; scripts && i < s->script_count; ++i) cJSON_AddItemToArray(scripts, agent_script_json(s, &s->scripts[i], with_sources));
+    for (size_t i=0; scripts && i<fl_project_asset_count(s->project); ++i) {
+        const Fl_Asset *asset=fl_project_asset_at(s->project,i);
+        if (asset->kind==FL_ASSET_LUA) cJSON_AddItemToArray(scripts,agent_script_json(p,asset,with_sources));
+    }
     cJSON *entities = cJSON_AddArrayToObject(o, "entity_list");
     for (size_t i = 0; entities && i < s->entity_count; ++i) cJSON_AddItemToArray(entities, entity_json(s, &s->entities[i]));
     return o;

@@ -1,5 +1,6 @@
+#include "fl_render_host.h"
 #include "fl_scene_preview.h"
-#include "fl_scene_renderer.h"
+#include "render/gpu/fl_scene_renderer.h"
 #include "fl_canvas_view.h"
 #include "doc/fl_scene_frame.h"
 #include "style.h"
@@ -113,7 +114,7 @@ void fl_scene_preview_render(Ca_Viewport *viewport,void *data)
     const Fl_SceneGeometry *g=fl_scene_edit_geometry(p->edit);
     const Fl_SceneState *state=fl_scene_edit_state(p->edit);
     if (state&&scene&&(state->scene!=scene->id||state->count!=scene->entity_count)) state=NULL;
-    if (!p->renderer) p->renderer=fl_scene_renderer_create(&(Fl_SceneRendererDesc){.instance=ca_viewport_instance(viewport),.fonts=p->fonts,
+    if (!p->renderer) p->renderer=fl_scene_renderer_create(&(Fl_SceneRendererDesc){.gpu=fl_render_host_context(ca_viewport_instance(viewport)),.fonts=p->fonts,
         .jobs=p->jobs,.bus=p->bus,.invalidate=p->invalidate,.invalidate_data=p->invalidate_data});
     if (p->renderer&&scene) fl_scene_renderer_prepare(p->renderer,project,scene,state,1,false);
     uint32_t w=ca_viewport_width(viewport),h=ca_viewport_height(viewport);

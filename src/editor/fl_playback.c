@@ -42,7 +42,7 @@ static void start_clock(Fl_Playback *p)
         const Fl_Asset *asset = fl_project_asset(project, c->asset);
         Fl_MixerClip *m = &clips[count];
         if (!asset || !fl_project_asset_path(project, asset, m->path, sizeof(m->path))) continue;
-        m->start = fl_anchor_resolve(scene, &c->start);
+        if (!fl_anchor_sample(scene, &c->start, &m->start)) continue;
         m->source_offset = (Fl_Tick)c->source_offset; m->duration = (Fl_Tick)c->duration; m->gain = c->gain;
         m->fade_in = (Fl_Tick)c->fade_in; m->fade_out = (Fl_Tick)c->fade_out;
         ++count;

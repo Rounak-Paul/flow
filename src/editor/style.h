@@ -386,6 +386,7 @@
 #define FL_CLASS_VIEW_GUTTER "fl-view-gutter"
 #define FL_CLASS_VIEW_RIM "fl-view-rim"
 #define FL_CLASS_VIEWPORT "fl-viewport"
+#define FL_CLASS_EVALUATION_STATUS "fl-evaluation-status"
 #define FL_CLASS_FORM "fl-form"
 #define FL_CLASS_INPUT "fl-input"
 #define FL_CLASS_LAUNCHER "fl-launcher"
@@ -422,6 +423,7 @@
     ".fl-hierarchy-pane { width: 100%; height: 100%; padding: 0px " FL_SPACE_SM " " FL_SPACE_SM "; gap: 0px; }" \
     ".fl-hierarchy { width: 100%; flex-grow: 1; min-height: 0px; overflow-y: auto; gap: 0px; background: transparent; }" \
     ".fl-view { width: 100%; height: 100%; padding: 0px " FL_SPACE_SM " " FL_SPACE_SM "; gap: 0px; overflow: hidden; }" \
+    ".fl-evaluation-status { left: 12px; top: 10px; height: auto; width: auto; padding: 4px 8px; border-radius: 8px; background: " FL_COLOR_BG_OVERLAY "; z-index: 2; pointer-events: none; }" \
     ".fl-view-gutter { width: 100%; flex-grow: 1; min-height: 0px; gap: 0px; border-radius: " FL_RADIUS_CARD_GUTTER "; }" \
     ".fl-view-rim { left: 0px; top: 0px; width: 100%; height: 100%; z-index: 1; pointer-events: none; background: transparent; border-radius: " FL_RADIUS_CARD_GUTTER "; box-shadow: inset 0px 2px 5px " FL_COLOR_TAB_GUTTER_SHADE "; border: 1px solid " FL_COLOR_TAB_GUTTER_EDGE "; border-top-color: " FL_COLOR_TAB_GUTTER_EDGE "; border-bottom-color: " FL_COLOR_TAB_GUTTER_LIP "; }" \
     ".fl-viewport { width: 100%; flex-grow: 1; min-height: 0px; border-radius: " FL_RADIUS_CARD_GUTTER "; }" \

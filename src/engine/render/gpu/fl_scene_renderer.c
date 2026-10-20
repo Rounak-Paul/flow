@@ -50,6 +50,7 @@ typedef struct Fl_ImageDecode {
 typedef enum Fl_ImageState { IMAGE_DECODING, IMAGE_DECODED, IMAGE_READY, IMAGE_FAILED } Fl_ImageState;
 typedef struct Fl_CachedImage {
     Fl_Id asset;
+    unsigned char hash[32];
     Fl_ImageState state;
     Fl_JobHandle job;
     Fl_ImageDecode *decode;
@@ -59,13 +60,16 @@ typedef struct Fl_CachedImage {
 typedef struct Fl_Pipeline { VkFormat format; VkPipeline pipeline; } Fl_Pipeline;
 
 struct Fl_SceneRenderer {
-    Ca_Instance *instance;
+    Fl_GpuContext gpu;
     Fl_Fonts *fonts;
     Fl_JobSystem *jobs;
     Fl_EventBus *bus;
     void (*invalidate)(void *user_data);
     void *invalidate_data;
-    const Fl_Project *project;      /* project of the latest prepare, for asset paths */
+    uint64_t project_identity, render_project_identity;
+    Fl_SceneState render_states[2];
+    unsigned render_last;
+    char error[256];
     VkDevice device;
     VkPipelineLayout layout;
     Fl_Pipeline pipelines[PIPELINE_FORMATS];
@@ -163,8 +167,8 @@ static bool create_pipeline(Fl_SceneRenderer *p, VkFormat format)
     char outlines[2048], fs[sizeof(outlines) + sizeof(fs_head) + sizeof(fs_tail)];
     polygon_glsl(outlines, sizeof(outlines));
     snprintf(fs, sizeof(fs), "%s%s%s", fs_head, outlines, fs_tail);
-    VkShaderModule vert = ca_shader_compile(p->instance, vs, VK_SHADER_STAGE_VERTEX_BIT);
-    VkShaderModule frag = ca_shader_compile(p->instance, fs, VK_SHADER_STAGE_FRAGMENT_BIT);
+    VkShaderModule vert = p->gpu.compile_shader(p->gpu.host,vs,VK_SHADER_STAGE_VERTEX_BIT);
+    VkShaderModule frag = p->gpu.compile_shader(p->gpu.host,fs,VK_SHADER_STAGE_FRAGMENT_BIT);
     bool ok = vert && frag;
     if (ok && !p->layout) {
         VkPushConstantRange range = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 112};
@@ -238,7 +242,7 @@ static void prepare_texts(Fl_SceneRenderer *p, const Fl_Scene *scene, const Fl_S
         const Fl_Entity *e = &scene->entities[i]; const Fl_Component *component = fl_entity_component(e, FL_COMPONENT_TEXT);
         if (!component) continue;
         bool overridden = state && state->entities[i].text_override;
-        const Fl_Component text_view = overridden ? (Fl_Component){FL_COMPONENT_TEXT, 1, strlen(state->entities[i].text), (const unsigned char *)state->entities[i].text} : *component;
+        const Fl_Component text_view = overridden ? (Fl_Component){.type = FL_COMPONENT_TEXT, .version = 1, .size = state->entities[i].text_size, .data = (const unsigned char *)state->entities[i].text} : *component;
         const Fl_Component *text = &text_view;
         Fl_Transform t; Fl_CachedText *entry = &next[at++]; entry->entity = e->id;
         if (state) t = state->entities[i].transform;
@@ -293,7 +297,7 @@ static Fl_CachedImage *find_picture(Fl_SceneRenderer *p, Fl_Id asset)
 }
 
 /* Queue a decode for asset; failures leave a FAILED entry so the placeholder is shown without retry loops. */
-static void request_picture(Fl_SceneRenderer *p, const Fl_Asset *asset)
+static void request_picture(Fl_SceneRenderer *p, const Fl_Project *project, const Fl_Asset *asset)
 {
     if (p->picture_count == p->picture_capacity) {
         size_t capacity = p->picture_capacity ? p->picture_capacity * 2 : 8;
@@ -303,14 +307,15 @@ static void request_picture(Fl_SceneRenderer *p, const Fl_Asset *asset)
     }
     Fl_CachedImage *entry = &p->pictures[p->picture_count++];
     *entry = (Fl_CachedImage){.asset = asset->id, .state = IMAGE_FAILED};
+    memcpy(entry->hash,asset->hash,sizeof(entry->hash));
     entry->decode = calloc(1, sizeof(*entry->decode));
-    if (!entry->decode || !fl_project_asset_path(p->project, asset, entry->decode->path, sizeof(entry->decode->path))) return;
+    if (!entry->decode || !fl_project_asset_path(project, asset, entry->decode->path, sizeof(entry->decode->path))) return;
     entry->job = fl_job_submit(p->jobs, &(Fl_JobDesc){.fn = decode_image, .data = entry->decode, .priority = FL_JOB_PRIORITY_NORMAL, .notify = p->bus != NULL});
     if (entry->job.generation) entry->state = IMAGE_DECODING;
 }
 
 /* Drop pictures the scene no longer references; in-flight decodes are orphaned until they finish. */
-static void prepare_pictures(Fl_SceneRenderer *p, const Fl_Scene *scene)
+static void prepare_pictures(Fl_SceneRenderer *p, const Fl_Project *project, const Fl_Scene *scene)
 {
     if (p->picture_scene == scene->id && p->picture_revision == scene->revision) return;
     bool waited = false;
@@ -319,8 +324,9 @@ static void prepare_pictures(Fl_SceneRenderer *p, const Fl_Scene *scene)
         bool used = false;
         for (size_t j = 0; !entry->orphaned && !used && j < scene->entity_count; ++j) {
             Fl_Id asset;
+            const Fl_Asset *resource=NULL;
             used = fl_image_asset_decode(fl_entity_component(&scene->entities[j], FL_COMPONENT_IMAGE), &asset) && asset == entry->asset &&
-                   fl_project_asset(p->project, asset);
+                   (resource=fl_project_asset(project,asset)) && !memcmp(entry->hash,resource->hash,sizeof(entry->hash));
         }
         if (used) {++i; continue;}
         if (entry->state == IMAGE_DECODING) {entry->orphaned = true; ++i; continue;}
@@ -332,13 +338,13 @@ static void prepare_pictures(Fl_SceneRenderer *p, const Fl_Scene *scene)
 }
 
 /* Request missing decodes (waiting for them when asked) and upload finished ones for every image entity. */
-static void stage_pictures(Fl_SceneRenderer *p, const Fl_Scene *scene, bool wait)
+static void stage_pictures(Fl_SceneRenderer *p, const Fl_Project *project, const Fl_Scene *scene, bool wait)
 {
     for (size_t i = 0; i < scene->entity_count; ++i) {
         Fl_Id id; const Fl_Asset *asset;
-        if (!fl_image_asset_decode(fl_entity_component(&scene->entities[i], FL_COMPONENT_IMAGE), &id) || !(asset = fl_project_asset(p->project, id))) continue;
+        if (!fl_image_asset_decode(fl_entity_component(&scene->entities[i], FL_COMPONENT_IMAGE), &id) || !(asset = fl_project_asset(project, id))) continue;
         Fl_CachedImage *entry = find_picture(p, id);
-        if (!entry) {request_picture(p, asset); entry = find_picture(p, id);}
+        if (!entry) {request_picture(p, project, asset); entry = find_picture(p, id);}
         if (!entry) continue;
         if (wait && entry->state == IMAGE_DECODING) {fl_job_wait(p->jobs, entry->job); entry->state = IMAGE_DECODED;}
         if (entry->state != IMAGE_DECODED) continue;
@@ -396,7 +402,7 @@ static void age_graveyard(Fl_SceneRenderer *p)
 }
 
 /* Upload the frame each video entity shows at tick, reusing the previous upload while the frame is unchanged. */
-static void prepare_videos(Fl_SceneRenderer *p, const Fl_Scene *scene, const Fl_SceneState *state, Fl_Tick tick)
+static void prepare_videos(Fl_SceneRenderer *p, const Fl_Project *project, const Fl_Scene *scene, const Fl_SceneState *state, Fl_Tick tick)
 {
     for (size_t i = 0; i < p->video_count; ++i) p->videos[i].used = false;
     for (size_t i = 0; i < scene->entity_count; ++i) {
@@ -405,8 +411,8 @@ static void prepare_videos(Fl_SceneRenderer *p, const Fl_Scene *scene, const Fl_
         const Fl_Asset *asset;
         char path[FL_PATH_MAX];
         if (!e->visible || (state && state->entities[i].opacity <= 0)) continue;
-        if (!fl_video_clip_decode(fl_entity_component(e, FL_COMPONENT_VIDEO), &clip) || !(asset = fl_project_asset(p->project, clip.asset)) ||
-            !fl_video_cache_frame(p->project, asset, fl_video_clip_source_seconds(&clip, tick, asset->duration), path, sizeof(path))) continue;
+        if (!fl_video_clip_decode(fl_entity_component(e, FL_COMPONENT_VIDEO), &clip) || !(asset = fl_project_asset(project, clip.asset)) ||
+            !fl_video_cache_frame(project, asset, fl_video_clip_source_seconds(&clip, tick, asset->duration), path, sizeof(path))) continue;
         Fl_VideoFrame *slot = NULL;
         for (size_t j = 0; j < p->video_count && !slot; ++j) if (p->videos[j].entity == e->id) slot = &p->videos[j];
         if (slot && slot->image && !strcmp(slot->path, path)) {slot->used = true; continue;}
@@ -444,12 +450,14 @@ static VkDescriptorSet video_descriptor(const Fl_SceneRenderer *p, Fl_Id entity)
 void fl_scene_renderer_prepare(Fl_SceneRenderer *p, const Fl_Project *project, const Fl_Scene *scene, const Fl_SceneState *state, double text_scale, bool wait)
 {
     if (!p || !project || !scene) return;
-    p->project = project;
+    uint64_t identity=fl_project_identity(project);
+    if (p->project_identity!=identity) {p->text_scene=0; p->picture_scene=0;}
+    p->project_identity=identity;
     prepare_texts(p, scene, state, text_scale > 0 ? text_scale : 1);
-    prepare_pictures(p, scene);
-    stage_pictures(p, scene, wait);
+    prepare_pictures(p, project, scene);
+    stage_pictures(p, project, scene, wait);
     age_graveyard(p);
-    prepare_videos(p, scene, state, state ? state->tick : 0);
+    prepare_videos(p, project, scene, state, state ? state->tick : 0);
 }
 
 /* Pipeline for format, built on first use; VK_NULL_HANDLE when it cannot be created. */
@@ -728,13 +736,13 @@ void fl_scene_renderer_entities(Fl_SceneRenderer *p, VkCommandBuffer cmd, const 
 
 Fl_SceneRenderer *fl_scene_renderer_create(const Fl_SceneRendererDesc *d)
 {
-    if (!d || !d->instance || !d->fonts || !d->jobs) return NULL;
+    if (!d || (!d->gpu.device || !d->gpu.allocator || !d->gpu.compile_shader || !d->gpu.begin_transfer || !d->gpu.end_transfer) || !d->fonts || !d->jobs) return NULL;
     Fl_SceneRenderer *p = calloc(1, sizeof(*p));
     if (!p) return NULL;
-    p->instance = d->instance; p->fonts = d->fonts; p->jobs = d->jobs; p->bus = d->bus;
+    p->gpu=d->gpu; p->fonts = d->fonts; p->jobs = d->jobs; p->bus = d->bus;
     p->invalidate = d->invalidate; p->invalidate_data = d->invalidate_data;
-    p->device = ca_gpu_device(d->instance);
-    p->images = fl_gpu_images_create(d->instance);
+    p->device = d->gpu.device;
+    p->images = fl_gpu_images_create(&d->gpu);
     p->rasterizer = fl_text_rasterizer_create();
     if (!p->images || !p->rasterizer || (d->bus && !fl_event_subscribe(d->bus, &(Fl_SubscribeDesc){.type = fl_jobs_done_event(d->jobs),
         .fn = job_done, .user_data = p, .owner = p}).generation)) {
@@ -747,6 +755,7 @@ void fl_scene_renderer_destroy(Fl_SceneRenderer *p)
 {
     if (!p) return;
     if (p->bus) fl_event_unsubscribe_owner(p->bus, p);
+    for (unsigned i=0;i<2;++i) fl_scene_state_clear(&p->render_states[i]);
     for (size_t i = 0; i < p->picture_count; ++i) if (p->pictures[i].state == IMAGE_DECODING) fl_job_wait(p->jobs, p->pictures[i].job);
     vkDeviceWaitIdle(p->device);
     for (size_t i = 0; i < p->picture_count; ++i) release_picture(&p->pictures[i]);
@@ -792,15 +801,29 @@ bool fl_scene_renderer_render(Fl_SceneRenderer *p, const Fl_Project *project, co
     uint32_t w, h;
     if (!p || !project || !scene || !out || tick < 0 || !fl_frame_dimensions(scene, width, &w, &h)) return false;
     *out = (Fl_Frame){0};
-    Fl_SceneState state = {0};
+    p->error[0]=0;
+    if (p->render_project_identity!=fl_project_identity(project)) {
+        for (unsigned i=0;i<2;++i) fl_scene_state_clear(&p->render_states[i]);
+        p->render_project_identity=fl_project_identity(project);
+    }
+    unsigned selected=p->render_last^1u;
+    for (unsigned i=0;i<2;++i) if (p->render_states[i].valid && p->render_states[i].scene==scene->id &&
+        p->render_states[i].revision==scene->revision) {selected=i; break;}
+    p->render_last=selected;
+    Fl_SceneState *state=&p->render_states[selected];
     Fl_SceneGeometry geometry = {0};
     Fl_SceneFrame frame = fl_scene_frame(scene);
-    bool ok = fl_scene_state_update(&state, scene, tick) && fl_scene_geometry_update(&geometry, scene, &state);
-    VmaAllocator allocator = ca_gpu_allocator(p->instance);
+    bool ok = fl_scene_state_update(state, scene, tick);
+    for (size_t i=0; ok && i<scene->entity_count; ++i) {
+        const char *diagnostic=fl_script_runtime_error(state->scripts,i);
+        if (diagnostic[0]) {snprintf(p->error,sizeof(p->error),"%s",diagnostic); ok=false;}
+    }
+    ok=ok && fl_scene_geometry_update(&geometry,scene,state);
+    VmaAllocator allocator = p->gpu.allocator;
     Offscreen o = {0};
     const VkFormat format = VK_FORMAT_R8G8B8A8_SRGB;
     if (ok) {
-        fl_scene_renderer_prepare(p, project, scene, &state, (double)w / frame.width, true);
+        fl_scene_renderer_prepare(p, project, scene, state, (double)w / frame.width, true);
         VkImageCreateInfo image = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = format, .extent = {w, h, 1},
             .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
             .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
@@ -814,7 +837,7 @@ bool fl_scene_renderer_render(Fl_SceneRenderer *p, const Fl_Project *project, co
         ok = ok && vkCreateImageView(p->device, &view, NULL, &o.view) == VK_SUCCESS;
     }
     ok = ok && pipeline_for(p, format) != VK_NULL_HANDLE;
-    VkCommandBuffer cmd = ok ? ca_gpu_begin_transfer(p->instance) : VK_NULL_HANDLE;
+    VkCommandBuffer cmd = ok ? p->gpu.begin_transfer(p->gpu.host) : VK_NULL_HANDLE;
     if (ok && cmd) {
         transition(cmd, o.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                    VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
@@ -828,7 +851,7 @@ bool fl_scene_renderer_render(Fl_SceneRenderer *p, const Fl_Project *project, co
         if (ok) {
             fl_scene_renderer_background(p, cmd, &frame, &frame, scene->background);
             Fl_RenderTarget target = {o.view, format, w, h, 0};
-            fl_scene_renderer_entities(p, cmd, &target, &frame, scene, &state, &geometry);
+            fl_scene_renderer_entities(p, cmd, &target, &frame, scene, state, &geometry);
         }
         vkCmdEndRendering(cmd);
         transition(cmd, o.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
@@ -839,7 +862,7 @@ bool fl_scene_renderer_render(Fl_SceneRenderer *p, const Fl_Project *project, co
             .dstAccessMask = VK_ACCESS_HOST_READ_BIT, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .buffer = o.buffer, .size = VK_WHOLE_SIZE};
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1, &host_read, 0, NULL);
-        ca_gpu_end_transfer(p->instance, cmd);
+        p->gpu.end_transfer(p->gpu.host,cmd);
         ok = ok && vmaInvalidateAllocation(allocator, o.buffer_memory, 0, VK_WHOLE_SIZE) == VK_SUCCESS;
     } else ok = false;
     if (ok) {
@@ -848,6 +871,12 @@ bool fl_scene_renderer_render(Fl_SceneRenderer *p, const Fl_Project *project, co
         ok = out->rgba != NULL;
     }
     offscreen_destroy(allocator, p->device, &o);
-    fl_scene_state_clear(&state); fl_scene_geometry_clear(&geometry);
+    fl_scene_geometry_clear(&geometry);
+    if (!ok && !p->error[0]) snprintf(p->error,sizeof(p->error),"Frame evaluation or GPU rendering failed");
     return ok;
+}
+
+const char *fl_scene_renderer_error(const Fl_SceneRenderer *renderer)
+{
+    return renderer ? renderer->error : "Renderer is unavailable";
 }

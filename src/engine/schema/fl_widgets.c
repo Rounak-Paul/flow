@@ -1,4 +1,5 @@
 #include "fl_widgets.h"
+#include "doc/fl_json.h"
 #include "components/fl_animation.h"
 #include "components/fl_script.h"
 #include "components/fl_style.h"
@@ -139,10 +140,10 @@ bool fl_widget_component_valid(const Fl_Component *c)
     if (c->type <= FL_COMPONENT_SCRIPT && c->version != (c->type == FL_COMPONENT_ANIMATION ? FL_ANIMATION_VERSION : c->type == FL_COMPONENT_SCRIPT ? FL_SCRIPT_VERSION : 1u)) return false;
     switch (c->type) {
     case FL_COMPONENT_ANIMATION: return c->size == sizeof(Fl_Animation) && fl_animation_valid((const Fl_Animation *)c->data);
-    case FL_COMPONENT_SCRIPT: {Fl_Script script; return fl_script_decode(c, &script);}
+    case FL_COMPONENT_SCRIPT: return fl_script_component_valid(c);
     case FL_COMPONENT_TRANSFORM: { Fl_Transform t; return fl_transform_decode(c, &t); }
     case FL_COMPONENT_RECTANGLE: return c->size == 4;
-    case FL_COMPONENT_TEXT: return !c->size || !memchr(c->data, 0, c->size);
+    case FL_COMPONENT_TEXT: return !c->size || fl_json_utf8_valid((const char *)c->data,c->size);
     case FL_COMPONENT_APPEARANCE: { Fl_Appearance a; return fl_appearance_decode(c, &a); }
     case FL_COMPONENT_GEOMETRY: return c->size == 1 && fl_widget_is_geometry((Fl_WidgetKind)c->data[0]);
     case FL_COMPONENT_TYPOGRAPHY: { Fl_Typography t; return fl_typography_decode(c, &t); }
@@ -164,15 +165,15 @@ bool fl_widget_create(Fl_Project *p, Fl_Id scene, Fl_Id parent, Fl_WidgetKind ki
     fl_transform_encode(&t, transform); fl_appearance_encode(&def->appearance, appearance);
     if (kind == FL_WIDGET_IMAGE || kind == FL_WIDGET_VIDEO) return false;
     unsigned char typography[3 + FL_TYPOGRAPHY_FAMILY_MAX];
-    Fl_Component components[4] = {{FL_COMPONENT_TRANSFORM,1,56,transform}};
+    Fl_Component components[4] = {{.type=FL_COMPONENT_TRANSFORM, .version=1, .size=56, .data=transform}};
     size_t count = 1;
-    if (kind != FL_WIDGET_GROUP) components[count++] = (Fl_Component){FL_COMPONENT_APPEARANCE,1,24,appearance};
-    if (kind == FL_WIDGET_RECTANGLE) components[count++] = (Fl_Component){FL_COMPONENT_RECTANGLE,1,4,def->appearance.fill};
+    if (kind != FL_WIDGET_GROUP) components[count++] = (Fl_Component){.type = FL_COMPONENT_APPEARANCE, .version = 1, .size = 24, .data = appearance};
+    if (kind == FL_WIDGET_RECTANGLE) components[count++] = (Fl_Component){.type = FL_COMPONENT_RECTANGLE, .version = 1, .size = 4, .data = def->appearance.fill};
     else if (kind == FL_WIDGET_TEXT) {
-        components[count++] = (Fl_Component){FL_COMPONENT_TEXT,1,4,(const unsigned char *)"Text"};
-        components[count++] = (Fl_Component){FL_COMPONENT_TYPOGRAPHY,1,fl_typography_encode(&default_typography, typography),typography};
+        components[count++] = (Fl_Component){.type = FL_COMPONENT_TEXT, .version = 1, .size = 4, .data = (const unsigned char *)"Text"};
+        components[count++] = (Fl_Component){.type = FL_COMPONENT_TYPOGRAPHY, .version = 1, .size = fl_typography_encode(&default_typography, typography), .data = typography};
     }
-    else if (kind != FL_WIDGET_GROUP) components[count++] = (Fl_Component){FL_COMPONENT_GEOMETRY,1,1,&geometry};
+    else if (kind != FL_WIDGET_GROUP) components[count++] = (Fl_Component){.type = FL_COMPONENT_GEOMETRY, .version = 1, .size = 1, .data = &geometry};
     return fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ENTITY_ADD, .scene = scene, .parent = parent,
         .name = def->name, .components = components, .component_count = count}, out_id);
 }
@@ -187,7 +188,7 @@ bool fl_widget_create_image(Fl_Project *p, Fl_Id scene, Fl_Id parent, Fl_Id asse
     unsigned char transform[56], image[8];
     fl_transform_encode(&t, transform); fl_image_asset_encode(asset, image);
     const Fl_Asset *record = fl_project_asset(p, asset);
-    const Fl_Component components[2] = {{FL_COMPONENT_TRANSFORM,1,56,transform}, {FL_COMPONENT_IMAGE,1,8,image}};
+    const Fl_Component components[2] = {{.type=FL_COMPONENT_TRANSFORM, .version=1, .size=56, .data=transform}, {.type=FL_COMPONENT_IMAGE, .version=1, .size=8, .data=image}};
     return fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ENTITY_ADD, .scene = scene, .parent = parent,
         .name = record && record->name[0] ? record->name : def->name, .components = components, .component_count = 2}, out_id);
 }
@@ -203,13 +204,16 @@ bool fl_widget_create_video(Fl_Project *p, Fl_Id scene, Fl_Id parent, Fl_Id asse
     fl_transform_encode(&t, transform);
     fl_video_clip_encode(&(Fl_VideoClip){.asset = asset, .rate = 1}, clip_bytes);
     const Fl_Asset *record = fl_project_asset(p, asset);
-    const Fl_Component components[2] = {{FL_COMPONENT_TRANSFORM,1,56,transform}, {FL_COMPONENT_VIDEO,1,FL_VIDEO_CLIP_BYTES,clip_bytes}};
+    const Fl_Component components[2] = {{.type=FL_COMPONENT_TRANSFORM, .version=1, .size=56, .data=transform}, {.type=FL_COMPONENT_VIDEO, .version=1, .size=FL_VIDEO_CLIP_BYTES, .data=clip_bytes}};
     return fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ENTITY_ADD, .scene = scene, .parent = parent,
         .name = record && record->name[0] ? record->name : def->name, .components = components, .component_count = 2}, out_id);
 }
 
 bool fl_component_asset_reference(const Fl_Component *c, Fl_Id *asset, Fl_AssetKind *kind)
 {
+    Fl_Script script;
+    if (fl_script_decode(c,&script)) {if (asset) *asset=script.script; if (kind) *kind=FL_ASSET_LUA; return true;}
+
     Fl_Id id; Fl_VideoClip clip;
     if (c && fl_image_asset_decode(c, &id)) {if (asset) *asset = id; if (kind) *kind = FL_ASSET_IMAGE; return true;}
     if (c && fl_video_clip_decode(c, &clip)) {if (asset) *asset = clip.asset; if (kind) *kind = FL_ASSET_VIDEO; return true;}
@@ -232,7 +236,7 @@ bool fl_typography_decode(const Fl_Component *c, Fl_Typography *out)
         c->size < 4 || c->size > 3 + FL_TYPOGRAPHY_FAMILY_MAX) return false;
     unsigned weight = (unsigned)c->data[0] | (unsigned)c->data[1] << 8;
     size_t length = c->size - 3;
-    if (weight < 1 || weight > 1000 || c->data[2] > 1 || memchr(c->data + 3, 0, length)) return false;
+    if (weight < 1 || weight > 1000 || c->data[2] > 1 || !fl_json_utf8_valid((const char *)c->data+3,length)) return false;
     memcpy(out->family, c->data + 3, length); out->family[length] = 0;
     out->weight = weight; out->italic = c->data[2] != 0;
     return true;

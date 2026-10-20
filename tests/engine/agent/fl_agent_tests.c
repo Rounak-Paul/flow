@@ -1,6 +1,7 @@
 #include "flow_test.h"
 #include "agent/fl_agent.h"
-#include "agent/fl_history.h"
+#include "project/fl_history.h"
+#include "project/fl_prototype.h"
 #include "agent/fl_mcp.h"
 #include "agent/fl_mcp_http.h"
 #include "core/fl_thread.h"
@@ -77,14 +78,7 @@ static void test_authoring(Fl_Agent *agent, Fl_Id scene)
     cJSON *error = NULL, *result;
     char request[2048];
     snprintf(request, sizeof(request),
-        "{\"label\":\"Intro\",\"ops\":["
-        "{\"op\":\"entity.create\",\"scene\":%llu,\"kind\":\"rectangle\",\"as\":\"$box\",\"props\":{\"name\":\"Box\",\"x\":100,\"y\":50,\"width\":200,\"height\":100,\"fill\":\"#ff0000\",\"rotation\":90}},"
-        "{\"op\":\"entity.create\",\"scene\":%llu,\"kind\":\"text\",\"parent\":\"$box\",\"as\":\"$t\",\"props\":{\"name\":\"Title\",\"text\":\"Hello\",\"font_size\":64}},"
-        "{\"op\":\"key.set\",\"entity\":\"$box\",\"property\":\"x\",\"at\":0,\"value\":100},"
-        "{\"op\":\"key.set\",\"entity\":\"$box\",\"property\":\"x\",\"at\":2,\"value\":600,\"ease\":\"in_out\"},"
-        "{\"op\":\"script.create\",\"scene\":%llu,\"name\":\"Drift\",\"source\":\"function on_evaluate(self, time) self.transform.y = self.transform.y + 10 end\",\"as\":\"$s\"},"
-        "{\"op\":\"script.attach\",\"entity\":\"$t\",\"script\":\"$s\"}"
-        "]}", (unsigned long long)scene, (unsigned long long)scene, (unsigned long long)scene);
+        "{\"label\":\"Intro\",\"ops\":[{\"op\":\"entity.create\",\"scene\":%llu,\"kind\":\"rectangle\",\"as\":\"$box\",\"props\":{\"name\":\"Box\",\"x\":100,\"y\":50,\"width\":200,\"height\":100,\"fill\":\"#ff0000\",\"rotation\":90}},{\"op\":\"entity.create\",\"scene\":%llu,\"kind\":\"text\",\"parent\":\"$box\",\"as\":\"$t\",\"props\":{\"name\":\"Title\",\"text\":\"Hello\",\"font_size\":64}},{\"op\":\"key.set\",\"entity\":\"$box\",\"property\":\"x\",\"at\":0,\"value\":100},{\"op\":\"key.set\",\"entity\":\"$box\",\"property\":\"x\",\"at\":2,\"value\":600,\"ease\":\"in_out\"},{\"op\":\"script.create\",\"name\":\"Drift\",\"source\":\"return { sample = function(ctx) local self=ctx.entity; local time=ctx.time.seconds;  self.transform.y = self.transform.y + 10 end }\",\"as\":\"$s\"},{\"op\":\"script.attach\",\"entity\":\"$t\",\"script\":\"$s\"}]}", (unsigned long long)scene, (unsigned long long)scene);
     cJSON *args = json(request);
     result = fl_agent_call(agent, "apply_ops", args, &error);
     cJSON_Delete(args);
@@ -172,12 +166,14 @@ static void test_authoring(Fl_Agent *agent, Fl_Id scene)
     result = call(agent, "redo", NULL, &error);
     CHECK(!result && error_code(error, "nothing_to_do")); cJSON_Delete(error); error = NULL;
 
-    /* An outside edit makes the entry unsafe to undo; nothing is overwritten. */
+    /* Editor and MCP edits share history: undo the newest human edit, then redo it. */
     CHECK(fl_project_apply(g_project, &(Fl_Op){.kind = FL_OP_SCENE_RENAME, .scene = scene, .name = "Edited by hand"}, NULL));
     result = call(agent, "undo", NULL, &error);
-    CHECK(!result && error_code(error, "conflict") && entity_count(scene) == 2);
-    cJSON_Delete(error); error = NULL;
-    CHECK(!strcmp(fl_project_scene(g_project, scene)->name, "Edited by hand"));
+    CHECK(result && !error && entity_count(scene) == 2 && strcmp(fl_project_scene(g_project,scene)->name,"Edited by hand"));
+    cJSON_Delete(result);
+    result=call(agent,"redo",NULL,&error);
+    CHECK(result && !error && !strcmp(fl_project_scene(g_project,scene)->name,"Edited by hand"));
+    cJSON_Delete(result);
 }
 
 /* Look properties apply only where they make sense, validate their ranges and round-trip through get_scene. */
@@ -252,12 +248,12 @@ static void test_scripts(Fl_Agent *agent, Fl_Id scene)
     const double first = ids ? number(ids->child, "id") : 0, second = ids ? number(ids->child->next, "id") : 0;
     cJSON_Delete(result);
 
-    snprintf(request, sizeof(request), "{\"scene\":%llu,\"script\":\"Wobble\",\"source\":\"function on_evaluate(self, t) self.transform.x = 10 * t end\",\"attach\":[%.0f,%.0f]}",
-             (unsigned long long)scene, first, second);
+    snprintf(request, sizeof(request), "{\"script\":\"Wobble\",\"source\":\"return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.transform.x = 10 * t end }\",\"attach\":[%.0f,%.0f]}",
+             first, second);
     result = call(agent, "set_script", request, &error);
     CHECK(result && !error);
     cJSON_Delete(result);
-    snprintf(request, sizeof(request), "{\"scene\":%llu,\"script\":\"Wobble\"}", (unsigned long long)scene);
+    snprintf(request, sizeof(request), "{\"script\":\"Wobble\"}");
     result = call(agent, "get_script", request, &error);
     const cJSON *script = result ? cJSON_GetObjectItemCaseSensitive(result, "script") : NULL;
     CHECK(script && cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(script, "used_by")) == 2 &&
@@ -265,7 +261,7 @@ static void test_scripts(Fl_Agent *agent, Fl_Id scene)
     const double id = script ? number(script, "id") : 0;
     cJSON_Delete(result);
 
-    snprintf(request, sizeof(request), "{\"scene\":%llu,\"script\":%.0f,\"edits\":[{\"old\":\"10 * t\",\"new\":\"25 * t\"}]}", (unsigned long long)scene, id);
+    snprintf(request, sizeof(request), "{\"script\":%.0f,\"edits\":[{\"old\":\"10 * t\",\"new\":\"25 * t\"}]}", id);
     result = call(agent, "set_script", request, &error);
     CHECK(result && !error);
     cJSON_Delete(result);
@@ -277,37 +273,45 @@ static void test_scripts(Fl_Agent *agent, Fl_Id scene)
     CHECK(checked == 2);
     cJSON_Delete(result);
 
-    snprintf(request, sizeof(request), "{\"scene\":%llu,\"script\":%.0f,\"edits\":[{\"old\":\"missing\",\"new\":\"x\"}]}", (unsigned long long)scene, id);
+    snprintf(request, sizeof(request), "{\"script\":%.0f,\"edits\":[{\"old\":\"missing\",\"new\":\"x\"}]}", id);
     result = call(agent, "set_script", request, &error);
     CHECK(!result && error && error_code(error, "invalid_argument"));
     cJSON_Delete(error); error = NULL;
-    snprintf(request, sizeof(request), "{\"scene\":%llu,\"script\":%.0f,\"edits\":[{\"old\":\"t\",\"new\":\"x\"}]}", (unsigned long long)scene, id);
+    snprintf(request, sizeof(request), "{\"script\":%.0f,\"edits\":[{\"old\":\"t\",\"new\":\"x\"}]}", id);
     result = call(agent, "set_script", request, &error);
     CHECK(!result && error);
     cJSON_Delete(error); error = NULL;
 
-    snprintf(request, sizeof(request), "{\"scene\":%llu,\"script\":\"Wobble\",\"source\":\"function on_evaluate(\"}", (unsigned long long)scene);
+    snprintf(request, sizeof(request), "{\"script\":\"Wobble\",\"source\":\"function on_evaluate(\"}");
     result = call(agent, "set_script", request, &error);
-    const cJSON *results = result ? cJSON_GetObjectItemCaseSensitive(result, "results") : NULL;
-    CHECK(results && cJSON_GetObjectItemCaseSensitive(results->child, "syntax_error"));
-    cJSON_Delete(result);
+    CHECK(!result && error && error_code(error,"rejected"));
+    cJSON_Delete(error); error=NULL;
 
-    snprintf(request, sizeof(request), "{\"scene\":%llu,\"script\":\"Nope\"}", (unsigned long long)scene);
+    snprintf(request, sizeof(request), "{\"script\":\"Nope\"}");
     result = call(agent, "set_script", request, &error);
     CHECK(!result && error && error_code(error, "not_found"));
     cJSON_Delete(error); error = NULL;
-    snprintf(request, sizeof(request), "{\"scene\":%llu}", (unsigned long long)scene);
+    snprintf(request, sizeof(request), "{}");
     result = call(agent, "get_script", request, &error);
     const cJSON *scripts = result ? cJSON_GetObjectItemCaseSensitive(result, "scripts") : NULL;
     CHECK(scripts && cJSON_GetArraySize(scripts) == 2 && !cJSON_GetObjectItemCaseSensitive(scripts->child, "source"));
     cJSON_Delete(result);
 
+    snprintf(request,sizeof(request),"{\"dry_run\":true,\"ops\":[{\"op\":\"script.update\",\"script\":%.0f,\"source\":\"return {sample=123}\"}]}",id);
+    result=call(agent,"apply_ops",request,&error);
+    CHECK(!result && error && error_code(error,"rejected")); cJSON_Delete(error); error=NULL;
+    CHECK(strstr(fl_project_asset(g_project,(Fl_Id)id)->source,"25 * t"));
     snprintf(request, sizeof(request), "{\"ops\":[{\"op\":\"script.remove\",\"script\":%.0f}]}", id);
     result = call(agent, "apply_ops", request, &error);
-    CHECK(result && !fl_scene_script(fl_project_scene(g_project, scene), (Fl_Id)id) && fl_scene_script_uses(fl_project_scene(g_project, scene), (Fl_Id)id) == 0);
+    CHECK(!result && error && error_code(error,"rejected"));
+    cJSON_Delete(error); error=NULL;
+    CHECK(fl_project_asset(g_project,(Fl_Id)id) && fl_scene_script_uses(fl_project_scene(g_project,scene),(Fl_Id)id)==2);
+    snprintf(request,sizeof(request),"{\"ops\":[{\"op\":\"script.detach\",\"entity\":%.0f},{\"op\":\"script.detach\",\"entity\":%.0f},{\"op\":\"script.remove\",\"script\":%.0f}]}",first,second,id);
+    result=call(agent,"apply_ops",request,&error);
+    CHECK(result && !fl_project_asset(g_project,(Fl_Id)id) && fl_scene_script_uses(fl_project_scene(g_project,scene),(Fl_Id)id)==0);
     cJSON_Delete(result);
     result = call(agent, "undo", "{}", &error);
-    CHECK(result && fl_scene_script(fl_project_scene(g_project, scene), (Fl_Id)id) && fl_scene_script_uses(fl_project_scene(g_project, scene), (Fl_Id)id) == 2);
+    CHECK(result && fl_project_asset(g_project, (Fl_Id)id) && fl_scene_script_uses(fl_project_scene(g_project, scene), (Fl_Id)id) == 2);
     cJSON_Delete(result);
 }
 
@@ -507,7 +511,7 @@ static void test_history(const char *directory)
     char dir[FL_PATH_MAX];
     CHECK(fl_fs_join(dir, sizeof(dir), directory, "history") && fl_fs_mkdir_p(dir));
     char manifest[FL_PATH_MAX];
-    CHECK(fl_fs_join(manifest, sizeof(manifest), dir, "project.flow")); fl_fs_remove(manifest);
+    CHECK(fl_fs_join(manifest, sizeof(manifest), dir, "project.flow.json")); fl_fs_remove(manifest);
     Fl_Project *p = fl_project_create(dir, "History", NULL);
     CHECK(p != NULL); if (!p) return;
     Fl_History *h = fl_history_create(2, 1u << 30);
@@ -536,12 +540,87 @@ static void test_history(const char *directory)
     fl_project_destroy(p);
 }
 
+/* Project assets need no scenes; JSON IDs must survive the full unsigned range without rounding. */
+/* Prototype assets use the generic source protocol, exact aliases, inspection and shared undo. */
+static void test_asset_sources(Fl_Agent *agent)
+{
+    unsigned char bytes[56]; fl_transform_encode(&(Fl_Transform){.width=100,.height=50,.scale_x=1,.scale_y=1},bytes);
+    Fl_Component transform={.type=FL_COMPONENT_TRANSFORM,.version=1,.id=1,.size=sizeof(bytes),.data=bytes};
+    Fl_Entity root={.id=1,.name="Template",.visible=true,.components=&transform,.component_count=1};
+    Fl_Prototype prototype={.root=1,.next_id=2,.next_component_id=2,.scope={.duration=120000,.entities=&root,.entity_count=1}};
+    Fl_Json context={0}; cJSON *document=fl_prototype_write(&context,&prototype);
+    char *source=document ? cJSON_PrintUnformatted(document) : NULL; cJSON_Delete(document); CHECK(source);
+    if (!source) return;
+    cJSON *request=cJSON_CreateObject(), *ops=cJSON_AddArrayToObject(request,"ops"), *op=cJSON_CreateObject();
+    cJSON_AddItemToArray(ops,op); cJSON_AddStringToObject(op,"op","asset.source"); cJSON_AddStringToObject(op,"kind","flproto");
+    cJSON_AddStringToObject(op,"name","Reusable"); cJSON_AddStringToObject(op,"source",source); cJSON_AddStringToObject(op,"as","$proto");
+    op=cJSON_CreateObject(); cJSON_AddItemToArray(ops,op); cJSON_AddStringToObject(op,"op","asset.rename");
+    cJSON_AddStringToObject(op,"asset","$proto"); cJSON_AddStringToObject(op,"name","Reusable title");
+    char *text=cJSON_PrintUnformatted(request); cJSON_Delete(request); cJSON *error=NULL;
+    cJSON *result=call(agent,"apply_ops",text,&error); free(text); CHECK(result && !error);
+    const Fl_Asset *asset=fl_project_asset_named(g_project,FL_ASSET_PROTOTYPE,"Reusable title"); CHECK(asset);
+    Fl_Id id=asset ? asset->id : 0; cJSON_Delete(result);
+    char query[128]; snprintf(query,sizeof(query),"{\"asset\":\"%llu\"}",(unsigned long long)id);
+    result=call(agent,"get_asset",query,&error); CHECK(result && !error);
+    const cJSON *value=result ? cJSON_GetObjectItemCaseSensitive(result,"asset") : NULL;
+    CHECK(value && !strcmp(cJSON_GetObjectItemCaseSensitive(value,"source")->valuestring,source) && cJSON_GetObjectItemCaseSensitive(value,"path"));
+    cJSON_Delete(result);
+    result=call(agent,"apply_ops","{\"ops\":[{\"op\":\"asset.source\",\"kind\":\"flproto\",\"name\":\"Malformed\",\"source\":\"{}\"}]}",&error);
+    CHECK(!result && error && error_code(error,"rejected")); cJSON_Delete(error); error=NULL;
+    CHECK(fl_project_asset(g_project,id));
+    char removal[160]; snprintf(removal,sizeof(removal),"{\"ops\":[{\"op\":\"asset.remove\",\"asset\":\"%llu\"}]}",(unsigned long long)id);
+    result=call(agent,"apply_ops",removal,&error); CHECK(result && !error && !fl_project_asset(g_project,id)); cJSON_Delete(result);
+    result=call(agent,"undo","{}",&error); CHECK(result && !error && fl_project_asset(g_project,id)); cJSON_Delete(result);
+    free(source);
+}
+
+static void test_project_assets_and_exact_ids(Fl_Agent *agent, const char *root)
+{
+    char directory[FL_PATH_MAX], manifest[FL_PATH_MAX];
+    CHECK(fl_fs_join(directory,sizeof(directory),root,"asset_ids") && fl_fs_mkdir_p(directory));
+    Fl_Project *previous = g_project;
+    g_project = fl_project_create(directory,"Exact IDs",NULL);
+    CHECK(g_project); if (!g_project) {g_project=previous; return;}
+    Fl_Id original = fl_project_scene_at(g_project,0)->id;
+    CHECK(fl_project_apply(g_project,&(Fl_Op){.kind=FL_OP_SCENE_REMOVE,.scene=original},NULL));
+    cJSON *error=NULL;
+    cJSON *result=call(agent,"set_script","{\"script\":\"Unattached\",\"source\":\"return {sample=function(ctx) end}\"}",&error);
+    CHECK(result && !error); cJSON_Delete(result);
+    result=call(agent,"get_script","{\"script\":\"Unattached\"}",&error);
+    const cJSON *asset=result ? cJSON_GetObjectItemCaseSensitive(result,"script") : NULL;
+    CHECK(asset && cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(asset,"used_by"))==0);
+    cJSON_Delete(result);
+    CHECK(fl_project_save(g_project)); fl_project_destroy(g_project); g_project=NULL;
+    CHECK(fl_fs_join(manifest,sizeof(manifest),directory,"project.flow.json"));
+    size_t size=0; char *text=fl_fs_read_file(manifest,1024*1024,&size);
+    cJSON *document=text ? cJSON_Parse(text) : NULL; free(text);
+    CHECK(document && cJSON_ReplaceItemInObjectCaseSensitive(document,"next_id",cJSON_CreateString("9007199254740993")));
+    text=document ? cJSON_Print(document) : NULL;
+    CHECK(text && fl_fs_write_atomic(manifest,text,strlen(text))); cJSON_free(text); cJSON_Delete(document);
+    g_project=fl_project_open(directory,NULL); CHECK(g_project);
+    if (g_project) {
+        result=call(agent,"apply_ops","{\"ops\":[{\"op\":\"scene.add\",\"name\":\"Large\",\"as\":\"$scene\"},{\"op\":\"entity.create\",\"scene\":\"$scene\",\"kind\":\"rectangle\",\"as\":\"$object\"}]}",&error);
+        CHECK(result && !error);
+        const cJSON *list=result ? cJSON_GetObjectItemCaseSensitive(result,"results") : NULL;
+        const cJSON *id=list && list->child ? cJSON_GetObjectItemCaseSensitive(list->child,"id") : NULL;
+        CHECK(cJSON_IsString(id) && !strcmp(id->valuestring,"9007199254740993")); cJSON_Delete(result);
+        result=call(agent,"get_scene","{\"scene\":\"9007199254740993\"}",&error);
+        CHECK(result && !error); cJSON_Delete(result);
+        result=call(agent,"get_scene","{\"scene\":\"18446744073709551616\"}",&error);
+        CHECK(!result && error && error_code(error,"invalid_argument")); cJSON_Delete(error); error=NULL;
+        result=call(agent,"get_scene","{\"scene\":\"-1\"}",&error);
+        CHECK(!result && error && error_code(error,"invalid_argument")); cJSON_Delete(error);
+        fl_project_destroy(g_project);
+    }
+    g_project=previous;
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 2) return 2;
     char directory[FL_PATH_MAX], manifest[FL_PATH_MAX];
     CHECK(fl_fs_join(directory, sizeof(directory), argv[1], "agent") && fl_fs_mkdir_p(directory));
-    CHECK(fl_fs_join(manifest, sizeof(manifest), directory, "project.flow")); fl_fs_remove(manifest);
+    CHECK(fl_fs_join(manifest, sizeof(manifest), directory, "project.flow.json")); fl_fs_remove(manifest);
     g_project = fl_project_create(directory, "Agent", NULL);
     CHECK(g_project != NULL); if (!g_project) return 1;
     Fl_Agent *agent = fl_agent_create(&(Fl_AgentHost){host_project, fake_render, NULL});
@@ -550,6 +629,7 @@ int main(int argc, char **argv)
     test_authoring(agent, scene);
     test_look(agent, scene);
     test_scripts(agent, scene);
+    test_asset_sources(agent);
     test_scene_history(agent, directory);
     test_protocol(agent);
     Fl_Agent *http_agent = fl_agent_create(&(Fl_AgentHost){host_project, fake_render, NULL});
@@ -558,6 +638,7 @@ int main(int argc, char **argv)
     fl_agent_destroy(http_agent);
     test_history(argv[1]);
     test_timeout_and_png();
+    test_project_assets_and_exact_ids(agent,argv[1]);
     fl_agent_destroy(agent);
     fl_project_destroy(g_project);
 

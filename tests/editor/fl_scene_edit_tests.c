@@ -3,6 +3,9 @@
 #include "platform/fl_fs.h"
 #include "platform/fl_paths.h"
 #include <math.h>
+#include <string.h>
+#include "core/fl_clock.h"
+#include "core/fl_thread.h"
 
 /* Borrow and decode an entity's current local transform. */
 static Fl_Transform read_transform(Fl_Project *p,Fl_Id scene,Fl_Id entity)
@@ -79,17 +82,70 @@ static void check_canvas_authoring(Fl_Project *p, Fl_SceneEdit *edit, Fl_Id scen
     fl_scene_edit_set_snap(edit,false);
 }
 
+/* Pump owner-thread completion events until the requested complete frame is published. */
+static const Fl_SceneState *await_preview(Fl_SceneEdit *edit, Fl_EventBus *bus, Fl_Tick tick)
+{
+    uint64_t deadline=fl_clock_monotonic_ns()+UINT64_C(3000000000);
+    const Fl_SceneState *state=NULL;
+    Fl_Mutex mutex; Fl_CondVar condition;
+    if (!fl_mutex_init(&mutex)) return NULL;
+    if (!fl_cond_init(&condition)) {fl_mutex_destroy(&mutex); return NULL;}
+    do {
+        fl_event_bus_dispatch(bus);
+        state=fl_scene_edit_state(edit);
+        if (state && state->valid && state->tick==tick && !fl_scene_edit_evaluating(edit)) break;
+        state=NULL;
+        fl_mutex_lock(&mutex); fl_cond_wait_ms(&condition,&mutex,1); fl_mutex_unlock(&mutex);
+    } while (fl_clock_monotonic_ns()<deadline);
+    fl_cond_destroy(&condition); fl_mutex_destroy(&mutex);
+    return state;
+}
+
+/* Native previews keep a complete front frame and cancel obsolete document generations before teardown. */
+static void check_async_preview(Fl_Project *project, Fl_EventBus *bus, Fl_Id scene)
+{
+    Fl_JobSystem *jobs=fl_jobs_create(&(Fl_JobSystemDesc){.worker_count=1,.bus=bus}); CHECK(jobs);
+    Fl_SceneEdit *edit=fl_scene_edit_create(project,bus,jobs); CHECK(edit);
+    if (!edit) {fl_jobs_destroy(jobs); return;}
+    Fl_Id entity=0, asset=0;
+    CHECK(fl_widget_create(project,scene,0,FL_WIDGET_RECTANGLE,0,0,&entity));
+    const char *source="return {step_hz=60,initialize=function(ctx) ctx.state={x=0} end,step=function(ctx) ctx.state.x=ctx.state.x+100*ctx.time.dt end,sample=function(ctx) ctx.entity.transform.x=ctx.state.x end}";
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET, .source_kind=FL_ASSET_LUA,.name="Async Preview",.source=source,.source_size=strlen(source)},&asset));
+    Fl_Component component={0}; CHECK(fl_script_encode(&(Fl_Script){.script=asset,.enabled=true},&component));
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_COMPONENT_SET,.scene=scene,.entity=entity,.component=component},NULL));
+    fl_component_clear(&component);
+    CHECK(fl_scene_edit_select(edit,scene,entity,false)); fl_scene_edit_set_time(edit,FL_TICKS_PER_SECOND);
+    CHECK(!fl_scene_edit_state(edit) && fl_scene_edit_evaluating(edit));
+    const Fl_SceneState *state=await_preview(edit,bus,FL_TICKS_PER_SECOND);
+    const Fl_Scene *document=fl_project_scene(project,scene);
+    size_t index=(size_t)(fl_scene_entity(document,entity)-document->entities);
+    CHECK(state && near(state->entities[index].transform.x,100));
+    fl_scene_edit_set_snap(edit,false);
+    CHECK(fl_scene_edit_begin(edit,FL_GESTURE_MOVE,100,0)); fl_scene_edit_end(edit,true);
+    state=await_preview(edit,bus,FL_TICKS_PER_SECOND); CHECK(state);
+    fl_scene_edit_set_time(edit,2*FL_TICKS_PER_SECOND);
+    state=fl_scene_edit_state(edit);
+    CHECK(state && state->tick==FL_TICKS_PER_SECOND && fl_scene_edit_evaluating(edit));
+    source="return {sample=function(ctx) ctx.entity.transform.x=ctx.time.seconds*1000 end}";
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET, .source_kind=FL_ASSET_LUA,.asset =asset,.source=source,.source_size=strlen(source)},NULL));
+    CHECK(!fl_scene_edit_state(edit));
+    state=await_preview(edit,bus,2*FL_TICKS_PER_SECOND);
+    CHECK(state && state->entities[index].transform.x==2000);
+    fl_scene_edit_set_time(edit,3*FL_TICKS_PER_SECOND); fl_scene_edit_state(edit);
+    fl_scene_edit_destroy(edit); CHECK(fl_jobs_destroy(jobs)); fl_event_bus_dispatch(bus);
+}
+
 int main(int argc,char **argv)
 {
     CHECK(argc==2);if (argc!=2) return 1;
-    char path[FL_PATH_MAX];CHECK(fl_fs_mkdir_p(argv[1]));CHECK(fl_fs_join(path,sizeof(path),argv[1],"project.flow"));fl_fs_remove(path);
+    char path[FL_PATH_MAX];CHECK(fl_fs_mkdir_p(argv[1]));CHECK(fl_fs_join(path,sizeof(path),argv[1],"project.flow.json"));fl_fs_remove(path);
     Fl_EventBus *bus=fl_event_bus_create(NULL);Fl_Project *p=fl_project_create(argv[1],"Editing",bus);CHECK(p);if (!p) return 1;
     Fl_Id scene=fl_project_scene_at(p,0)->id,parent,child;
     CHECK(fl_widget_create(p,scene,0,FL_WIDGET_GROUP,100,100,&parent));
     CHECK(fl_widget_create(p,scene,parent,FL_WIDGET_RECTANGLE,10,20,&child));
     Fl_TransformEdit parent_transform={parent,{100,100,320,180,1.5707963267948966,2,2}};
     CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_TRANSFORMS,.scene=scene,.transforms=&parent_transform,.transform_count=1},NULL));
-    Fl_SceneEdit *edit=fl_scene_edit_create(p,bus);CHECK(edit);
+    Fl_SceneEdit *edit=fl_scene_edit_create(p,bus,NULL);CHECK(edit);
     CHECK(fl_scene_edit_select(edit,scene,child,false));
     uint64_t revision=fl_project_scene(p,scene)->revision;
     CHECK(fl_scene_edit_begin(edit,FL_GESTURE_MOVE,0,0));CHECK(fl_scene_edit_update(edit,0,0));fl_scene_edit_end(edit,true);
@@ -118,6 +174,7 @@ int main(int argc,char **argv)
     CHECK(fl_scene_edit_insert(edit,FL_WIDGET_TEXT,0,100,200));CHECK(fl_scene_edit_count(edit)==1);
     check_keyed_gesture(p,edit,scene);
     check_canvas_authoring(p,edit,scene);
+    check_async_preview(p,bus,scene);
     CHECK(fl_project_save(p));fl_scene_edit_destroy(edit);fl_project_destroy(p);CHECK(fl_event_bus_destroy(bus));fl_fs_remove(path);
     return FLOW_TEST_RESULT("fl_scene_edit_tests");
 }

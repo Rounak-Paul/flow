@@ -3,6 +3,7 @@
 #include "style.h"
 
 #include "core/fl_log.h"
+#include "project/fl_history.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,6 +52,20 @@ static void save_project(void *data)
     if (!fl_project_save(bar->project)) FL_LOG_ERROR("project", "save failed");
 }
 
+/* Apply native history actions through the same project history used by MCP and file reload. */
+static void undo_project(void *data)
+{
+    Fl_MenuBar *bar=data; bool conflict=false; char label[FL_HISTORY_LABEL_MAX];
+    if (!fl_history_undo(fl_project_history(bar->project),bar->project,label,&conflict) && conflict) FL_LOG_WARN(LOG_TAG,"Undo requires resolving a document conflict");
+    bar->dirty=true;
+}
+static void redo_project(void *data)
+{
+    Fl_MenuBar *bar=data; bool conflict=false; char label[FL_HISTORY_LABEL_MAX];
+    if (!fl_history_redo(fl_project_history(bar->project),bar->project,label,&conflict) && conflict) FL_LOG_WARN(LOG_TAG,"Redo requires resolving a document conflict");
+    bar->dirty=true;
+}
+
 /* Request a deferred transition back to the separate project manager. */
 static void show_projects(void *data)
 {
@@ -76,8 +91,13 @@ static void install_menus(Fl_MenuBar *menubar)
         {.label = "Save project", .action = save_project, .action_data = menubar},
         {.label = "Projects...", .action = show_projects, .action_data = menubar},
     };
+    const Ca_MenuItemDesc edit[]={
+        {.label="Undo",.action=undo_project,.action_data=menubar},
+        {.label="Redo",.action=redo_project,.action_data=menubar},
+    };
     const Ca_MenuDesc menus[] = {
         {.label = "File", .items = file, .item_count = 2},
+        {.label="Edit",.items=edit,.item_count=2},
         { .label = "View", .items = menubar->items, .item_count = menubar->count },
     };
     ca_window_set_title_bar_menus(menubar->window, menus, (int)(sizeof(menus) / sizeof(menus[0])));

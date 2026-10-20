@@ -37,3 +37,9 @@ size_t fl_history_redo_count(const Fl_History *history);
 /* Borrow the label of the entry the next undo/redo would apply, or NULL. */
 const char *fl_history_undo_label(const Fl_History *history);
 const char *fl_history_redo_label(const Fl_History *history);
+
+/* Whether any retained undo/redo/open snapshot requires these asset bytes. */
+bool fl_history_has_asset(const Fl_History *history, const unsigned char hash[32]);
+
+/* Close an engine-owned changeset after its document backup has already been restored. */
+void fl_history_cancel_restored(Fl_History *history, const Fl_Project *project);

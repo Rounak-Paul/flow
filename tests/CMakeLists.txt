@@ -1,3 +1,12 @@
+# Register a test with a freshly isolated build-owned scratch directory.
+function(flow_register_test name)
+    add_test(NAME ${name} COMMAND ${CMAKE_COMMAND}
+        "-DFLOW_TEST_EXECUTABLE=$<TARGET_FILE:${name}>"
+        "-DFLOW_TEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/scratch"
+        "-DFLOW_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch/${name}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/run_isolated.cmake")
+endfunction()
+
 # Registers one engine unit-test executable with CTest. Each test receives a
 # private scratch directory as argv[1].
 function(flow_engine_test name source)
@@ -5,8 +14,7 @@ function(flow_engine_test name source)
     target_link_libraries(${name} PRIVATE flow_engine)
     target_include_directories(${name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     flow_target_warnings(${name})
-    set(scratch "${CMAKE_CURRENT_BINARY_DIR}/scratch/${name}")
-    add_test(NAME ${name} COMMAND ${name} "${scratch}")
+    flow_register_test(${name})
 endfunction()
 
 flow_engine_test(fl_event_tests    engine/core/fl_event_tests.c)
@@ -15,13 +23,19 @@ flow_engine_test(fl_job_tests      engine/core/fl_job_tests.c)
 flow_engine_test(fl_platform_tests engine/platform/fl_platform_tests.c)
 flow_engine_test(fl_crash_tests    engine/platform/fl_crash_tests.c)
 flow_engine_test(fl_project_tests engine/project/fl_project_tests.c)
+flow_engine_test(fl_document_tests engine/project/fl_document_tests.c)
+flow_engine_test(fl_prototype_tests engine/project/fl_prototype_tests.c)
+flow_engine_test(fl_read_view_tests engine/project/fl_read_view_tests.c)
 flow_engine_test(fl_scene_frame_tests engine/project/fl_scene_frame_tests.c)
 flow_engine_test(fl_widgets_tests engine/project/fl_widgets_tests.c)
 flow_engine_test(fl_assets_tests engine/project/fl_assets_tests.c)
 flow_engine_test(fl_text_tests engine/text/fl_text_tests.c)
 flow_engine_test(fl_audio_tests engine/media/fl_audio_tests.c)
 flow_engine_test(fl_timeline_tests engine/project/fl_timeline_tests.c)
+flow_engine_test(fl_time_mapping_tests engine/project/fl_time_mapping_tests.c)
 flow_engine_test(fl_script_tests engine/scripting/fl_script_tests.c)
+flow_engine_test(fl_lua_value_tests engine/scripting/fl_lua_value_tests.c)
+target_include_directories(fl_lua_value_tests PRIVATE "${PROJECT_SOURCE_DIR}/vendors/lua")
 flow_engine_test(fl_agent_tests engine/agent/fl_agent_tests.c)
 target_link_libraries(fl_agent_tests PRIVATE civetweb)
 target_compile_definitions(fl_assets_tests PRIVATE FLOW_TEST_FONT="${PROJECT_SOURCE_DIR}/vendors/inter/Inter-Regular.ttf")
@@ -30,27 +44,27 @@ add_executable(fl_scene_edit_tests editor/fl_scene_edit_tests.c ../src/editor/fl
 target_include_directories(fl_scene_edit_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/src/editor")
 target_link_libraries(fl_scene_edit_tests PRIVATE flow_engine)
 flow_target_warnings(fl_scene_edit_tests)
-add_test(NAME fl_scene_edit_tests COMMAND fl_scene_edit_tests "${CMAKE_CURRENT_BINARY_DIR}/scratch/fl_scene_edit_tests")
+flow_register_test(fl_scene_edit_tests)
 
 add_executable(fl_canvas_view_tests editor/fl_canvas_view_tests.c ../src/editor/fl_canvas_view.c)
 target_include_directories(fl_canvas_view_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/src/editor")
 target_link_libraries(fl_canvas_view_tests PRIVATE flow_engine)
 flow_target_warnings(fl_canvas_view_tests)
-add_test(NAME fl_canvas_view_tests COMMAND fl_canvas_view_tests)
+flow_register_test(fl_canvas_view_tests)
 
 add_executable(fl_scene_thumbnails_tests editor/fl_scene_thumbnails_tests.c)
 target_include_directories(fl_scene_thumbnails_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(fl_scene_thumbnails_tests PRIVATE flow_editor causality)
 target_compile_definitions(fl_scene_thumbnails_tests PRIVATE $<$<PLATFORM_ID:Windows>:CA_API=>)
 flow_target_warnings(fl_scene_thumbnails_tests)
-add_test(NAME fl_scene_thumbnails_tests COMMAND fl_scene_thumbnails_tests)
+flow_register_test(fl_scene_thumbnails_tests)
 
 add_executable(fl_timeline_panel_tests editor/fl_timeline_panel_tests.c)
 target_include_directories(fl_timeline_panel_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(fl_timeline_panel_tests PRIVATE flow_editor causality)
 target_compile_definitions(fl_timeline_panel_tests PRIVATE $<$<PLATFORM_ID:Windows>:CA_API=>)
 flow_target_warnings(fl_timeline_panel_tests)
-add_test(NAME fl_timeline_panel_tests COMMAND fl_timeline_panel_tests "${CMAKE_CURRENT_BINARY_DIR}/scratch/fl_timeline_panel_tests")
+flow_register_test(fl_timeline_panel_tests)
 
 add_executable(fl_scene_renderer_tests editor/fl_scene_renderer_tests.c)
 target_include_directories(fl_scene_renderer_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -58,12 +72,15 @@ target_include_directories(fl_scene_renderer_tests SYSTEM PRIVATE $<TARGET_PROPE
 target_link_libraries(fl_scene_renderer_tests PRIVATE flow_editor causality Vulkan::Vulkan)
 target_compile_definitions(fl_scene_renderer_tests PRIVATE $<$<PLATFORM_ID:Windows>:CA_API=>)
 flow_target_warnings(fl_scene_renderer_tests)
-add_test(NAME fl_scene_renderer_tests COMMAND fl_scene_renderer_tests "${CMAKE_CURRENT_BINARY_DIR}/scratch/fl_scene_renderer_tests")
+flow_register_test(fl_scene_renderer_tests)
 
 add_executable(fl_timeline_playback_tests editor/fl_timeline_playback_tests.c)
 target_include_directories(fl_timeline_playback_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(fl_timeline_playback_tests PRIVATE flow_editor causality)
 target_compile_definitions(fl_timeline_playback_tests PRIVATE $<$<PLATFORM_ID:Windows>:CA_API=>)
 flow_target_warnings(fl_timeline_playback_tests)
-add_test(NAME fl_timeline_playback_tests COMMAND fl_timeline_playback_tests "${CMAKE_CURRENT_BINARY_DIR}/scratch/fl_timeline_playback_tests")
+flow_register_test(fl_timeline_playback_tests)
 set_tests_properties(fl_timeline_playback_tests PROPERTIES TIMEOUT 30)
+
+# Native GPU tests own windows/devices and must not compete for the desktop/GPU clock.
+set_tests_properties(fl_scene_renderer_tests fl_timeline_playback_tests fl_scene_thumbnails_tests PROPERTIES RESOURCE_LOCK flow_gpu)

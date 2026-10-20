@@ -20,8 +20,6 @@ static char *copy_text(const char *text)
 /* Write/read IEEE754 doubles and signed ticks through the u64 stream encoding. */
 static void put_double(Fl_Binary *b, double value) { uint64_t bits; memcpy(&bits, &value, 8); fl_binary_u64(b, bits); }
 static double get_double(Fl_Binary *b) { uint64_t bits = fl_binary_get_u64(b); double value; memcpy(&value, &bits, 8); return value; }
-static void put_tick(Fl_Binary *b, Fl_Tick value) { fl_binary_u64(b, (uint64_t)value); }
-static Fl_Tick get_tick(Fl_Binary *b) { uint64_t bits = fl_binary_get_u64(b); Fl_Tick value; memcpy(&value, &bits, 8); return value; }
 
 Fl_Tick fl_scene_length(const Fl_Scene *s)
 {
@@ -46,27 +44,40 @@ bool fl_scene_beat_range(const Fl_Scene *s, Fl_Id beat, Fl_Tick *start, Fl_Tick 
     return false;
 }
 
-Fl_Tick fl_anchor_resolve(const Fl_Scene *s, const Fl_TimeAnchor *a)
+bool fl_anchor_sample(const Fl_Scene *scene, const Fl_TimeAnchor *anchor, Fl_Tick *out)
 {
-    if (!a) return 0;
+    if (!out || !fl_time_anchor_valid(anchor)) return false;
+    if (anchor->kind == FL_ANCHOR_ABSOLUTE) {*out = anchor->offset; return true;}
     Fl_Tick start, end;
-    if (a->kind == FL_ANCHOR_BEAT && fl_scene_beat_range(s, a->beat, &start, &end)) {
-        Fl_Tick base = a->end ? end : start;
-        if (a->offset > 0 && base > INT64_MAX - a->offset) return INT64_MAX;
-        return base + a->offset;
+    if (!fl_scene_beat_range(scene, anchor->beat, &start, &end)) return false;
+    Fl_Tick base = anchor->end ? end : start;
+    if (anchor->kind == FL_ANCHOR_BEAT_POSITION) {
+        long double value = (long double)start + ((long double)end - start) * anchor->position;
+        if (value <= (long double)INT64_MIN || value >= (long double)INT64_MAX) return false;
+        base = (Fl_Tick)llroundl(value);
     }
-    return a->offset;
+    if ((anchor->offset > 0 && base > INT64_MAX - anchor->offset) ||
+        (anchor->offset < 0 && base < INT64_MIN - anchor->offset)) return false;
+    *out = base + anchor->offset;
+    return true;
+}
+
+Fl_Tick fl_anchor_resolve(const Fl_Scene *scene, const Fl_TimeAnchor *anchor)
+{
+    Fl_Tick tick;
+    return fl_anchor_sample(scene, anchor, &tick) ? tick : FL_TIME_UNBOUND;
 }
 
 Fl_TimeAnchor fl_anchor_at(const Fl_Scene *s, Fl_Tick tick)
 {
+    if (tick < 0 || tick > fl_scene_length(s)) return (Fl_TimeAnchor){.offset=tick};
     Fl_Tick at = 0;
     for (size_t i = 0; s && i < s->beat_count; ++i) {
         Fl_Tick end = at + (Fl_Tick)s->beats[i].duration;
-        if (tick < end || i + 1 == s->beat_count) return (Fl_TimeAnchor){FL_ANCHOR_BEAT, s->beats[i].id, false, tick - at};
+        if (tick < end || i + 1 == s->beat_count) return (Fl_TimeAnchor){.kind=FL_ANCHOR_BEAT_POSITION,.beat=s->beats[i].id,.position=(double)(tick-at)/(double)(end-at)};
         at = end;
     }
-    return (Fl_TimeAnchor){FL_ANCHOR_ABSOLUTE, 0, false, tick};
+    return (Fl_TimeAnchor){.kind=FL_ANCHOR_ABSOLUTE,.beat=0,.end=false,.offset=tick};
 }
 
 const Fl_Track *fl_scene_track_next(Fl_TrackIterator *it)
@@ -120,9 +131,8 @@ const Fl_Keyframe *fl_scene_key(const Fl_Scene *s, Fl_Id key, const Fl_Track **t
 /* Validate an anchor against the scene's beats. */
 static bool anchor_valid(const Fl_Scene *s, const Fl_TimeAnchor *a)
 {
-    if (a->offset < -TICK_LIMIT || a->offset > TICK_LIMIT) return false;
-    if (a->kind == FL_ANCHOR_ABSOLUTE) return a->beat == 0 && !a->end;
-    return a->kind == FL_ANCHOR_BEAT && fl_scene_beat_range(s, a->beat, NULL, NULL);
+    (void)s;
+    return fl_time_anchor_valid(a) && a->offset >= -TICK_LIMIT && a->offset <= TICK_LIMIT;
 }
 
 /* Validate a clip record's references and ranges. */
@@ -153,29 +163,16 @@ static bool length_fits(const Fl_Scene *s, size_t skip, uint64_t duration)
     return total <= (uint64_t)TICK_LIMIT;
 }
 
-/* Scale keys inside this beat, preserving their chosen start/end edge and IDs. */
-static void scale_beat_keys(Fl_Scene *s, Fl_Id beat, uint64_t before, uint64_t after)
-{
-    if (before == after) return;
-    Fl_TrackIterator tracks = {.scene = s};
-    for (const Fl_Track *track; (track = fl_scene_track_next(&tracks));) {
-        for (size_t k = 0; k < track->key_count; ++k) {
-            Fl_TimeAnchor *at = &track->keys[k].at;
-            if (at->kind != FL_ANCHOR_BEAT || at->beat != beat) continue;
-            if (at->end ? at->offset > 0 || at->offset < -(Fl_Tick)before :
-                at->offset < 0 || (uint64_t)at->offset > before) continue;
-            Fl_Tick offset = (Fl_Tick)llroundl((long double)at->offset / before * after);
-            if (!at->end && offset > (Fl_Tick)after) offset = (Fl_Tick)after;
-            if (at->end && offset < -(Fl_Tick)after) offset = -(Fl_Tick)after;
-            at->offset = offset;
-        }
-    }
-}
-
 /* Reassign a split beat's anchor while preserving its resolved time and edge semantics. */
 static void split_anchor(Fl_TimeAnchor *at, Fl_Id beat, Fl_Id right, Fl_Tick left_duration, Fl_Tick right_duration)
 {
-    if (at->kind != FL_ANCHOR_BEAT || at->beat != beat) return;
+    if (at->kind == FL_ANCHOR_ABSOLUTE || at->beat != beat) return;
+    if (at->kind == FL_ANCHOR_BEAT_POSITION) {
+        long double original = (long double)(left_duration + right_duration) * at->position;
+        if (original < left_duration) at->position = (double)(original / left_duration);
+        else {at->beat = right; at->position = (double)((original - left_duration) / right_duration);}
+        return;
+    }
     if (at->end) {
         if (at->offset >= -right_duration) at->beat = right;
         else at->offset += right_duration;
@@ -184,24 +181,36 @@ static void split_anchor(Fl_TimeAnchor *at, Fl_Id beat, Fl_Id right, Fl_Tick lef
     }
 }
 
-/* Delete animation owned by this beat; preserve audio starts as absolute times. */
-static void remove_beat_content(Fl_Scene *s, Fl_Id beat)
+/* One staged behavior clock replacement, allocated before a beat split changes anything. */
+typedef struct Fl_SplitScript { Fl_Component *target; Fl_Component value; } Fl_SplitScript;
+
+/* Prepare every affected attachment so an allocation failure cannot publish a partial split. */
+static bool prepare_split_scripts(Fl_Scene *scene, Fl_Id beat, Fl_Id right, Fl_Tick left_duration, Fl_Tick right_duration,
+                                  Fl_SplitScript **out, size_t *count)
 {
-    Fl_TrackIterator it = {.scene = s};
-    for (const Fl_Track *value; (value = fl_scene_track_next(&it));) {
-        Fl_Track *track = (Fl_Track *)value;
-        size_t kept = 0;
-        for (size_t k = 0; k < track->key_count; ++k) {
-            const Fl_Keyframe *key = &track->keys[k];
-            if (key->at.kind != FL_ANCHOR_BEAT || key->at.beat != beat) track->keys[kept++] = *key;
+    *out=NULL; *count=0; size_t capacity=0;
+    for (size_t i=0;i<scene->entity_count;++i) for (size_t j=0;j<scene->entities[i].component_count;++j) {
+        Fl_Component *component=(Fl_Component *)&scene->entities[i].components[j]; Fl_Script script;
+        if (!fl_script_decode(component,&script) || !script.time.explicit_range) continue;
+        bool start=script.time.start.kind!=FL_ANCHOR_ABSOLUTE && script.time.start.beat==beat;
+        bool end=script.time.end.kind!=FL_ANCHOR_ABSOLUTE && script.time.end.beat==beat;
+        if (!start && !end) continue;
+        if (*count==capacity) {
+            size_t next=capacity ? capacity*2 : 8;
+            Fl_SplitScript *storage=realloc(*out,next*sizeof(*storage));
+            if (!storage) goto fail;
+            *out=storage; capacity=next;
         }
-        track->key_count = kept;
+        split_anchor(&script.time.start,beat,right,left_duration,right_duration);
+        split_anchor(&script.time.end,beat,right,left_duration,right_duration);
+        Fl_Component value={0};
+        if (!fl_script_encode(&script,&value)) goto fail;
+        value.id=component->id; (*out)[(*count)++]=(Fl_SplitScript){component,value};
     }
-    for (size_t i = 0; i < s->clip_count; ++i) {
-        Fl_AudioClip *clip = (Fl_AudioClip *)&s->clips[i];
-        if (clip->start.kind == FL_ANCHOR_BEAT && clip->start.beat == beat)
-            clip->start = (Fl_TimeAnchor){FL_ANCHOR_ABSOLUTE, 0, false, fl_anchor_resolve(s, &clip->start)};
-    }
+    return true;
+fail:
+    for (size_t i=0;i<*count;++i) fl_component_clear(&(*out)[i].value);
+    free(*out); *out=NULL; *count=0; return false;
 }
 
 /* Locate a beat's index; SIZE_MAX when absent. */
@@ -297,6 +306,8 @@ bool fl_timeline_apply(const Fl_Project *p, Fl_Scene *s, const Fl_Op *op, uint64
         char *name = copy_text(op->name);
         if (!name || !reserve_beats(s, 1)) {free(name); return false;}
         Fl_Tick left = op->tick - start, right = end - op->tick;
+        Fl_SplitScript *scripts=NULL; size_t script_count=0;
+        if (!prepare_split_scripts(s,op->beat,*next_id,left,right,&scripts,&script_count)) {free(name); return false;}
         Fl_Beat *beat = (Fl_Beat *)&s->beats[i];
         Fl_Id id = (*next_id)++;
         bool auto_advance = beat->auto_advance;
@@ -308,13 +319,14 @@ bool fl_timeline_apply(const Fl_Project *p, Fl_Scene *s, const Fl_Op *op, uint64
             split_anchor(&((Fl_AudioClip *)s->clips)[c].start, op->beat, id, left, right);
         beat->duration = (uint64_t)left;
         place_beat(s, i + 1, (Fl_Beat){id, name, (uint64_t)right, auto_advance});
+        for (size_t j=0;j<script_count;++j) {fl_component_clear(scripts[j].target); *scripts[j].target=scripts[j].value;}
+        free(scripts);
         *created = id;
         return true;
     }
     case FL_OP_BEAT_REMOVE: {
         size_t i = beat_index(s, op->beat);
         if (i == SIZE_MAX || s->beat_count < 2) return false;
-        remove_beat_content(s, op->beat);
         for (size_t e = 0; e < s->entity_count; ++e) {
             Fl_Animation *a = (Fl_Animation *)fl_entity_animation(&s->entities[e]);
             for (size_t t = a ? a->track_count : 0; t > 0; --t)
@@ -333,7 +345,6 @@ bool fl_timeline_apply(const Fl_Project *p, Fl_Scene *s, const Fl_Op *op, uint64
         char *name = copy_text(op->name);
         if (!name) return false;
         Fl_Beat *b = (Fl_Beat *)&s->beats[i];
-        scale_beat_keys(s, b->id, b->duration, op->beat_duration);
         free((void *)b->name);
         b->name = name; b->duration = op->beat_duration; b->auto_advance = op->auto_advance;
         sync_duration(s);
@@ -351,8 +362,7 @@ bool fl_timeline_apply(const Fl_Project *p, Fl_Scene *s, const Fl_Op *op, uint64
     case FL_OP_KEY_SET: {
         if (!key_op_valid(s, op)) return false;
         Fl_TimeAnchor anchor = op->anchor;
-        if (anchor.kind == FL_ANCHOR_ABSOLUTE) anchor = fl_anchor_at(s, anchor.offset);
-        else {
+        if (anchor.kind != FL_ANCHOR_ABSOLUTE) {
             Fl_Tick start, end, time = fl_anchor_resolve(s, &anchor);
             if (!fl_scene_beat_range(s, anchor.beat, &start, &end) || time < start || time > end) return false;
         }
@@ -541,17 +551,12 @@ void fl_timeline_free(Fl_Scene *s)
     s->beat_count = s->clip_count = 0;
 }
 
-/* Encode an anchor as kind, beat, end, offset. */
-static void put_anchor(Fl_Binary *b, const Fl_TimeAnchor *a)
+/* Decode an anchor through the shared snapshot schema. */
+static Fl_TimeAnchor get_anchor(Fl_Binary *stream)
 {
-    fl_binary_u64(b, (uint64_t)a->kind); fl_binary_u64(b, a->beat); fl_binary_u64(b, a->end); put_tick(b, a->offset);
-}
-static Fl_TimeAnchor get_anchor(Fl_Binary *b)
-{
-    uint64_t kind = fl_binary_get_u64(b), beat = fl_binary_get_u64(b), end = fl_binary_get_u64(b);
-    Fl_TimeAnchor a = {kind == FL_ANCHOR_BEAT ? FL_ANCHOR_BEAT : FL_ANCHOR_ABSOLUTE, beat, end != 0, get_tick(b)};
-    if (kind > FL_ANCHOR_BEAT || end > 1) b->failed = true;
-    return a;
+    Fl_TimeAnchor anchor = {0};
+    if (!fl_time_anchor_read(&anchor, stream)) stream->failed = true;
+    return anchor;
 }
 
 void fl_timeline_save(const Fl_Scene *s, Fl_Binary *b)
@@ -564,7 +569,7 @@ void fl_timeline_save(const Fl_Scene *s, Fl_Binary *b)
     fl_binary_u64(b, s->clip_count);
     for (size_t i = 0; i < s->clip_count; ++i) {
         const Fl_AudioClip *c = &s->clips[i];
-        fl_binary_u64(b, c->id); fl_binary_u64(b, c->asset); put_anchor(b, &c->start);
+        fl_binary_u64(b, c->id); fl_binary_u64(b, c->asset); fl_time_anchor_write(&c->start, b);
         fl_binary_u64(b, c->source_offset); fl_binary_u64(b, c->duration); put_double(b, c->gain);
         fl_binary_u64(b, c->fade_in); fl_binary_u64(b, c->fade_out);
     }
@@ -592,7 +597,7 @@ bool fl_timeline_load(Fl_Scene *s, Fl_Binary *b)
         beat->auto_advance = flags & 1;
         if (flags > 1) b->failed = true;
     }
-    size_t clips = b->failed ? 0 : get_count(b, sizeof(Fl_AudioClip), 88);
+    size_t clips = b->failed ? 0 : get_count(b, sizeof(Fl_AudioClip), 96);
     Fl_AudioClip *clip_storage = clips ? calloc(clips, sizeof(*clip_storage)) : NULL;
     if (clips && !clip_storage) return false;
     s->clips = clip_storage;

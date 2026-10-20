@@ -21,6 +21,7 @@ struct Fl_ScenePanel {
     Ca_Dock *dock;
     Ca_Window *window;
     Ca_Viewport *viewport;
+    Ca_Div *evaluation_overlay;
     Ca_Div *hierarchy;
     Ca_Div *scene_strip;
     Ca_Effect *keys;
@@ -63,7 +64,10 @@ static bool time_changed(const Fl_Event *event, void *data)
 {
     Fl_ScenePanel *p = data;
     const Fl_TimeChange *change = event->payload;
-    if (change->edit == p->edit && p->viewport) ca_viewport_request_redraw(p->viewport);
+    if (change->edit == p->edit) {
+        if (p->viewport) ca_viewport_request_redraw(p->viewport);
+        if (p->evaluation_overlay) ca_set_hidden(p->evaluation_overlay,!fl_scene_edit_evaluating(p->edit));
+    }
     return false;
 }
 
@@ -364,7 +368,7 @@ Fl_ScenePanel *fl_scene_panel_create(Fl_SceneEdit *edit, Fl_Fonts *fonts, Fl_Job
 
 void fl_scene_panel_teardown(void *data)
 {
-    Fl_ScenePanel *p = data; p->dock = NULL; p->window = NULL; p->viewport=NULL; p->hierarchy=NULL;p->scene_strip=NULL;
+    Fl_ScenePanel *p = data; p->dock = NULL; p->window = NULL; p->viewport=NULL; p->evaluation_overlay=NULL; p->hierarchy=NULL;p->scene_strip=NULL;
 }
 
 void fl_scene_panel_destroy(Fl_ScenePanel *p)
@@ -642,6 +646,10 @@ void fl_scene_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
         .on_scroll=stage_scroll,.scroll_data=p});
     p->viewport = ca_viewport(&(Ca_ViewportDesc){.on_render = fl_scene_preview_render, .render_data = p->preview, .id = "scene-viewport", .style = FL_CLASS_VIEWPORT});
     if (p->viewport) ca_viewport_request_redraw(p->viewport);
+    p->evaluation_overlay=ca_div_begin(&(Ca_DivDesc){.position=CA_POSITION_ABSOLUTE,.style=FL_CLASS_EVALUATION_STATUS,.no_hover=true});
+    ca_text(&(Ca_TextDesc){.text="Evaluating…",.style=FL_CLASS_MUTED});
+    ca_div_end();
+    ca_set_hidden(p->evaluation_overlay,!fl_scene_edit_evaluating(p->edit));
     ca_div_end();
     const char *canvas_items[]={"Center target frame",fl_scene_edit_snap(p->edit) ? "Disable grid snapping" : "Enable grid snapping"};
     ca_context_menu(&(Ca_CtxMenuDesc){.items=canvas_items,.item_count=2,.on_select=canvas_menu,.select_data=p});

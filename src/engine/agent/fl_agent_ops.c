@@ -1,4 +1,5 @@
 #include "fl_agent_internal.h"
+#include "doc/fl_document.h"
 #include "components/fl_script.h"
 #include "scripting/fl_script_runtime.h"
 #include "components/fl_style.h"
@@ -19,7 +20,7 @@ typedef struct Ctx {
 typedef bool (*OpFn)(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *fail);
 
 /* Add the created id to the result so later operations and the caller can use it. */
-static void report_id(cJSON *result, Fl_Id id) { cJSON_AddNumberToObject(result, "id", (double)id); }
+static void report_id(cJSON *result, Fl_Id id) { cJSON_AddItemToObject(result, "id", agent_id_json(id)); }
 
 static const Fl_Scene *need_scene(Ctx *x, const cJSON *op, const char *key, Fl_Fail *f, const char *ctx)
 {
@@ -311,27 +312,27 @@ static bool configure(Ctx *x, const Fl_Scene *scene, const Fl_Entity *e, const c
 
     unsigned char transform[56], appearance[24], typography[3 + FL_TYPOGRAPHY_FAMILY_MAX], image[8], alpha[8], style_bytes[FL_STYLE_BYTES], clip_bytes[FL_VIDEO_CLIP_BYTES];
     fl_transform_encode(&t, transform); fl_appearance_encode(&a, appearance); fl_opacity_encode(opacity, alpha);
-    Fl_Component components[8] = {{FL_COMPONENT_TRANSFORM, 1, 56, transform}, {FL_COMPONENT_OPACITY, 1, 8, alpha}};
+    Fl_Component components[8] = {{.type=FL_COMPONENT_TRANSFORM, .version=1, .size=56, .data=transform}, {.type=FL_COMPONENT_OPACITY, .version=1, .size=8, .data=alpha}};
     size_t count = 2;
-    if (def && def->kind != FL_WIDGET_GROUP && !def->has_image && !def->has_video) components[count++] = (Fl_Component){FL_COMPONENT_APPEARANCE, 1, 24, appearance};
+    if (def && def->kind != FL_WIDGET_GROUP && !def->has_image && !def->has_video) components[count++] = (Fl_Component){.type = FL_COMPONENT_APPEARANCE, .version = 1, .size = 24, .data = appearance};
     if (def && def->has_text) {
         size_t size = fl_typography_encode(&ty, typography);
         if (!size) return fl_fail(f, "invalid_argument", "%s: invalid typography", ctx);
         const unsigned char *bytes = text ? (const unsigned char *)text : current_text ? current_text->data : (const unsigned char *)"";
-        components[count++] = (Fl_Component){FL_COMPONENT_TEXT, 1, text ? strlen(text) : current_text ? current_text->size : 0, bytes};
-        components[count++] = (Fl_Component){FL_COMPONENT_TYPOGRAPHY, 1, size, typography};
+        components[count++] = (Fl_Component){.type = FL_COMPONENT_TEXT, .version = 1, .size = text ? strlen(text) : current_text ? current_text->size : 0, .data = bytes};
+        components[count++] = (Fl_Component){.type = FL_COMPONENT_TYPOGRAPHY, .version = 1, .size = size, .data = typography};
     }
     if (def && def->has_image && asset) {
         fl_image_asset_encode(asset, image);
-        components[count++] = (Fl_Component){FL_COMPONENT_IMAGE, 1, 8, image};
+        components[count++] = (Fl_Component){.type = FL_COMPONENT_IMAGE, .version = 1, .size = 8, .data = image};
     }
     if (def && def->has_video && has_clip) {
         fl_video_clip_encode(&clip, clip_bytes);
-        components[count++] = (Fl_Component){FL_COMPONENT_VIDEO, 1, FL_VIDEO_CLIP_BYTES, clip_bytes};
+        components[count++] = (Fl_Component){.type = FL_COMPONENT_VIDEO, .version = 1, .size = FL_VIDEO_CLIP_BYTES, .data = clip_bytes};
     }
     if (style_given || fl_entity_component(e, FL_COMPONENT_STYLE)) {
         fl_style_encode(&style, style_bytes);
-        components[count++] = (Fl_Component){FL_COMPONENT_STYLE, 1, FL_STYLE_BYTES, style_bytes};
+        components[count++] = (Fl_Component){.type = FL_COMPONENT_STYLE, .version = 1, .size = FL_STYLE_BYTES, .data = style_bytes};
     }
     return apply(x, &(Fl_Op){.kind = FL_OP_ENTITY_CONFIGURE, .scene = scene->id, .entity = e->id, .name = name, .visible = visible,
                              .components = components, .component_count = count}, NULL) || rejected(f, ctx, "property values");
@@ -625,35 +626,56 @@ static bool clip_remove(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
 
 /* ---------- scripts ---------- */
 
-/* Report a Lua syntax error in a script just written, without undoing the write. */
-static void report_syntax(cJSON *result, const char *source, size_t size)
-{
-    char error[256];
-    if (!fl_script_check(source, size, error, sizeof(error))) cJSON_AddStringToObject(result, "syntax_error", error);
-}
-
-/* Resolve a `script` argument to its scene and repository entry. */
-static const Fl_ScriptSource *need_script(Ctx *x, const cJSON *op, const Fl_Scene **scene, Fl_Fail *f, const char *ctx)
+/* Resolve a project Lua asset by its typed identifier. */
+static const Fl_Asset *need_script(Ctx *x, const cJSON *op, Fl_Fail *f, const char *ctx)
 {
     Fl_Id id;
     if (!agent_get_id(op, "script", &x->refs, true, &id, f, ctx)) return NULL;
-    const Fl_Scene *s = agent_scene_of_script(x->project, id);
-    if (!s) {fl_fail(f, "not_found", "%s: no script with id %llu", ctx, (unsigned long long)id); return NULL;}
-    *scene = s;
-    return fl_scene_script(s, id);
+    const Fl_Asset *asset = fl_project_asset(x->project, id);
+    if (!asset || asset->kind != FL_ASSET_LUA) {
+        fl_fail(f, "not_found", "%s: no Lua asset with id %llu", ctx, (unsigned long long)id);
+        return NULL;
+    }
+    return asset;
+}
+
+/* Author editable asset bytes through the same validated document changeset as native editing. */
+static bool asset_source(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[]={"op","as","asset","kind","name","source",NULL};
+    const char *kind=NULL,*name=NULL,*source=NULL; Fl_Id asset=0,id=0;
+    if (!agent_only_keys(op,f,"asset.source",keys) || !agent_get_id(op,"asset",&x->refs,false,&asset,f,"asset.source") ||
+        !agent_get_string(op,"kind",true,&kind,f,"asset.source") || !agent_get_string(op,"name",false,&name,f,"asset.source") ||
+        !agent_get_string(op,"source",false,&source,f,"asset.source")) return false;
+    Fl_AssetKind type=!strcmp(kind,"lua") ? FL_ASSET_LUA : !strcmp(kind,"flproto") ? FL_ASSET_PROTOTYPE : 0;
+    if (!type) return fl_fail(f,"invalid_argument","asset.source: kind must be lua or flproto");
+    if (!apply(x,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET,.source_kind=type,.asset=asset,.name=name,.source=source,.source_size=source ? strlen(source) : 0},&id))
+        return rejected(f,"asset.source",fl_project_diagnostic(x->project)[0] ? fl_project_diagnostic(x->project) : "invalid source asset changeset");
+    report_id(result,id ? id : asset); return true;
+}
+
+/* Rename or delete an ordinary project asset; referenced assets cannot be removed. */
+static bool asset_edit(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    (void)result;
+    static const char *const rename_keys[]={"op","as","asset","name",NULL}, *const remove_keys[]={"op","as","asset",NULL};
+    const char *action=cJSON_GetObjectItemCaseSensitive(op,"op")->valuestring,*name=NULL; Fl_Id asset=0;
+    bool rename=!strcmp(action,"asset.rename");
+    if (!agent_only_keys(op,f,action,rename ? rename_keys : remove_keys) || !agent_get_id(op,"asset",&x->refs,true,&asset,f,action) ||
+        (rename && !agent_get_string(op,"name",true,&name,f,action))) return false;
+    return apply(x,&(Fl_Op){.kind=rename ? FL_OP_ASSET_RENAME : FL_OP_ASSET_REMOVE,.asset=asset,.name=name},NULL) || rejected(f,action,"asset is missing, referenced or has an invalid name");
 }
 
 static bool script_create(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
 {
-    static const char *const keys[] = {"op", "as", "scene", "name", "source", NULL};
-    const Fl_Scene *s; const char *name, *source;
-    if (!agent_only_keys(op, f, "script.create", keys) || !(s = need_scene(x, op, "scene", f, "script.create")) ||
+    static const char *const keys[] = {"op", "as", "name", "source", NULL};
+    const char *name, *source;
+    if (!agent_only_keys(op, f, "script.create", keys) ||
         !agent_get_string(op, "name", true, &name, f, "script.create") || !agent_get_string(op, "source", true, &source, f, "script.create")) return false;
     Fl_Id id = 0;
-    if (!apply(x, &(Fl_Op){.kind = FL_OP_SCRIPT_SET, .scene = s->id, .name = name, .source = source, .source_size = strlen(source)}, &id))
-        return rejected(f, "script.create", "name must be 1..64 characters and unused in the scene; source 1..131072 bytes without NUL");
+    if (!apply(x, &(Fl_Op){.kind = FL_OP_ASSET_SOURCE_SET, .source_kind=FL_ASSET_LUA, .name = name, .source = source, .source_size = strlen(source)}, &id))
+        return rejected(f,"script.create",fl_project_diagnostic(x->project)[0] ? fl_project_diagnostic(x->project) : "name must be unique; source must be bounded valid Lua");
     report_id(result, id);
-    report_syntax(result, source, strlen(source));
     return true;
 }
 
@@ -687,29 +709,29 @@ static char *edited_source(const char *text, size_t size, const cJSON *edits, si
 
 static bool script_update(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
 {
+    (void)result;
     static const char *const keys[] = {"op", "as", "script", "name", "source", "edits", NULL};
-    const Fl_Scene *s; const Fl_ScriptSource *script; const char *name = NULL, *source = NULL;
-    if (!agent_only_keys(op, f, "script.update", keys) || !(script = need_script(x, op, &s, f, "script.update")) ||
+    const Fl_Asset *script; const char *name = NULL, *source = NULL;
+    if (!agent_only_keys(op, f, "script.update", keys) || !(script = need_script(x, op, f, "script.update")) ||
         !agent_get_string(op, "name", false, &name, f, "script.update") || !agent_get_string(op, "source", false, &source, f, "script.update")) return false;
     const cJSON *edits = cJSON_GetObjectItemCaseSensitive(op, "edits");
     if (source && edits) return fl_fail(f, "invalid_argument", "script.update: give source or edits, not both");
     if (!name && !source && !edits) return fl_fail(f, "missing_field", "script.update: give name, source or edits");
     char *patched = NULL; size_t size = source ? strlen(source) : 0;
-    if (edits && !(patched = edited_source(script->source, script->source_size, edits, &size, f))) return false;
+    if (edits && !(patched = edited_source(script->source, script->size, edits, &size, f))) return false;
     const char *text = patched ? patched : source;
-    bool ok = apply(x, &(Fl_Op){.kind = FL_OP_SCRIPT_SET, .scene = s->id, .script = script->id, .name = name, .source = text, .source_size = size}, NULL);
-    if (ok && text) report_syntax(result, text, size);
+    bool ok = apply(x, &(Fl_Op){.kind = FL_OP_ASSET_SOURCE_SET, .source_kind=FL_ASSET_LUA, .asset = script->id, .name = name, .source = text, .source_size = size}, NULL);
     free(patched);
-    return ok || rejected(f, "script.update", "name must be 1..64 characters and unused in the scene; source 1..131072 bytes without NUL");
+    return ok || rejected(f,"script.update",fl_project_diagnostic(x->project)[0] ? fl_project_diagnostic(x->project) : "name must be unique; source must be bounded valid Lua");
 }
 
 static bool script_remove(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
 {
     static const char *const keys[] = {"op", "as", "script", NULL};
     (void)result;
-    const Fl_Scene *s; const Fl_ScriptSource *script;
-    if (!agent_only_keys(op, f, "script.remove", keys) || !(script = need_script(x, op, &s, f, "script.remove"))) return false;
-    return apply(x, &(Fl_Op){.kind = FL_OP_SCRIPT_REMOVE, .scene = s->id, .script = script->id}, NULL) || rejected(f, "script.remove", "script");
+    const Fl_Asset *script;
+    if (!agent_only_keys(op, f, "script.remove", keys) || !(script = need_script(x, op, f, "script.remove"))) return false;
+    return apply(x, &(Fl_Op){.kind = FL_OP_ASSET_REMOVE, .asset = script->id}, NULL) || rejected(f, "script.remove", "script");
 }
 
 static bool script_attach(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
@@ -721,9 +743,11 @@ static bool script_attach(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
         !agent_get_bool(op, "enabled", &enabled, NULL, f, "script.attach")) return false;
     Fl_Id id;
     if (!agent_get_id(op, "script", &x->refs, true, &id, f, "script.attach")) return false;
-    if (!fl_scene_script(s, id)) return fl_fail(f, "not_found", "script.attach: the scene of %s has no script with id %llu", e->name, (unsigned long long)id);
+    if (!fl_project_asset(s->project, id)) return fl_fail(f, "not_found", "script.attach: the scene of %s has no script with id %llu", e->name, (unsigned long long)id);
     Fl_Component component = {0};
     if (!fl_script_encode(&(Fl_Script){.script = id, .enabled = enabled}, &component)) return fl_fail(f, "internal", "script.attach: out of memory");
+    const Fl_Component *existing=fl_entity_script_component(e,id);
+    if (existing) component.id=existing->id;
     bool ok = apply(x, &(Fl_Op){.kind = FL_OP_COMPONENT_SET, .scene = s->id, .entity = e->id, .component = component}, NULL);
     free((void *)component.data);
     return ok || rejected(f, "script.attach", "script component");
@@ -739,6 +763,31 @@ static bool script_detach(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
            fl_fail(f, "not_found", "script.detach: %s has no script", e->name);
 }
 
+/* Set a complete typed component instance using the same schema as project files. */
+static bool component_set(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[]={"op","as","entity","value",NULL};
+    const Fl_Scene *scene; const Fl_Entity *entity;
+    if (!agent_only_keys(op,f,"component.set",keys) || !(entity=need_entity(x,op,"entity",&scene,f,"component.set"))) return false;
+    Fl_Json context={0}; Fl_Component component={0};
+    bool decoded=fl_document_component_read(&context,cJSON_GetObjectItemCaseSensitive(op,"value"),entity->id,&component);
+    if (!decoded) {fl_component_clear(&component); return fl_fail(f,"invalid_argument","component.set: %s",context.error);}
+    Fl_Id id=0; bool ok=apply(x,&(Fl_Op){.kind=FL_OP_COMPONENT_SET,.scene=scene->id,.entity=entity->id,.component=component},&id);
+    fl_component_clear(&component);
+    if (ok) report_id(result,id);
+    return ok || rejected(f,"component.set","component identity, schema or binding");
+}
+
+/* Remove exactly one optional component by its stable instance identity. */
+static bool component_remove(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    (void)result; static const char *const keys[]={"op","as","entity","component",NULL};
+    const Fl_Scene *scene; const Fl_Entity *entity; Fl_Id id;
+    if (!agent_only_keys(op,f,"component.remove",keys) || !(entity=need_entity(x,op,"entity",&scene,f,"component.remove")) ||
+        !agent_get_id(op,"component",&x->refs,true,&id,f,"component.remove")) return false;
+    return apply(x,&(Fl_Op){.kind=FL_OP_COMPONENT_REMOVE,.scene=scene->id,.entity=entity->id,.component.id=id},NULL) || rejected(f,"component.remove","component instance");
+}
+
 static const struct {const char *name; OpFn run;} OPERATIONS[] = {
     {"scene.add", scene_add}, {"scene.remove", scene_remove}, {"scene.rename", scene_rename}, {"scene.move", scene_move}, {"scene.set", scene_set},
     {"entity.create", entity_create}, {"entity.set", entity_set}, {"entity.remove", entity_remove}, {"entity.reparent", entity_reparent},
@@ -746,8 +795,10 @@ static const struct {const char *name; OpFn run;} OPERATIONS[] = {
     {"key.set", key_set}, {"key.remove", key_remove}, {"track.remove", track_remove},
     {"beat.add", beat_add}, {"beat.update", beat_update}, {"beat.remove", beat_remove}, {"beat.move", beat_move}, {"beat.split", beat_split},
     {"clip.add", clip_add}, {"clip.update", clip_update}, {"clip.remove", clip_remove},
+    {"asset.source", asset_source}, {"asset.rename", asset_edit}, {"asset.remove", asset_edit},
     {"script.create", script_create}, {"script.update", script_update}, {"script.remove", script_remove},
     {"script.attach", script_attach}, {"script.detach", script_detach},
+    {"component.set",component_set}, {"component.remove",component_remove},
 };
 
 /* Run one operation and register its `as` name; the result object already holds the op name. */
@@ -768,7 +819,8 @@ static bool run_op(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
         if (as) {
             if (!id) return fl_fail(f, "invalid_argument", "%s creates nothing, so \"as\" has no id to name", name);
             snprintf(x->refs.names[x->refs.count], sizeof(x->refs.names[0]), "%s", as);
-            x->refs.ids[x->refs.count++] = (Fl_Id)id->valuedouble;
+            if (!agent_id_value(id, NULL, &x->refs.ids[x->refs.count], f, name)) return false;
+            ++x->refs.count;
             cJSON_AddStringToObject(result, "as", as);
         }
         return true;
@@ -784,10 +836,13 @@ static bool check_expectations(Fl_Project *p, const cJSON *expect, cJSON **error
     if (!cJSON_IsObject(expect)) {fl_fail(&fail, "invalid_argument", "expect must map scene ids to revisions"); *error = fl_fail_json(&fail); return false;}
     cJSON *stale = NULL;
     for (const cJSON *item = expect->child; item; item = item->next) {
-        char *end; unsigned long long id = strtoull(item->string, &end, 10);
-        const Fl_Scene *s = *end || !id ? NULL : fl_project_scene(p, id);
-        if (!cJSON_IsNumber(item) || !s) {fl_fail(&fail, "invalid_argument", "expect: \"%s\" is not a scene id with a numeric revision", item->string); cJSON_Delete(stale); *error = fl_fail_json(&fail); return false;}
-        if ((double)s->revision != item->valuedouble) {
+        Fl_Id id, revision; Fl_Json json = {0};
+        cJSON *key = cJSON_CreateString(item->string);
+        bool valid = key && fl_json_uint(&json, key, &id) && id && fl_json_uint(&json, item, &revision) && revision;
+        cJSON_Delete(key);
+        const Fl_Scene *s = valid ? fl_project_scene(p, id) : NULL;
+        if (!s) {fl_fail(&fail, "invalid_argument", "expect: %s requires an exact scene id and revision", item->string); cJSON_Delete(stale); *error = fl_fail_json(&fail); return false;}
+        if (s->revision != revision) {
             if (!stale) stale = cJSON_CreateArray();
             if (stale) cJSON_AddItemToArray(stale, agent_scene_summary(s));
         }
@@ -818,7 +873,7 @@ cJSON *agent_tool_apply_ops(Fl_Agent *agent, const cJSON *args, cJSON **error)
     Ctx x = {.project = project};
     x.refs.names = calloc(FL_AGENT_MAX_REFS, sizeof(*x.refs.names)); x.refs.ids = calloc(FL_AGENT_MAX_REFS, sizeof(*x.refs.ids));
     cJSON *results = cJSON_CreateArray();
-    if (!x.refs.names || !x.refs.ids || !results || !fl_history_begin(agent->history, project, label)) {
+    if (!x.refs.names || !x.refs.ids || !results || !fl_project_edit_begin(project,label,false)) {
         free(x.refs.names); free(x.refs.ids); cJSON_Delete(results);
         fl_fail(&fail, "internal", "out of memory preparing the changeset"); *error = fl_fail_json(&fail); return NULL;
     }
@@ -835,8 +890,7 @@ cJSON *agent_tool_apply_ops(Fl_Agent *agent, const cJSON *args, cJSON **error)
     }
     cJSON *out = NULL;
     if (!ok) {
-        bool changed = fl_project_generation(project) != start;
-        if (changed) fl_history_rollback(agent->history, project); else fl_history_discard(agent->history);
+        if (!fl_project_edit_cancel(project)) fl_fail(&fail,"internal","failed to cancel document changeset");
         *error = fl_fail_json(&fail);
         if (*error) {
             cJSON_AddNumberToObject(*error, "op_index", index);
@@ -847,9 +901,13 @@ cJSON *agent_tool_apply_ops(Fl_Agent *agent, const cJSON *args, cJSON **error)
         cJSON_Delete(failing_op); cJSON_Delete(results);
     } else {
         bool changed = fl_project_generation(project) != start;
-        if (dry_run && changed) fl_history_rollback(agent->history, project);
-        else if (changed) fl_history_commit(agent->history, project);
-        else fl_history_discard(agent->history);
+        bool valid=!dry_run || fl_project_edit_validate(project);
+        bool finished=changed && !dry_run ? fl_project_edit_commit(project) : fl_project_edit_cancel(project);
+        bool completed=valid && finished;
+        if (!completed) {
+            cJSON_Delete(results); free(x.refs.names); free(x.refs.ids);
+            fl_fail(&fail,"rejected","%s",fl_project_diagnostic(project)[0] ? fl_project_diagnostic(project) : "failed to complete document changeset"); *error=fl_fail_json(&fail); return NULL;
+        }
         out = cJSON_CreateObject();
         cJSON *scenes = out ? cJSON_AddArrayToObject(out, "scenes") : NULL;
         if (out) {
@@ -857,7 +915,7 @@ cJSON *agent_tool_apply_ops(Fl_Agent *agent, const cJSON *args, cJSON **error)
             cJSON_AddNumberToObject(out, "applied", index);
             cJSON_AddItemToObject(out, "results", results);
             for (size_t i = 0; scenes && i < fl_project_scene_count(project); ++i) cJSON_AddItemToArray(scenes, agent_scene_summary(fl_project_scene_at(project, i)));
-            cJSON_AddNumberToObject(out, "undo_available", (double)fl_history_undo_count(agent->history));
+            cJSON_AddNumberToObject(out, "undo_available", (double)fl_history_undo_count(fl_project_history(project)));
         } else cJSON_Delete(results);
     }
     free(x.refs.names); free(x.refs.ids);

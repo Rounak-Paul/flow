@@ -1,4 +1,5 @@
 #include "fl_agent_internal.h"
+#include "doc/fl_json.h"
 #include "core/fl_log.h"
 #include "media/fl_png.h"
 #include "media/fl_video_cache.h"
@@ -9,8 +10,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define HISTORY_ENTRIES 64u
-#define HISTORY_BYTES (256u * 1024u * 1024u)
 
 typedef cJSON *(*ToolFn)(Fl_Agent *agent, const cJSON *args, cJSON **error);
 
@@ -34,8 +33,6 @@ Fl_Agent *fl_agent_create(const Fl_AgentHost *host)
     Fl_Agent *a = calloc(1, sizeof(*a));
     if (!a) return NULL;
     a->host = *host;
-    a->history = fl_history_create(HISTORY_ENTRIES, HISTORY_BYTES);
-    if (!a->history) {fl_agent_destroy(a); return NULL;}
     return a;
 }
 
@@ -50,10 +47,9 @@ void fl_agent_destroy(Fl_Agent *a)
 {
     if (!a) return;
     drop_frames(a);
-    fl_history_destroy(a->history); free(a->bindings); free(a);
+    free(a->bindings); free(a);
 }
 
-void fl_agent_reset(Fl_Agent *a) { if (a) fl_history_clear(a->history); }
 
 static Fl_Project *project_or_fail(Fl_Agent *a, cJSON **error)
 {
@@ -93,7 +89,7 @@ static cJSON *tool_get_project(Fl_Agent *a, const cJSON *args, cJSON **error)
         const Fl_Asset *asset = fl_project_asset_at(p, i);
         cJSON_AddItemToArray(assets, agent_asset_json(asset, fl_project_asset_uses(p, asset->id)));
     }
-    cJSON_AddItemToObject(o, "history", history_json(a->history));
+    cJSON_AddItemToObject(o, "history", history_json(fl_project_history(p)));
     return o;
 }
 
@@ -109,6 +105,23 @@ static const Fl_Scene *scene_arg(Fl_Agent *a, const cJSON *args, Fl_Project **pr
     return s;
 }
 
+/* Read accepted asset metadata and current source bytes, including unsaved source edits. */
+static cJSON *tool_get_asset(Fl_Agent *a, const cJSON *args, cJSON **error)
+{
+    static const char *const keys[]={"asset",NULL};
+    Fl_Project *project=project_or_fail(a,error); Fl_Fail fail; Fl_Id id=0;
+    if (!project) return NULL;
+    if (!agent_only_keys(args,&fail,"get_asset",keys) || !agent_get_id(args,"asset",NULL,true,&id,&fail,"get_asset")) {*error=fl_fail_json(&fail); return NULL;}
+    const Fl_Asset *asset=fl_project_asset(project,id);
+    if (!asset) {fl_fail(&fail,"not_found","get_asset: no asset with id %llu",(unsigned long long)id); *error=fl_fail_json(&fail); return NULL;}
+    cJSON *out=cJSON_CreateObject(), *value=agent_asset_json(asset,fl_project_asset_uses(project,id));
+    Fl_Json context={0};
+    if (!fl_json_add(&context,out,"asset",value)) {cJSON_Delete(out); return NULL;}
+    if (asset->source) fl_json_add(&context,value,"source",cJSON_CreateString(asset->source));
+    if (context.error[0]) {cJSON_Delete(out); return NULL;}
+    return out;
+}
+
 static cJSON *tool_get_scene(Fl_Agent *a, const cJSON *args, cJSON **error)
 {
     static const char *const keys[] = {"scene", "include_scripts", NULL};
@@ -119,77 +132,91 @@ static cJSON *tool_get_scene(Fl_Agent *a, const cJSON *args, cJSON **error)
 }
 
 /* Resolve a `script` argument given as an id or an exact name; NULL when it names nothing. */
-static const Fl_ScriptSource *script_arg(const Fl_Scene *s, const cJSON *item)
+static const Fl_Asset *script_arg(const Fl_Project *p, const cJSON *item)
 {
-    if (cJSON_IsString(item)) return fl_scene_script_named(s, item->valuestring);
-    return cJSON_IsNumber(item) ? fl_scene_script(s, (Fl_Id)item->valuedouble) : NULL;
+    if (cJSON_IsString(item)) {
+        const Fl_Asset *named = fl_project_asset_named(p, FL_ASSET_LUA, item->valuestring);
+        if (named) return named;
+    }
+    Fl_Id id; Fl_Fail fail;
+    if (!agent_id_value(item,NULL,&id,&fail,"script")) return NULL;
+    const Fl_Asset *asset = fl_project_asset(p, id);
+    return asset && asset->kind == FL_ASSET_LUA ? asset : NULL;
 }
 
 static cJSON *tool_get_script(Fl_Agent *a, const cJSON *args, cJSON **error)
 {
-    static const char *const keys[] = {"scene", "script", NULL};
+    static const char *const keys[] = {"script", NULL};
     Fl_Fail fail; Fl_Project *p;
     if (!agent_only_keys(args, &fail, "get_script", keys)) {*error = fl_fail_json(&fail); return NULL;}
-    const Fl_Scene *s = scene_arg(a, args, &p, &fail, error);
-    if (!s) return NULL;
+    p = project_or_fail(a, error);
+    if (!p) return NULL;
     const cJSON *item = cJSON_GetObjectItemCaseSensitive(args, "script");
     cJSON *out = cJSON_CreateObject();
     if (!out) return NULL;
-    cJSON_AddNumberToObject(out, "scene", (double)s->id);
     if (item) {
-        const Fl_ScriptSource *script = script_arg(s, item);
-        if (!script) {cJSON_Delete(out); fl_fail(&fail, "not_found", "get_script: the scene has no script %s", cJSON_IsString(item) ? item->valuestring : "with that id"); *error = fl_fail_json(&fail); return NULL;}
-        cJSON_AddItemToObject(out, "script", agent_script_json(s, script, true));
+        const Fl_Asset *script = script_arg(p, item);
+        if (!script) {cJSON_Delete(out); fl_fail(&fail, "not_found", "get_script: the project has no Lua asset %s", cJSON_IsString(item) ? item->valuestring : "with that id"); *error = fl_fail_json(&fail); return NULL;}
+        cJSON_AddItemToObject(out, "script", agent_script_json(p, script, true));
         return out;
     }
     cJSON *list = cJSON_AddArrayToObject(out, "scripts");
-    for (size_t i = 0; list && i < s->script_count; ++i) cJSON_AddItemToArray(list, agent_script_json(s, &s->scripts[i], false));
+    for (size_t i=0; list && i<fl_project_asset_count(p); ++i) {
+        const Fl_Asset *asset=fl_project_asset_at(p,i);
+        if (asset->kind==FL_ASSET_LUA) cJSON_AddItemToArray(list,agent_script_json(p,asset,false));
+    }
     return out;
 }
 
 static cJSON *tool_set_script(Fl_Agent *a, const cJSON *args, cJSON **error)
 {
-    static const char *const keys[] = {"scene", "script", "name", "source", "edits", "attach", "enabled", NULL};
+    static const char *const keys[] = {"script", "name", "source", "edits", "attach", "enabled", NULL};
     Fl_Fail fail; Fl_Project *p;
     if (!agent_only_keys(args, &fail, "set_script", keys)) {*error = fl_fail_json(&fail); return NULL;}
-    const Fl_Scene *s = scene_arg(a, args, &p, &fail, error);
-    if (!s) return NULL;
+    p = project_or_fail(a, error);
+    if (!p) return NULL;
     const cJSON *item = cJSON_GetObjectItemCaseSensitive(args, "script"), *name = cJSON_GetObjectItemCaseSensitive(args, "name"),
                 *source = cJSON_GetObjectItemCaseSensitive(args, "source"), *edits = cJSON_GetObjectItemCaseSensitive(args, "edits"),
                 *attach = cJSON_GetObjectItemCaseSensitive(args, "attach"), *enabled = cJSON_GetObjectItemCaseSensitive(args, "enabled");
-    const Fl_ScriptSource *script = script_arg(s, item);
+    if ((attach && !cJSON_IsArray(attach)) || (enabled && !cJSON_IsBool(enabled))) {
+        fl_fail(&fail,"invalid_argument","attach must be an array and enabled must be boolean"); *error=fl_fail_json(&fail); return NULL;
+    }
+    const Fl_Asset *script = script_arg(p, item);
     if (item && !script && !(cJSON_IsString(item) && source)) {
-        fl_fail(&fail, "not_found", "set_script: the scene has no script %s", cJSON_IsString(item) ? item->valuestring : "with that id"); *error = fl_fail_json(&fail); return NULL;
+        fl_fail(&fail, "not_found", "set_script: the project has no Lua asset %s", cJSON_IsString(item) ? item->valuestring : "with that id"); *error = fl_fail_json(&fail); return NULL;
     }
-    cJSON *ops = cJSON_CreateArray(), *write = cJSON_CreateObject(), *request = cJSON_CreateObject();
-    cJSON *target = NULL;
+    cJSON *ops=cJSON_CreateArray(), *write=cJSON_CreateObject(), *request=cJSON_CreateObject();
+    Fl_Json context={0};
     if (!ops || !write || !request) goto memory;
+    if (!cJSON_AddItemToArray(ops,write)) goto memory;
+    cJSON *operation=write; write=NULL;
     if (script) {
-        cJSON_AddStringToObject(write, "op", "script.update"); cJSON_AddNumberToObject(write, "script", (double)script->id);
-        if (name) cJSON_AddItemToObject(write, "name", cJSON_Duplicate(name, 1));
-        if (source) cJSON_AddItemToObject(write, "source", cJSON_Duplicate(source, 1));
-        if (edits) cJSON_AddItemToObject(write, "edits", cJSON_Duplicate(edits, 1));
+        fl_json_add(&context,operation,"op",cJSON_CreateString("script.update"));
+        fl_json_add(&context,operation,"script",agent_id_json(script->id));
+        if (name) fl_json_add(&context,operation,"name",cJSON_Duplicate(name,1));
+        if (source) fl_json_add(&context,operation,"source",cJSON_Duplicate(source,1));
+        if (edits) fl_json_add(&context,operation,"edits",cJSON_Duplicate(edits,1));
     } else {
-        cJSON_AddStringToObject(write, "op", "script.create"); cJSON_AddNumberToObject(write, "scene", (double)s->id);
-        cJSON_AddStringToObject(write, "as", "$script");
-        cJSON_AddItemToObject(write, "name", cJSON_Duplicate(name ? name : item, 1));
-        if (source) cJSON_AddItemToObject(write, "source", cJSON_Duplicate(source, 1));
+        fl_json_add(&context,operation,"op",cJSON_CreateString("script.create"));
+        fl_json_add(&context,operation,"as",cJSON_CreateString("$script"));
+        if (name || item) fl_json_add(&context,operation,"name",cJSON_Duplicate(name ? name : item,1));
+        if (source) fl_json_add(&context,operation,"source",cJSON_Duplicate(source,1));
     }
-    cJSON_AddItemToArray(ops, write);
-    for (const cJSON *entity = cJSON_IsArray(attach) ? attach->child : NULL; entity; entity = entity->next) {
-        cJSON *op = cJSON_CreateObject();
-        if (!op) goto memory;
-        cJSON_AddStringToObject(op, "op", "script.attach");
-        cJSON_AddItemToObject(op, "entity", cJSON_Duplicate(entity, 1));
-        if (script) cJSON_AddNumberToObject(op, "script", (double)script->id); else cJSON_AddStringToObject(op, "script", "$script");
-        if (enabled) cJSON_AddItemToObject(op, "enabled", cJSON_Duplicate(enabled, 1));
-        cJSON_AddItemToArray(ops, op);
+    if (context.error[0]) goto memory;
+    for (const cJSON *entity=attach ? attach->child : NULL;entity;entity=entity->next) {
+        cJSON *op=cJSON_CreateObject();
+        if (!fl_json_add(&context,ops,NULL,op)) goto memory;
+        fl_json_add(&context,op,"op",cJSON_CreateString("script.attach"));
+        fl_json_add(&context,op,"entity",cJSON_Duplicate(entity,1));
+        fl_json_add(&context,op,"script",script ? agent_id_json(script->id) : cJSON_CreateString("$script"));
+        if (enabled) fl_json_add(&context,op,"enabled",cJSON_Duplicate(enabled,1));
+        if (context.error[0]) goto memory;
     }
-    cJSON_AddItemToObject(request, "ops", ops); ops = NULL;
-    cJSON_AddStringToObject(request, "label", "Edit script");
-    target = agent_tool_apply_ops(a, request, error);
-    cJSON_Delete(request);
-    return target;
+    fl_json_add(&context,request,"ops",ops); ops=NULL;
+    fl_json_add(&context,request,"label",cJSON_CreateString("Edit script"));
+    if (context.error[0]) goto memory;
+    cJSON *result=agent_tool_apply_ops(a,request,error);
+    cJSON_Delete(request); return result;
 memory:
     cJSON_Delete(ops); cJSON_Delete(write); cJSON_Delete(request);
     fl_fail(&fail, "internal", "out of memory"); *error = fl_fail_json(&fail);
@@ -210,14 +237,14 @@ static cJSON *tool_evaluate_scene(Fl_Agent *a, const cJSON *args, cJSON **error)
     Fl_SceneState state = {0};
     if (!fl_scene_state_update(&state, s, tick)) {fl_fail(&fail, "internal", "out of memory"); *error = fl_fail_json(&fail); return NULL;}
     cJSON *o = cJSON_CreateObject(), *list = o ? cJSON_AddArrayToObject(o, "entities") : NULL;
-    if (o) {cJSON_AddNumberToObject(o, "scene", (double)s->id); cJSON_AddNumberToObject(o, "time", agent_ticks_to_seconds(tick));}
+    if (o) {cJSON_AddItemToObject(o, "scene", agent_id_json(s->id)); cJSON_AddNumberToObject(o, "time", agent_ticks_to_seconds(tick));}
     for (size_t i = 0; list && i < s->entity_count; ++i) {
         const Fl_Entity *e = &s->entities[i];
         const Fl_EntityState *v = &state.entities[i];
         const Fl_WidgetDef *def = fl_widget_for_entity(e);
         cJSON *item = cJSON_CreateObject();
         if (!item) break;
-        cJSON_AddNumberToObject(item, "id", (double)e->id);
+        cJSON_AddItemToObject(item, "id", agent_id_json(e->id));
         cJSON_AddStringToObject(item, "name", e->name);
         cJSON_AddNumberToObject(item, "x", v->transform.x); cJSON_AddNumberToObject(item, "y", v->transform.y);
         cJSON_AddNumberToObject(item, "width", v->transform.width); cJSON_AddNumberToObject(item, "height", v->transform.height);
@@ -226,7 +253,20 @@ static cJSON *tool_evaluate_scene(Fl_Agent *a, const cJSON *args, cJSON **error)
         cJSON_AddNumberToObject(item, "opacity", v->opacity);
         if (def && def->has_fill) agent_color_json(item, "fill", v->appearance.fill);
         if (def && def->has_stroke) {agent_color_json(item, "stroke", v->appearance.stroke); cJSON_AddNumberToObject(item, "stroke_width", v->appearance.stroke_width);}
-        if (def && def->has_text) cJSON_AddNumberToObject(item, "font_size", v->appearance.font_size);
+        if (def && def->has_text) {
+            cJSON_AddNumberToObject(item, "font_size", v->appearance.font_size);
+            const Fl_Component *text = fl_entity_component(e, FL_COMPONENT_TEXT);
+            cJSON *content = v->text_override ? cJSON_CreateString(v->text) : NULL;
+            if (!v->text_override && text) {
+                char *copy = malloc(text->size + 1);
+                if (copy) {memcpy(copy, text->data, text->size); copy[text->size] = 0; content = cJSON_CreateString(copy); free(copy);}
+            }
+            if (content) cJSON_AddItemToObject(item, "text", content);
+        }
+        if (fl_entity_component(e, FL_COMPONENT_IMAGE) || fl_entity_component(e, FL_COMPONENT_VIDEO)) {
+            cJSON *crop = cJSON_AddArrayToObject(item, "crop");
+            for (size_t c = 0; crop && c < 4; ++c) cJSON_AddItemToArray(crop,cJSON_CreateNumber(v->crop[c]));
+        }
         const char *script_error = fl_script_runtime_error(state.scripts, i);
         if (script_error && script_error[0]) cJSON_AddStringToObject(item, "script_error", script_error);
         cJSON_AddItemToArray(list, item);
@@ -269,29 +309,22 @@ static cJSON *tool_import_asset(Fl_Agent *a, const cJSON *args, cJSON **error)
     Fl_ImportStatus status = fl_asset_store_file(fl_project_directory(p), path, &stored);
     if (status == FL_IMPORT_UNSUPPORTED || status == FL_IMPORT_FAILED) {
         fl_fail(&fail, status == FL_IMPORT_UNSUPPORTED ? "unsupported" : "failed", status == FL_IMPORT_UNSUPPORTED ?
-                "Flow cannot import that file: supported are common image, video, audio and font files" : "The file could not be read or stored");
+                "Flow cannot import that file: supported are Lua, Flow prototype, image, video, audio and font files" : "The file could not be read or stored");
         *error = fl_fail_json(&fail); return NULL;
     }
-    const Fl_Asset *asset = fl_project_asset_by_hash(p, stored.hash);
-    bool added = false;
-    if (!asset) {
-        char display[256];
-        const char *base = strrchr(path, '/'); const char *base2 = strrchr(path, '\\');
-        if (base2 > base) base = base2;
-        snprintf(display, sizeof(display), "%s", name && name[0] ? name : base ? base + 1 : path);
-        char *dot = name ? NULL : strrchr(display, '.');
-        if (dot && dot != display) *dot = 0;
-        Fl_Asset record = {.name = display, .kind = stored.kind, .extension = stored.extension, .size = stored.size, .width = stored.width,
-                           .height = stored.height, .duration = stored.duration, .sample_rate = stored.sample_rate, .channels = stored.channels};
-        memcpy(record.hash, stored.hash, 32);
-        Fl_Id id = 0;
-        if (!fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ASSET_ADD, .asset_record = &record}, &id)) {
-            char store[FL_PATH_MAX];
-            if (stored.created && fl_asset_store_path(fl_project_directory(p), stored.hash, stored.extension, store, sizeof(store))) fl_fs_remove(store);
-            fl_fail(&fail, "rejected", "The project refused the asset"); *error = fl_fail_json(&fail); return NULL;
-        }
-        asset = fl_project_asset(p, id); added = true;
+    char display[256];
+    const char *base=path;
+    for (const char *part=path;*part;++part) if (*part=='/' || *part=='\\') base=part+1;
+    snprintf(display,sizeof(display),"%s",name && name[0] ? name : base);
+    char *dot=name ? NULL : strrchr(display,'.'); if (dot && dot!=display) *dot=0;
+    Fl_Id id=0;
+    status=fl_asset_record(p,&stored,display,&id);
+    if (status!=FL_IMPORT_ADDED && status!=FL_IMPORT_EXISTING) {
+        char store[FL_PATH_MAX];
+        if (stored.created && !fl_project_asset_by_hash(p,stored.hash) && fl_asset_store_path(fl_project_directory(p),stored.hash,stored.extension,store,sizeof(store))) fl_fs_remove(store);
+        fl_fail(&fail,"rejected","The project refused the asset"); *error=fl_fail_json(&fail); return NULL;
     }
+    const Fl_Asset *asset=fl_project_asset(p,id); bool added=status==FL_IMPORT_ADDED;
     bool frames = asset->kind != FL_ASSET_VIDEO || fl_video_cache_prepare(p, asset);
     cJSON *o = agent_asset_json(asset, fl_project_asset_uses(p, asset->id));
     if (o) cJSON_AddBoolToObject(o, "already_in_project", !added);
@@ -305,7 +338,7 @@ static cJSON *history_step(Fl_Agent *a, bool undo, cJSON **error)
     Fl_Fail fail; char label[FL_HISTORY_LABEL_MAX]; bool conflict;
     Fl_Project *p = project_or_fail(a, error);
     if (!p) return NULL;
-    bool ok = undo ? fl_history_undo(a->history, p, label, &conflict) : fl_history_redo(a->history, p, label, &conflict);
+    bool ok = undo ? fl_history_undo(fl_project_history(p), p, label, &conflict) : fl_history_redo(fl_project_history(p), p, label, &conflict);
     if (!ok) {
         if (conflict) fl_fail(&fail, "conflict", "The project was edited after that changeset, so %s would overwrite those edits. Re-read the project and make the change you want directly.", undo ? "undoing it" : "redoing it");
         else fl_fail(&fail, "nothing_to_do", "Nothing to %s", undo ? "undo" : "redo");
@@ -314,7 +347,7 @@ static cJSON *history_step(Fl_Agent *a, bool undo, cJSON **error)
     cJSON *o = cJSON_CreateObject();
     if (!o) return NULL;
     cJSON_AddStringToObject(o, undo ? "undone" : "redone", label);
-    cJSON_AddItemToObject(o, "history", history_json(a->history));
+    cJSON_AddItemToObject(o, "history", history_json(fl_project_history(p)));
     cJSON *scenes = cJSON_AddArrayToObject(o, "scenes");
     for (size_t i = 0; scenes && i < fl_project_scene_count(p); ++i) cJSON_AddItemToArray(scenes, agent_scene_summary(fl_project_scene_at(p, i)));
     return o;
@@ -383,7 +416,7 @@ static cJSON *tool_render_frame(Fl_Agent *a, const cJSON *args, cJSON **error)
         cJSON_AddNumberToObject(item, "width", w); cJSON_AddNumberToObject(item, "height", h); cJSON_AddNumberToObject(item, "bytes", (double)size);
         cJSON_AddItemToArray(list, item);
     }
-    if (o) cJSON_AddNumberToObject(o, "scene", (double)s->id);
+    if (o) cJSON_AddItemToObject(o, "scene", agent_id_json(s->id));
     return o;
 }
 
@@ -394,34 +427,36 @@ static const ToolDef TOOLS[] = {
     {"get_project", "List the project's scenes (id, revision, size, length), assets and undo history.", NO_ARGS, true, tool_get_project},
     {"get_scene", "Full contents of one scene: canvas, beats, audio clips, every entity with its properties, keyframe tracks and script info. "
      "Entities are listed in draw order (later draws on top).",
-     "{\"type\":\"object\",\"properties\":{\"scene\":{\"type\":\"integer\"},\"include_scripts\":{\"type\":\"boolean\",\"description\":\"Include Lua source text\"}},\"required\":[\"scene\"],\"additionalProperties\":false}",
+     "{\"type\":\"object\",\"properties\":{\"scene\":{\"type\":[\"integer\",\"string\"]},\"include_scripts\":{\"type\":\"boolean\",\"description\":\"Include Lua source text\"}},\"required\":[\"scene\"],\"additionalProperties\":false}",
      true, tool_get_scene},
-    {"get_script", "Read the scene's script repository. Without script it lists every script (id, name, size, entities running it); "
+    {"get_asset", "Read an asset's metadata and current accepted source bytes, including unsaved Lua or Flow prototype edits.",
+     "{\"type\":\"object\",\"properties\":{\"asset\":{\"type\":[\"integer\",\"string\"]}},\"required\":[\"asset\"],\"additionalProperties\":false}", true, tool_get_asset},
+    {"get_script", "Read the project's Lua assets. Without script it lists every script (id, name, size, entities running it); "
      "with script (an id or the exact name) it returns the Lua source too.",
-     "{\"type\":\"object\",\"properties\":{\"scene\":{\"type\":\"integer\"},\"script\":{\"type\":[\"integer\",\"string\"]}},\"required\":[\"scene\"],\"additionalProperties\":false}",
+     "{\"type\":\"object\",\"properties\":{\"script\":{\"type\":[\"integer\",\"string\"]}},\"additionalProperties\":false}",
      true, tool_get_script},
-    {"set_script", "Create or edit a repository script in one undoable step. script is an id or exact name: if it exists it is updated, "
+    {"set_script", "Create or edit a Lua asset in one undoable step. script is an id or exact name: if it exists it is updated, "
      "if it is a new name (with source) it is created. Give source to replace the text, or edits [{old,new}] to patch it (each old must match exactly once). "
-     "name renames. attach lists entity ids that should run it (enabled defaults to true). The result reports syntax_error when the Lua does not compile.",
-     "{\"type\":\"object\",\"properties\":{\"scene\":{\"type\":\"integer\"},\"script\":{\"type\":[\"integer\",\"string\"]},\"name\":{\"type\":\"string\"},\"source\":{\"type\":\"string\"},"
+     "name renames. attach lists entity ids that should run it (enabled defaults to true). Invalid Lua syntax, attached declarations or parameter values reject the changeset.",
+     "{\"type\":\"object\",\"properties\":{\"script\":{\"type\":[\"integer\",\"string\"]},\"name\":{\"type\":\"string\"},\"source\":{\"type\":\"string\"},"
      "\"edits\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"old\":{\"type\":\"string\"},\"new\":{\"type\":\"string\"}},\"required\":[\"old\",\"new\"]}},"
-     "\"attach\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"}},\"enabled\":{\"type\":\"boolean\"}},\"required\":[\"scene\"],\"additionalProperties\":false}",
+     "\"attach\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"}},\"enabled\":{\"type\":\"boolean\"}},\"additionalProperties\":false}",
      false, tool_set_script},
     {"evaluate_scene", "Evaluate every entity of a scene at a time (seconds): resolved position, size, colours and opacity after keyframes and Lua scripts, plus script errors.",
-     "{\"type\":\"object\",\"properties\":{\"scene\":{\"type\":\"integer\"},\"time\":{\"type\":\"number\",\"description\":\"Seconds from scene start; default 0\"}},\"required\":[\"scene\"],\"additionalProperties\":false}",
+     "{\"type\":\"object\",\"properties\":{\"scene\":{\"type\":[\"integer\",\"string\"]},\"time\":{\"type\":\"number\",\"description\":\"Seconds from scene start; default 0\"}},\"required\":[\"scene\"],\"additionalProperties\":false}",
      true, tool_evaluate_scene},
     {"apply_ops", "Apply a batch of document operations atomically (all succeed or none do) as one undoable changeset. "
      "Operations: scene.add/remove/rename/move/set, entity.create/set/remove/reparent/reorder, key.set/remove, track.remove, beat.add/update/remove/move/split, "
-     "clip.add/update/remove, script.create/update/remove/attach/detach. Name created objects with \"as\":\"$name\" and reuse \"$name\" as an id later in the batch. "
+     "clip.add/update/remove, asset.source/rename/remove, script.create/update/remove/attach/detach. Name created objects with \"as\":\"$name\" and reuse \"$name\" as an id later in the batch. "
      "Pass expect:{\"<scene id>\": revision} to refuse the batch if a scene changed since you read it. Full field lists are in get_reference.",
      "{\"type\":\"object\",\"properties\":{\"ops\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"object\",\"properties\":{\"op\":{\"type\":\"string\"},\"as\":{\"type\":\"string\"}},\"required\":[\"op\"]}},"
      "\"label\":{\"type\":\"string\",\"description\":\"Short name shown for undo\"},\"expect\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"integer\"}},\"dry_run\":{\"type\":\"boolean\"}},\"required\":[\"ops\"],\"additionalProperties\":false}",
      false, agent_tool_apply_ops},
     {"render_frame", "Render a scene at one or more times (seconds) offline and return PNG images, exactly as the project would look in the video: no editor grid or selection, any resolution, independent of what the editor is showing. "
      "Use it to check your work. Give time or times (up to 6, for comparing moments). width is the image width in pixels (default 1024, at most a frame of 8.8 megapixels); height follows the scene's aspect.",
-     "{\"type\":\"object\",\"properties\":{\"scene\":{\"type\":\"integer\"},\"time\":{\"type\":\"number\"},\"times\":{\"type\":\"array\",\"items\":{\"type\":\"number\"},\"maxItems\":6},\"width\":{\"type\":\"integer\"}},\"required\":[\"scene\"],\"additionalProperties\":false}",
+     "{\"type\":\"object\",\"properties\":{\"scene\":{\"type\":[\"integer\",\"string\"]},\"time\":{\"type\":\"number\"},\"times\":{\"type\":\"array\",\"items\":{\"type\":\"number\"},\"maxItems\":6},\"width\":{\"type\":\"integer\"}},\"required\":[\"scene\"],\"additionalProperties\":false}",
      true, tool_render_frame},
-    {"import_asset", "Copy a local image, audio, video or font file (absolute path) into the project and return its asset id. Not part of undo.",
+    {"import_asset", "Import a local Lua, Flow prototype, image, audio, video or font file (absolute path) as an undoable asset edit.",
      "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"name\":{\"type\":\"string\"}},\"required\":[\"path\"],\"additionalProperties\":false}", false, tool_import_asset},
     {"undo", "Undo the newest apply_ops changeset. Refused if the project was edited since.", NO_ARGS, false, tool_undo},
     {"redo", "Redo the changeset most recently undone.", NO_ARGS, false, tool_redo},

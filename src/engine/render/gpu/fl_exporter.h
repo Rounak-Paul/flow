@@ -1,12 +1,13 @@
 #pragma once
 #include "core/fl_event.h"
-#include "fl_scene_renderer.h"
+#include "render/gpu/fl_scene_renderer.h"
 #include "platform/fl_paths.h"
 
 /*
  * Video export: renders the project's scenes in order through the scene renderer and pipes the frames to an
  * ffmpeg encoder (H.264 in MP4, BT.709, yuv420p). Work is time-sliced on the UI thread through the application
- * bus, so the editor stays responsive; one export runs at a time. UI thread only.
+ * bus; one export runs at a time. Captures an immutable document view. Actual media/font resource versions
+ * are not yet pinned. Output replaces the destination only after successful encoding. UI thread only.
  */
 typedef struct Fl_Exporter Fl_Exporter;
 

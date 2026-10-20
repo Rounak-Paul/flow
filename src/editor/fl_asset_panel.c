@@ -6,6 +6,7 @@
 #include "core/fl_log.h"
 #include "media/fl_audio_player.h"
 #include "platform/fl_fs.h"
+#include "platform/fl_process.h"
 #include <ctype.h>
 #include <math.h>
 #include <stdio.h>
@@ -17,7 +18,7 @@
 typedef struct Fl_AssetRow { struct Fl_AssetPanel *panel; Fl_Id asset; } Fl_AssetRow;
 typedef struct Fl_Placement { uint64_t request; Fl_SceneDropTarget target; } Fl_Placement;
 typedef struct Fl_KindChip { struct Fl_AssetPanel *panel; int kind; } Fl_KindChip;
-#define KIND_CHIPS 5
+#define KIND_CHIPS 7
 struct Fl_AssetPanel {
     Fl_SceneEdit *edit;
     Fl_ScenePanel *scene;
@@ -166,9 +167,9 @@ static void browse_clicked(Ca_Button *button, void *data)
     static const char *images[] = {"png", "jpg", "jpeg", "gif", "bmp"}, *fonts[] = {"ttf", "otf", "ttc"},
         *video[] = {"mp4", "m4v", "mov", "mkv", "webm", "avi"}, *audio[] = {"wav", "mp3", "ogg", "flac", "m4a"},
         *media[] = {"png", "jpg", "jpeg", "gif", "bmp", "ttf", "otf", "ttc", "mp4", "m4v", "mov", "mkv", "webm", "avi",
-                    "wav", "mp3", "ogg", "flac", "m4a"};
+                    "wav", "mp3", "ogg", "flac", "m4a", "lua", "flproto.json"};
     const Fl_FileFilter filters[] = {
-        {"Supported media", media, sizeof(media) / sizeof(media[0])}, {"Images", images, sizeof(images) / sizeof(images[0])},
+        {"Supported assets", media, sizeof(media) / sizeof(media[0])}, {"Images", images, sizeof(images) / sizeof(images[0])},
         {"Fonts", fonts, sizeof(fonts) / sizeof(fonts[0])}, {"Video", video, sizeof(video) / sizeof(video[0])},
         {"Audio", audio, sizeof(audio) / sizeof(audio[0])}, {"All files", NULL, 0}};
     if (!p->browser && p->window) p->browser = fl_file_browser_create(ca_window_instance(p->window));
@@ -296,9 +297,12 @@ static void row_menu(int index, void *data)
     Fl_AssetRow row = *(Fl_AssetRow *)data;
     const Fl_Asset *record = fl_project_asset(fl_scene_edit_project(row.panel->edit), row.asset);
     if (!record) return;
-    bool placeable = visual(record->kind) || record->kind == FL_ASSET_AUDIO;
+    bool placeable = visual(record->kind) || record->kind == FL_ASSET_AUDIO || record->path!=NULL;
     int action = placeable ? index : index + 1;
-    if (action == 0 && visual(record->kind)) add_to_scene(row.panel, row.asset);
+    if (action==0 && record->path!=NULL) {
+        Fl_Project *project=fl_scene_edit_project(row.panel->edit); char path[FL_PATH_MAX];
+        if (!fl_project_save(project) || !fl_project_asset_path(project,record,path,sizeof(path)) || !fl_open_path(path)) status(row.panel,"Could not save or open source asset.");
+    } else if (action == 0 && visual(record->kind)) add_to_scene(row.panel, row.asset);
     else if (action == 0) fl_timeline_panel_add_clip(row.panel->timeline, row.asset, fl_scene_edit_time(row.panel->edit));
     else if (action == 1) rename_asset(row.panel, row.asset);
     else if (action == 2) delete_asset(row.panel, row.asset);
@@ -414,6 +418,8 @@ static const char *kind_icon(Fl_AssetKind kind)
     case FL_ASSET_VIDEO: return CA_ICON_NF_FA_FILM;
     case FL_ASSET_AUDIO: return CA_ICON_NF_FA_MUSIC;
     case FL_ASSET_FONT: return CA_ICON_NF_FA_FONT;
+    case FL_ASSET_LUA: return CA_ICON_NF_FA_CODE;
+    case FL_ASSET_PROTOTYPE: return CA_ICON_NF_FA_CUBES;
     }
     return CA_ICON_NF_FA_FILE;
 }
@@ -450,7 +456,7 @@ static void emit_tile(Fl_AssetPanel *p, const Fl_Asset *a)
         .style = p->selected == a->id ? FL_CLASS_ASSET_CARD_SELECTED : FL_CLASS_ASSET_CARD});
     ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_ASSET_PREVIEW});
     uint32_t w = 0, h = 0;
-    Ca_Image *preview = fl_asset_thumbnails_get(p->thumbnails, a, &w, &h);
+    Ca_Image *preview = a->path ? NULL : fl_asset_thumbnails_get(p->thumbnails, a, &w, &h);
     if (preview && w && h) {
         float scale = fminf(FL_STYLE_THUMBNAIL_W / (float)w, FL_STYLE_THUMBNAIL_H / (float)h);
         if (a->kind == FL_ASSET_FONT) scale = fminf(scale, FL_STYLE_SPECIMEN_SCALE);
@@ -468,9 +474,9 @@ static void emit_tile(Fl_AssetPanel *p, const Fl_Asset *a)
     }
     ca_div_end();
     ca_tooltip(&(Ca_TooltipDesc){.text = tip});
-    static const char *image_items[] = {"Add to scene", "Rename", "Delete"}, *audio_items[] = {"Add to timeline", "Rename", "Delete"};
-    ca_context_menu(&(Ca_CtxMenuDesc){.items = image ? image_items : a->kind == FL_ASSET_AUDIO ? audio_items : image_items + 1,
-        .item_count = placeable ? 3 : 2, .on_select = row_menu, .select_data = row});
+    static const char *image_items[] = {"Add to scene", "Rename", "Delete"}, *audio_items[] = {"Add to timeline", "Rename", "Delete"}, *script_items[]={"Open source","Rename","Delete"};
+    ca_context_menu(&(Ca_CtxMenuDesc){.items = image ? image_items : a->kind == FL_ASSET_AUDIO ? audio_items : a->path ? script_items : image_items + 1,
+        .item_count = placeable || a->path ? 3 : 2, .on_select = row_menu, .select_data = row});
 }
 
 
@@ -499,7 +505,7 @@ void fl_asset_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
     ca_div_end();
     static const struct { int kind; const char *icon, *tip; } kinds[KIND_CHIPS] = {
         {0, CA_ICON_NF_FA_TABLE_CELLS, "All"}, {FL_ASSET_IMAGE, CA_ICON_NF_FA_IMAGE, "Images"},
-        {FL_ASSET_VIDEO, CA_ICON_NF_FA_FILM, "Video"}, {FL_ASSET_AUDIO, CA_ICON_NF_FA_MUSIC, "Audio"}, {FL_ASSET_FONT, CA_ICON_NF_FA_FONT, "Fonts"}};
+        {FL_ASSET_VIDEO, CA_ICON_NF_FA_FILM, "Video"}, {FL_ASSET_AUDIO, CA_ICON_NF_FA_MUSIC, "Audio"}, {FL_ASSET_FONT, CA_ICON_NF_FA_FONT, "Fonts"}, {FL_ASSET_LUA, CA_ICON_NF_FA_CODE, "Scripts"}, {FL_ASSET_PROTOTYPE, CA_ICON_NF_FA_CUBES, "Prototypes"}};
     ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_CHIPS});
     for (size_t i = 0; i < KIND_CHIPS; ++i) {
         p->chips[i] = (Fl_KindChip){p, kinds[i].kind};
@@ -515,8 +521,8 @@ void fl_asset_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
         ca_div_end();
     }
     ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_ASSET_GRID});
-    static const Fl_AssetKind order[] = {FL_ASSET_IMAGE, FL_ASSET_VIDEO, FL_ASSET_AUDIO, FL_ASSET_FONT};
-    for (size_t k = 0; k < 4; ++k) {
+    static const Fl_AssetKind order[] = {FL_ASSET_IMAGE, FL_ASSET_VIDEO, FL_ASSET_AUDIO, FL_ASSET_FONT, FL_ASSET_LUA, FL_ASSET_PROTOTYPE};
+    for (size_t k = 0; k < sizeof(order)/sizeof(*order); ++k) {
         if (p->filter && p->filter != (int)order[k]) continue;
         for (size_t i = 0; i < count; ++i) {
             const Fl_Asset *a = fl_project_asset_at(project, i);

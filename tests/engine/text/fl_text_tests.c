@@ -169,7 +169,7 @@ static void test_service(const char *root)
     char dir[FL_PATH_MAX];
     CHECK(fl_fs_join(dir, sizeof(dir), root, "fonts-project"));
     char manifest[FL_PATH_MAX];
-    CHECK(fl_fs_join(manifest, sizeof(manifest), dir, "project.flow")); fl_fs_remove(manifest);
+    CHECK(fl_fs_join(manifest, sizeof(manifest), dir, "project.flow.json")); fl_fs_remove(manifest);
     Fl_Project *p = fl_project_create(dir, "Fonts", bus);
     CHECK(p != NULL);
     if (p) {

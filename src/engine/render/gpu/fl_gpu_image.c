@@ -3,7 +3,7 @@
 #include <string.h>
 
 struct Fl_GpuImages {
-    Ca_Instance *instance;
+    Fl_GpuContext gpu;
     VkDevice device;
     VmaAllocator allocator;
     VkDescriptorSetLayout layout;
@@ -46,7 +46,7 @@ Fl_GpuImage *fl_gpu_image_create(Fl_GpuImages *device, Fl_GpuImageFormat format,
     VkDescriptorSetAllocateInfo sets={.sType=VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,.descriptorPool=image->pool,
         .descriptorSetCount=1,.pSetLayouts=&device->layout};
     if (ok) ok=vkAllocateDescriptorSets(device->device,&sets,&image->descriptor)==VK_SUCCESS;
-    VkCommandBuffer cmd=ok ? ca_gpu_begin_transfer(device->instance) : VK_NULL_HANDLE;
+    VkCommandBuffer cmd=ok ? device->gpu.begin_transfer(device->gpu.host) : VK_NULL_HANDLE;
     if (ok && !cmd) ok=false;
     if (ok) {
         VkImageMemoryBarrier barrier={.sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,.dstAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -59,7 +59,7 @@ Fl_GpuImage *fl_gpu_image_create(Fl_GpuImages *device, Fl_GpuImageFormat format,
         barrier.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT; barrier.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
         barrier.oldLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; barrier.newLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,0,0,NULL,0,NULL,1,&barrier);
-        ca_gpu_end_transfer(device->instance,cmd);
+        device->gpu.end_transfer(device->gpu.host,cmd);
         VkDescriptorImageInfo sampled={device->sampler,image->view,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkWriteDescriptorSet write={.sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,.dstSet=image->descriptor,.dstBinding=0,
             .descriptorCount=1,.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,.pImageInfo=&sampled};
@@ -102,11 +102,11 @@ Fl_GpuImage *fl_gpu_target_create(Fl_GpuImages *device, VkFormat format, uint32_
 VkImage fl_gpu_image_handle(const Fl_GpuImage *image) { return image ? image->image : VK_NULL_HANDLE; }
 VkImageView fl_gpu_image_view(const Fl_GpuImage *image) { return image ? image->view : VK_NULL_HANDLE; }
 
-Fl_GpuImages *fl_gpu_images_create(Ca_Instance *instance)
+Fl_GpuImages *fl_gpu_images_create(const Fl_GpuContext *context)
 {
-    if (!instance) return NULL;
+    if (!context || !context->device || !context->allocator || !context->begin_transfer || !context->end_transfer) return NULL;
     Fl_GpuImages *device=calloc(1,sizeof(*device)); if (!device) return NULL;
-    device->instance=instance; device->device=ca_gpu_device(instance); device->allocator=ca_gpu_allocator(instance);
+    device->gpu=*context; device->device=context->device; device->allocator=context->allocator;
     VkDescriptorSetLayoutBinding binding={.binding=0,.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,.descriptorCount=1,.stageFlags=VK_SHADER_STAGE_FRAGMENT_BIT};
     VkDescriptorSetLayoutCreateInfo layout={.sType=VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,.bindingCount=1,.pBindings=&binding};
     VkSamplerCreateInfo sampler={.sType=VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,.magFilter=VK_FILTER_LINEAR,.minFilter=VK_FILTER_LINEAR,

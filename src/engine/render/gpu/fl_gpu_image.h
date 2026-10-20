@@ -1,6 +1,5 @@
 #pragma once
-#include <ca_gpu.h>
-#include <causality.h>
+#include "fl_gpu_context.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -13,8 +12,8 @@ typedef enum Fl_GpuImageFormat {
     FL_GPU_IMAGE_SRGBA          /* straight-alpha sRGB RGBA8 picture */
 } Fl_GpuImageFormat;
 
-/* Create shared texture resources on instance; caller destroys before the GPU instance. */
-Fl_GpuImages *fl_gpu_images_create(Ca_Instance *instance);
+/* Create shared texture resources on the GPU host; caller destroys them before the host. */
+Fl_GpuImages *fl_gpu_images_create(const Fl_GpuContext *context);
 /* Wait for GPU use, then release shared resources. NULL is safe. */
 void fl_gpu_images_destroy(Fl_GpuImages *images);
 /* Return the combined-image-sampler layout and the white texel's descriptor used by untextured primitives. */

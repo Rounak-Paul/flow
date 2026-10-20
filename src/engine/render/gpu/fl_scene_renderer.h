@@ -4,20 +4,19 @@
 #include "doc/fl_scene_frame.h"
 #include "render/fl_frame.h"
 #include "text/fl_fonts.h"
-#include <ca_gpu.h>
-#include <causality.h>
+#include "fl_gpu_context.h"
 
 /*
  * The scene renderer: the single implementation that draws scene content on the GPU. The editor viewport records
  * into the viewport's command buffer; fl_scene_renderer_render records into an offscreen image and reads it back,
  * so exports, agent previews and the viewport run the same shaders, blending and text/image handling.
  *
- * It owns the primitive pipelines, text coverage masks and decoded pictures. Owner (UI) thread only.
+ * It owns the primitive pipelines, text coverage masks and decoded pictures. GPU owner thread only.
  */
 typedef struct Fl_SceneRenderer Fl_SceneRenderer;
 
 typedef struct Fl_SceneRendererDesc {
-    Ca_Instance *instance;      /* required; supplies the device, queue and allocator */
+    Fl_GpuContext gpu;          /* required; borrowed driver services, copied by the renderer */
     Fl_Fonts *fonts;            /* required */
     Fl_JobSystem *jobs;         /* required; images decode on workers */
     Fl_EventBus *bus;           /* optional: decode completion events (live viewport); NULL for synchronous use */
@@ -92,3 +91,6 @@ float fl_scene_renderer_linear(unsigned char value);
  */
 bool fl_scene_renderer_render(Fl_SceneRenderer *renderer, const Fl_Project *project, const Fl_Scene *scene, Fl_Tick tick,
                               uint32_t width, Fl_Frame *out);
+
+/* Borrow the latest offscreen render failure diagnostic; empty after a successful render. */
+const char *fl_scene_renderer_error(const Fl_SceneRenderer *renderer);

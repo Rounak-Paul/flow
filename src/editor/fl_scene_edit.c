@@ -1,4 +1,5 @@
 #include "fl_scene_edit.h"
+#include "time/fl_evaluation.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,6 +11,12 @@ typedef struct Fl_GestureTarget {
 } Fl_GestureTarget;
 struct Fl_SceneEdit {
     Fl_Project *project;
+    Fl_JobSystem *jobs;
+    Fl_Evaluation *evaluation;
+    uint64_t evaluation_generation;
+    Fl_Id behavior_scene;
+    uint64_t behavior_revision;
+    bool scene_scripted;
     Fl_EventBus *bus;
     Fl_EventType selection_event, time_event, snap_event;
     Fl_Id scene;
@@ -23,7 +30,7 @@ struct Fl_SceneEdit {
     size_t target_count;
     Fl_EditGesture gesture;
     double start_x, start_y;
-    bool applying, snap, gesture_snap;
+    bool applying, snap, gesture_snap, gesture_edit;
     double snap_x, snap_y;
 };
 
@@ -41,11 +48,27 @@ static void notify(Fl_SceneEdit *edit)
     fl_event_publish(edit->bus, edit->selection_event, &change, sizeof(change));
 }
 
-/* Discard gesture snapshots without changing document state. */
+/* Finish an abandoned gesture before releasing its local geometry snapshots. */
 static void clear_gesture(Fl_SceneEdit *edit)
 {
+    if (edit->gesture_edit) {edit->gesture_edit=false; fl_project_edit_commit(edit->project);}
     free(edit->targets); free(edit->updates);
     edit->targets = NULL; edit->updates = NULL; edit->target_count = 0;
+}
+
+/* Destroy only after cancellation has fenced the worker's isolated document reads. */
+static void clear_evaluation(Fl_SceneEdit *edit)
+{
+    fl_evaluation_destroy(edit->evaluation); edit->evaluation=NULL;
+}
+
+/* Publish at the event boundary so geometry and state remain coherent throughout one rendered frame. */
+static bool evaluation_done(const Fl_Event *event, void *data)
+{
+    Fl_SceneEdit *edit=data;
+    if (!fl_evaluation_matches(edit->evaluation,event->payload)) return false;
+    fl_evaluation_publish(edit->evaluation); notify_time(edit);
+    return false;
 }
 
 /* Reconcile selection with document deletion; external mutations invalidate active gestures. */
@@ -53,6 +76,7 @@ static bool document_changed(const Fl_Event *event, void *data)
 {
     Fl_SceneEdit *edit = data; const Fl_ProjectChange *change = event->payload;
     if (change->project != edit->project) return false;
+    clear_evaluation(edit);
     if (!edit->applying) clear_gesture(edit);
     const Fl_Scene *scene = fl_project_scene(edit->project, edit->scene);
     if (!scene) {
@@ -67,11 +91,11 @@ static bool document_changed(const Fl_Event *event, void *data)
     return false;
 }
 
-Fl_SceneEdit *fl_scene_edit_create(Fl_Project *project, Fl_EventBus *bus)
+Fl_SceneEdit *fl_scene_edit_create(Fl_Project *project, Fl_EventBus *bus, Fl_JobSystem *jobs)
 {
-    if (!project || !bus) return NULL;
+    if (!project || !bus || (jobs && !fl_jobs_done_event(jobs))) return NULL;
     Fl_SceneEdit *edit = calloc(1, sizeof(*edit)); if (!edit) return NULL;
-    edit->project = project; edit->bus = bus;
+    edit->project = project; edit->bus = bus; edit->jobs=jobs;
     const Fl_Scene *scene = fl_project_scene_at(project, 0); edit->scene = scene ? scene->id : 0;
     edit->selection_event = fl_event_type_register(bus, FL_EVENT_SELECTION_CHANGED, sizeof(Fl_SelectionChange));
     edit->time_event = fl_event_type_register(bus, FL_EVENT_TIME_CHANGED, sizeof(Fl_TimeChange));
@@ -81,12 +105,15 @@ Fl_SceneEdit *fl_scene_edit_create(Fl_Project *project, Fl_EventBus *bus)
         !fl_event_subscribe(bus, &(Fl_SubscribeDesc){.type = changed, .fn = document_changed, .user_data = edit, .owner = edit}).generation) {
         free(edit); return NULL;
     }
+    if (jobs && !fl_event_subscribe(bus,&(Fl_SubscribeDesc){.type=fl_jobs_done_event(jobs),.fn=evaluation_done,.user_data=edit,.owner=edit}).generation) {
+        fl_scene_edit_destroy(edit); return NULL;
+    }
     return edit;
 }
 void fl_scene_edit_destroy(Fl_SceneEdit *edit)
 {
     if (!edit) return;
-    fl_event_unsubscribe_owner(edit->bus, edit); clear_gesture(edit);
+    fl_event_unsubscribe_owner(edit->bus, edit); clear_gesture(edit); clear_evaluation(edit);
     fl_scene_geometry_clear(&edit->geometry); fl_scene_state_clear(&edit->state); free(edit->selection); free(edit);
 }
 Fl_Project *fl_scene_edit_project(const Fl_SceneEdit *edit) { return edit ? edit->project : NULL; }
@@ -133,9 +160,41 @@ void fl_scene_edit_set_time(Fl_SceneEdit *edit, Fl_Tick tick)
 }
 const Fl_SceneState *fl_scene_edit_state(Fl_SceneEdit *edit)
 {
-    if (!edit || !fl_scene_state_update(&edit->state, fl_project_scene(edit->project, edit->scene), edit->time)) return NULL;
+    if (!edit) return NULL;
+    const Fl_Scene *scene=fl_project_scene(edit->project,edit->scene);
+    if (scene && (edit->behavior_scene!=scene->id || edit->behavior_revision!=scene->revision)) {
+        edit->scene_scripted=false; edit->behavior_scene=scene->id; edit->behavior_revision=scene->revision;
+        for (size_t i=0; !edit->scene_scripted && i<scene->entity_count; ++i) {
+            const Fl_Entity *entity=&scene->entities[i];
+            for (size_t j=0;j<entity->component_count;++j) {
+                Fl_Script script;
+                if (fl_script_decode(&entity->components[j],&script) && script.enabled) {edit->scene_scripted=true; break;}
+            }
+        }
+    }
+    if (edit->jobs && scene && edit->scene_scripted && !fl_project_edit_active(edit->project)) {
+        uint64_t generation=fl_project_generation(edit->project);
+        const Fl_Scene *evaluated=fl_evaluation_scene(edit->evaluation);
+        if (evaluated && (evaluated->id!=edit->scene || edit->evaluation_generation!=generation)) clear_evaluation(edit);
+        if (!edit->evaluation) {
+            edit->evaluation=fl_evaluation_create(edit->jobs,edit->project,edit->scene);
+            edit->evaluation_generation=generation;
+        }
+        if (!edit->evaluation) return NULL;
+        bool pending=fl_evaluation_pending(edit->evaluation);
+        fl_evaluation_request(edit->evaluation,edit->time);
+        if (!pending && fl_evaluation_pending(edit->evaluation)) notify_time(edit);
+        return fl_evaluation_state(edit->evaluation);
+    }
+    if (!fl_scene_state_update(&edit->state,scene,edit->time)) return NULL;
     return &edit->state;
 }
+
+bool fl_scene_edit_evaluating(const Fl_SceneEdit *edit)
+{
+    return edit && fl_evaluation_pending(edit->evaluation);
+}
+
 const Fl_SceneGeometry *fl_scene_edit_geometry(Fl_SceneEdit *edit)
 {
     const Fl_SceneState *state = fl_scene_edit_state(edit);
@@ -179,6 +238,8 @@ bool fl_scene_edit_begin(Fl_SceneEdit *edit, Fl_EditGesture mode, double x, doub
     if (!edit || !edit->count || mode < FL_GESTURE_MOVE || mode > FL_GESTURE_ROTATE ||
         (mode != FL_GESTURE_MOVE && edit->count != 1) || !isfinite(x) || !isfinite(y)) return false;
     clear_gesture(edit);
+    fl_scene_edit_state(edit);
+    if (edit->evaluation && !fl_evaluation_wait(edit->evaluation,edit->time)) return false;
     const Fl_Scene *scene = fl_project_scene(edit->project, edit->scene);
     const Fl_SceneGeometry *geometry = fl_scene_edit_geometry(edit);
     if (!scene || !geometry || edit->count > SIZE_MAX / sizeof(Fl_GestureTarget)) return false;
@@ -203,7 +264,8 @@ bool fl_scene_edit_begin(Fl_SceneEdit *edit, Fl_EditGesture mode, double x, doub
     edit->gesture_snap = edit->snap;
     edit->gesture_tick = edit->time;
     edit->gesture = mode; edit->start_x = x; edit->start_y = y;
-    return edit->target_count != 0;
+    if (!edit->target_count || !fl_project_edit_begin(edit->project,"Transform selection",true)) {clear_gesture(edit); return false;}
+    edit->gesture_edit=true; return true;
 }
 
 bool fl_scene_edit_update(Fl_SceneEdit *edit, double x, double y)
@@ -266,7 +328,8 @@ bool fl_scene_edit_update(Fl_SceneEdit *edit, double x, double y)
 void fl_scene_edit_end(Fl_SceneEdit *edit, bool cancel)
 {
     if (!edit) return;
-    if (cancel&&edit->target_count) fl_scene_edit_update(edit,edit->start_x,edit->start_y);
+    bool active=edit->gesture_edit; edit->gesture_edit=false;
+    if (active) {if (cancel) fl_project_edit_cancel(edit->project); else fl_project_edit_commit(edit->project);}
     clear_gesture(edit);
 }
 bool fl_scene_edit_insert(Fl_SceneEdit *edit, Fl_WidgetKind kind, Fl_Id parent, double x, double y)

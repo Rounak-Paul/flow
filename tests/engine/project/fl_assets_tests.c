@@ -4,6 +4,7 @@
 #include "media/fl_media.h"
 #include "media/fl_thumbnail.h"
 #include "project/fl_asset_import.h"
+#include "project/fl_history.h"
 #include "platform/fl_fs.h"
 #include "platform/fl_paths.h"
 #include <stdlib.h>
@@ -155,7 +156,12 @@ static void test_project_assets(const char *root)
     CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ASSET_ADD, .asset_record = &record}, &other));
     CHECK(fl_project_save(p) && fl_fs_exists(stored));
     CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ASSET_REMOVE, .asset = other}, NULL));
-    CHECK(fl_project_save(p) && !fl_fs_exists(stored) && fl_project_asset_count(p) == 0);
+    CHECK(fl_project_save(p) && fl_fs_exists(stored) && fl_project_asset_count(p) == 0);
+    char undo_label[FL_HISTORY_LABEL_MAX]; bool conflict=false;
+    CHECK(fl_history_undo(fl_project_history(p),p,undo_label,&conflict) && fl_project_asset(p,other) && fl_fs_exists(stored));
+    CHECK(fl_history_redo(fl_project_history(p),p,undo_label,&conflict) && !fl_project_asset(p,other));
+    fl_history_clear(fl_project_history(p));
+    CHECK(fl_project_save(p) && !fl_fs_exists(stored));
     fl_project_destroy(p);
 }
 

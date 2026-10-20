@@ -125,7 +125,7 @@ static void check_beat_interactions(Fl_TimelinePanel *panel)
     Fl_Id entity, key;
     CHECK(fl_widget_create(project_of(panel), scene, 0, FL_WIDGET_RECTANGLE, 0, 0, &entity));
     CHECK(fl_project_apply(project_of(panel), &(Fl_Op){.kind = FL_OP_KEY_SET, .scene = scene, .entity = entity,
-        .property = FL_PROP_X, .anchor = {FL_ANCHOR_BEAT, original, false, 4 * FL_TICKS_PER_SECOND}, .value = {10}}, &key));
+        .property = FL_PROP_X, .anchor = {.kind=FL_ANCHOR_BEAT,.beat=original,.end=false,.offset=4 * FL_TICKS_PER_SECOND}, .value = {10}}, &key));
     fl_scene_edit_set_time(edit, 2 * FL_TICKS_PER_SECOND);
     Fl_TimelineItem beat = {panel, ITEM_BEAT, original};
     beat_menu(1, &beat);
@@ -148,7 +148,7 @@ static void check_beat_reordering(Fl_TimelinePanel *panel)
     Fl_Id entity, key;
     CHECK(fl_widget_create(project_of(panel), s->id, 0, FL_WIDGET_RECTANGLE, 0, 0, &entity));
     CHECK(fl_project_apply(project_of(panel), &(Fl_Op){.kind = FL_OP_KEY_SET, .scene = s->id, .entity = entity,
-        .property = FL_PROP_X, .anchor = {FL_ANCHOR_BEAT, first, false, duration / 2}, .value = {12}}, &key));
+        .property = FL_PROP_X, .anchor = {.kind=FL_ANCHOR_BEAT,.beat=first,.end=false,.offset=duration / 2}, .value = {12}}, &key));
     panel->zoom = FL_STYLE_TL_ZOOM;
     Fl_TimelineItem block = {panel, ITEM_BEAT, first};
     uint64_t revision = s->revision;
@@ -183,10 +183,10 @@ int main(int argc, char **argv)
     CHECK(argc == 2); if (argc != 2) return 1;
     char path[FL_PATH_MAX];
     CHECK(fl_fs_mkdir_p(argv[1]));
-    CHECK(fl_fs_join(path, sizeof(path), argv[1], "project.flow")); fl_fs_remove(path);
+    CHECK(fl_fs_join(path, sizeof(path), argv[1], "project.flow.json")); fl_fs_remove(path);
     Fl_EventBus *bus = fl_event_bus_create(NULL);
     Fl_Project *project = fl_project_create(argv[1], "Animation", bus); CHECK(project); if (!project) return 1;
-    Fl_SceneEdit *edit = fl_scene_edit_create(project, bus); CHECK(edit);
+    Fl_SceneEdit *edit = fl_scene_edit_create(project, bus, NULL); CHECK(edit);
     Fl_Playback playback = {.edit = edit};
     CHECK(fl_event_type_register(bus, FL_EVENT_PLAYBACK_CHANGED, sizeof(Fl_PlaybackChange)));
     Fl_TimelinePanel *panel = fl_timeline_panel_create(edit, &playback, bus); CHECK(panel);
@@ -194,10 +194,10 @@ int main(int argc, char **argv)
     CHECK(fl_widget_create(project, scene, 0, FL_WIDGET_RECTANGLE, 10, 20, &rectangle));
     CHECK(fl_widget_create(project, scene, 0, FL_WIDGET_GROUP, 0, 0, &group));
     CHECK(fl_widget_create(project, scene, 0, FL_WIDGET_TEXT, 0, 0, &text));
-    CHECK(property_supported(fl_scene_entity(scene_of(panel), rectangle), FL_PROP_FILL));
-    CHECK(!property_supported(fl_scene_entity(scene_of(panel), group), FL_PROP_FILL));
-    CHECK(!property_supported(fl_scene_entity(scene_of(panel), rectangle), FL_PROP_FONT_SIZE));
-    CHECK(property_supported(fl_scene_entity(scene_of(panel), text), FL_PROP_FONT_SIZE));
+    CHECK(fl_property_supported(fl_scene_entity(scene_of(panel), rectangle), FL_PROP_FILL));
+    CHECK(!fl_property_supported(fl_scene_entity(scene_of(panel), group), FL_PROP_FILL));
+    CHECK(!fl_property_supported(fl_scene_entity(scene_of(panel), rectangle), FL_PROP_FONT_SIZE));
+    CHECK(fl_property_supported(fl_scene_entity(scene_of(panel), text), FL_PROP_FONT_SIZE));
     CHECK(fl_scene_edit_select(edit, scene, rectangle, false));
     key_selection(NULL, panel);
     CHECK(fl_scene_track_count(scene_of(panel)) == 1);
