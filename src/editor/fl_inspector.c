@@ -1,4 +1,5 @@
 #include "fl_inspector.h"
+#include "ui/fl_button.h"
 #include "fl_file_browser.h"
 #include "components/fl_script.h"
 #include "fl_script_panel.h"
@@ -557,7 +558,7 @@ static void script_section(Fl_Inspector *p, const Fl_Scene *scene)
     const Fl_Entity *entity=fl_scene_entity(scene,p->entity);
     const char *error=state&&entity ? fl_script_runtime_error(state->scripts,(size_t)(entity-scene->entities)) : "";
     if (*error) ca_text(&(Ca_TextDesc){.text=error,.style=FL_CLASS_WARNING,.wrap=true});
-    ca_btn_begin(&(Ca_BtnDesc){.text="Edit script",.id="inspector-script-edit",.style=FL_CLASS_ACTION,.on_click=script_edit,.click_data=p,.disabled=p->dirty});ca_btn_end();
+    fl_button(&(Fl_ButtonDesc){.text="Edit script",.id="inspector-script-edit",.on_click=script_edit,.click_data=p,.disabled=p->dirty});
 }
 
 void fl_inspector_build(Ca_Dock *dock,Ca_Window *window,void *data)
@@ -596,8 +597,8 @@ void fl_inspector_build(Ca_Dock *dock,Ca_Window *window,void *data)
     }
     script_section(p,scene);
     ca_div_begin(&(Ca_DivDesc){.direction=CA_HORIZONTAL,.style=FL_CLASS_TOOLBAR});
-    ca_btn_begin(&(Ca_BtnDesc){.text="Apply",.id="inspector-apply",.style=FL_CLASS_ACTION,.on_click=apply,.click_data=p});ca_btn_end();
-    ca_btn_begin(&(Ca_BtnDesc){.text="Revert",.id="inspector-revert",.style=FL_CLASS_ACTION,.on_click=revert,.click_data=p});ca_btn_end();
+    fl_button(&(Fl_ButtonDesc){.text="Apply",.id="inspector-apply",.on_click=apply,.click_data=p});
+    fl_button(&(Fl_ButtonDesc){.text="Revert",.id="inspector-revert",.on_click=revert,.click_data=p});
     ca_div_end();
     p->status=ca_text(&(Ca_TextDesc){.text=p->message,.style=FL_CLASS_MUTED,.wrap=true});
     ca_div_end();

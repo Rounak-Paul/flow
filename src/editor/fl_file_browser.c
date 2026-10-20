@@ -1,4 +1,5 @@
 #include "fl_file_browser.h"
+#include "ui/fl_button.h"
 #include "style.h"
 #include "platform/fl_fs.h"
 #include "platform/fl_paths.h"
@@ -317,13 +318,6 @@ static void format_size(int64_t size, char *out, size_t capacity)
     snprintf(out, capacity, unit ? "%.1f %s" : "%.0f %s", value, units[unit]);
 }
 
-/* Emit one icon toolbar button. */
-static void tool(const char *icon, Ca_ClickFn fn, Fl_FileBrowser *b, bool disabled)
-{
-    ca_btn_begin(&(Ca_BtnDesc){.text = icon, .on_click = fn, .click_data = b, .style = FL_CLASS_ICON_ACTION, .disabled = disabled});
-    ca_btn_end();
-}
-
 /* Rebuild the whole browser from controller state. */
 static void build(Ca_Div *root, void *data)
 {
@@ -335,14 +329,19 @@ static void build(Ca_Div *root, void *data)
     }
     ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_FILE_BROWSER});
     ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_TOOLBAR});
-    tool(CA_ICON_NF_FA_ARROW_LEFT, back_clicked, b, b->history_pos == 0);
-    tool(CA_ICON_NF_FA_ARROW_RIGHT, forward_clicked, b, b->history_pos + 1 >= b->history_count);
-    tool(CA_ICON_NF_FA_LEVEL_UP, up_clicked, b, false);
-    tool(CA_ICON_NF_FA_HOME, home_clicked, b, false);
-    tool(CA_ICON_NF_FA_REFRESH, refresh_clicked, b, false);
+    fl_button(&(Fl_ButtonDesc){.kind = FL_BUTTON_ICON, .text = CA_ICON_NF_FA_ARROW_LEFT, .on_click = back_clicked, .click_data = b, .disabled = b->history_pos == 0,
+        .tooltip = "Back"});
+    fl_button(&(Fl_ButtonDesc){.kind = FL_BUTTON_ICON, .text = CA_ICON_NF_FA_ARROW_RIGHT, .on_click = forward_clicked, .click_data = b, .disabled = b->history_pos + 1 >= b->history_count,
+        .tooltip = "Forward"});
+    fl_button(&(Fl_ButtonDesc){.kind = FL_BUTTON_ICON, .text = CA_ICON_NF_FA_LEVEL_UP, .on_click = up_clicked, .click_data = b, .disabled = false,
+        .tooltip = "Parent folder"});
+    fl_button(&(Fl_ButtonDesc){.kind = FL_BUTTON_ICON, .text = CA_ICON_NF_FA_HOME, .on_click = home_clicked, .click_data = b, .disabled = false,
+        .tooltip = "Home folder"});
+    fl_button(&(Fl_ButtonDesc){.kind = FL_BUTTON_ICON, .text = CA_ICON_NF_FA_REFRESH, .on_click = refresh_clicked, .click_data = b, .disabled = false,
+        .tooltip = "Refresh"});
     ca_input(&(Ca_InputDesc){.text = b->draft, .id = "file-browser-path", .style = FL_CLASS_PROPERTY_INPUT,
         .on_change = draft_changed, .change_data = b});
-    ca_btn_begin(&(Ca_BtnDesc){.text = "Go", .on_click = go_clicked, .click_data = b, .style = FL_CLASS_ACTION}); ca_btn_end();
+    fl_button(&(Fl_ButtonDesc){.text = "Go", .on_click = go_clicked, .click_data = b});
     ca_div_end();
     ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_TOOLBAR});
     if (b->filter_count > 1)
@@ -374,9 +373,9 @@ static void build(Ca_Div *root, void *data)
     else snprintf(summary, sizeof(summary), b->multiple ? "Select files (Cmd/Ctrl or Shift for several)." : "Select a file.");
     ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_FILE_FOOTER});
     ca_text(&(Ca_TextDesc){.text = summary, .style = FL_CLASS_FILE_SUMMARY});
-    ca_btn_begin(&(Ca_BtnDesc){.text = "Cancel", .on_click = cancel_clicked, .click_data = b, .style = FL_CLASS_ACTION}); ca_btn_end();
-    ca_btn_begin(&(Ca_BtnDesc){.text = b->confirm, .on_click = confirm_clicked, .click_data = b, .style = FL_CLASS_ACTION,
-        .disabled = b->mode == FL_FILE_BROWSER_OPEN_FILES && !files}); ca_btn_end();
+    fl_button(&(Fl_ButtonDesc){.text = "Cancel", .on_click = cancel_clicked, .click_data = b});
+    fl_button(&(Fl_ButtonDesc){.text = b->confirm, .on_click = confirm_clicked, .click_data = b,
+        .disabled = b->mode == FL_FILE_BROWSER_OPEN_FILES && !files});
     ca_div_end();
     ca_div_end();
 }

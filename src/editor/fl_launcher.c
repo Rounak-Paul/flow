@@ -1,4 +1,5 @@
 #include "fl_launcher.h"
+#include "ui/fl_button.h"
 #include "fl_file_browser.h"
 #include "style.h"
 #include "doc/fl_binary.h"
@@ -114,11 +115,11 @@ static void build(Ca_Div *root, void *data)
     ca_text(&(Ca_TextDesc){.text = "Project directory", .style = FL_CLASS_LABEL});
     ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_PROPERTY_ROW});
     l->path = ca_input(&(Ca_InputDesc){.text = l->default_path, .id = "project-path", .style = FL_CLASS_PROPERTY_INPUT});
-    ca_btn_begin(&(Ca_BtnDesc){.text = "Browse...", .on_click = browse_clicked, .click_data = l, .style = FL_CLASS_ACTION}); ca_btn_end();
+    fl_button(&(Fl_ButtonDesc){.text = "Browse...", .on_click = browse_clicked, .click_data = l});
     ca_div_end();
     ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_TOOLBAR});
-    ca_btn_begin(&(Ca_BtnDesc){.text = "Create project", .on_click = create_clicked, .click_data = l, .style = FL_CLASS_ACTION}); ca_btn_end();
-    ca_btn_begin(&(Ca_BtnDesc){.text = "Open project", .on_click = open_clicked, .click_data = l, .style = FL_CLASS_ACTION}); ca_btn_end();
+    fl_button(&(Fl_ButtonDesc){.text = "Create project", .on_click = create_clicked, .click_data = l});
+    fl_button(&(Fl_ButtonDesc){.text = "Open project", .on_click = open_clicked, .click_data = l});
     ca_div_end();
     ca_text(&(Ca_TextDesc){.text = "Recent projects", .style = FL_CLASS_HEADING});
     for (size_t i = 0; i < l->count; ++i) {

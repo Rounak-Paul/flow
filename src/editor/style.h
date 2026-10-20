@@ -1,4 +1,5 @@
 #pragma once
+#include "ui/fl_button_style.h"
 #include "render/fl_frame.h"
 
 /*
@@ -343,7 +344,6 @@
 #define FL_CLASS_HEADING "fl-heading"
 #define FL_CLASS_LABEL "fl-label"
 #define FL_CLASS_MUTED "fl-muted"
-#define FL_CLASS_ACTION "fl-action"
 #define FL_CLASS_SCENE_GUTTER "fl-scene-gutter fl-ambient"
 #define FL_CLASS_SCENE_STRIP "fl-scene-strip"
 #define FL_CLASS_SCENE_RIM "fl-scene-rim"
@@ -383,8 +383,6 @@
 #define FL_CLASS_SCENE_TOOLBAR "fl-toolbar fl-scene-toolbar"
 #define FL_CLASS_TOOLBAR_SPACER "fl-toolbar-spacer"
 #define FL_CLASS_ASPECT_SELECT "fl-aspect-select"
-#define FL_CLASS_CANVAS_TOOL "fl-canvas-tool"
-#define FL_CLASS_CANVAS_TOOL_ACTIVE "fl-canvas-tool active"
 #define FL_CLASS_VIEW_GUTTER "fl-view-gutter"
 #define FL_CLASS_VIEW_RIM "fl-view-rim"
 #define FL_CLASS_VIEWPORT "fl-viewport"
@@ -399,8 +397,6 @@
     ".fl-heading { color: " FL_COLOR_TEXT_BRIGHT "; font-size: " FL_FONT_MD "; }" \
     ".fl-label { color: " FL_COLOR_TEXT_MEDIUM "; }" \
     ".fl-muted { color: " FL_COLOR_TEXT_DIM "; font-size: " FL_FONT_SM "; }" \
-    ".fl-action { padding: 5px 14px; background: " FL_COLOR_CONTROL "; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: " FL_RADIUS_PILL "; color: " FL_COLOR_TEXT_BRIGHT "; flex-shrink: 0; }" \
-    ".fl-action:hover { background: " FL_COLOR_CONTROL_HOVER "; }" \
     ".fl-recent:hover { background: " FL_COLOR_CONTROL_HOVER "; }" \
     ".fl-ambient { ambient-light: " FL_AMBIENT_LIGHT "; }" \
     ".fl-scene-toolbar { height: 32px; }" \
@@ -414,15 +410,13 @@
     ".fl-scene-card:hover { glow-radius: 8px; glow-color: " FL_COLOR_TAB_PILL_RIM "; }" \
     ".fl-scene-card.selected { glow-radius: 6px; glow-color: " FL_COLOR_CARD_SELECTED_GLOW "; }" \
     ".fl-scene-thumb { pointer-events: none; }" \
-    ".fl-scene-glass { left: 0px; top: 0px; width: 100%; height: 100%; z-index: 1; pointer-events: none; border-radius: " FL_RADIUS_CARD "; background: linear-gradient(to bottom, " FL_COLOR_CARD_GLASS_TOP ", " FL_COLOR_CARD_GLASS_BOTTOM "); border: 1px solid " FL_COLOR_TAB_PILL_RIM "; border-top-color: " FL_COLOR_TAB_PILL_SPECULAR "; border-bottom-color: " FL_COLOR_TAB_PILL_UNDER "; }" \
+    ".fl-scene-glass { left: 0px; top: 0px; width: 100%; height: 100%; z-index: 1; pointer-events: none; border-radius: " FL_RADIUS_CARD "; background: linear-gradient(to right, " FL_COLOR_CARD_GLASS_TOP ", " FL_COLOR_CARD_GLASS_BOTTOM "); border: 1px solid " FL_COLOR_TAB_PILL_RIM "; border-top-color: " FL_COLOR_TAB_PILL_SPECULAR "; border-bottom-color: " FL_COLOR_TAB_PILL_UNDER "; }" \
     ".fl-scene-glass.selected { border-color: " FL_COLOR_CARD_SELECTED_RIM "; border-top-color: " FL_COLOR_CARD_SELECTED_SPECULAR "; }" \
     ".fl-scene-label { left: 0px; top: 32px; width: 100%; height: 34px; padding: 0px 10px; gap: 0px; justify-content: center; z-index: 1; background: transparent; pointer-events: none; }" \
     ".fl-scene-name { z-index: 1; color: " FL_COLOR_TEXT_BRIGHT "; font-size: " FL_FONT_SM "; }" \
     ".fl-scene-time { z-index: 1; color: " FL_COLOR_TEXT_MEDIUM "; font-size: " FL_FONT_XS "; }"
 
 #define FL_STYLE_CSS_SCENE_PANES \
-    ".fl-canvas-tool { width: 24px; height: 24px; flex-shrink: 0; padding: 0px; justify-content: center; align-items: center; color: " FL_COLOR_TEXT_MEDIUM "; background: " FL_COLOR_CONTROL "; border-radius: " FL_RADIUS_PILL "; }" \
-    ".fl-canvas-tool.active { color: " FL_COLOR_TEXT_BRIGHT "; background: " FL_COLOR_SELECTION "; }" \
     ".fl-toolbar-spacer { flex-grow: 1; min-width: 0px; }" \
     ".fl-aspect-select { width: 96px; min-width: 60px; height: 24px; flex-shrink: 1; border-radius: " FL_RADIUS_PILL "; background: " FL_COLOR_FIELD "; color: " FL_COLOR_TEXT_BRIGHT "; }" \
     ".fl-hierarchy-pane { width: 100%; height: 100%; padding: 0px " FL_SPACE_SM " " FL_SPACE_SM "; gap: 0px; }" \
@@ -504,10 +498,7 @@
 #define FL_CLASS_ASSET_ICON "fl-asset-icon"
 #define FL_CLASS_ASSET_NAME "fl-asset-name"
 #define FL_CLASS_CHIPS "fl-chips"
-#define FL_CLASS_CHIP "fl-chip"
-#define FL_CLASS_CHIP_SELECTED "fl-chip selected"
-#define FL_CLASS_PLAY "fl-play"
-#define FL_CLASS_PLAY_ACTIVE "fl-play active"
+#define FL_CLASS_ASSET_PLAY "fl-asset-play"
 #define FL_CLASS_EMPTY "fl-empty"
 #define FL_CLASS_EMPTY_ICON "fl-empty-icon"
 #define FL_STYLE_SCENE_THUMB_DISPLAY_W 116.0f
@@ -532,16 +523,14 @@
     ".fl-assets { width: 100%; height: 100%; padding: 8px; gap: 8px; overflow-y: auto; background: transparent; }" \
     ".fl-asset-grid { width: 100%; flex-wrap: wrap; gap: 6px; flex-shrink: 0; }" \
     ".fl-asset-tile { width: 90px; height: 86px; flex-shrink: 0; }" \
-    ".fl-play { position: absolute; left: 8px; top: 38px; width: 22px; height: 22px; z-index: 1; font-size: " FL_FONT_XS "; border-radius: 11px; background: " FL_COLOR_CONTROL "; color: " FL_COLOR_TEXT_BRIGHT "; }" \
-    ".fl-play:hover, .fl-play.active { background: " FL_COLOR_ACCENT "; color: " FL_COLOR_ON_ACCENT "; glow-radius: 8px; glow-color: " FL_COLOR_ACCENT_GLOW "; }" \
+    ".fl-asset-play { left: 8px; top: 38px; width: 24px; height: 24px; z-index: 1; }" \
     ".fl-asset-card { width: 100%; height: 100%; padding: 4px; gap: 4px; align-items: center; background: transparent; border-radius: " FL_RADIUS_MD "; }" \
-    ".fl-asset-card:hover, .fl-font-row:hover, .fl-chip:hover { background: " FL_COLOR_HOVER "; }" \
-    ".fl-asset-card.selected, .fl-font-row.selected, .fl-chip.selected { background: " FL_COLOR_SELECTION "; }" \
+    ".fl-asset-card:hover, .fl-font-row:hover { background: " FL_COLOR_HOVER "; }" \
+    ".fl-asset-card.selected, .fl-font-row.selected { background: " FL_COLOR_SELECTION "; }" \
     ".fl-asset-preview { width: 82px; height: 56px; flex-shrink: 0; align-items: center; justify-content: center; overflow: hidden; background: " FL_COLOR_FIELD "; border-radius: " FL_RADIUS_SM "; }" \
     ".fl-asset-icon { font-size: 26px; color: " FL_COLOR_TEXT_DIM "; }" \
     ".fl-asset-name { width: 100%; height: 16px; overflow: hidden; white-space: nowrap; text-align: center; font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MEDIUM "; }" \
     ".fl-chips { width: 100%; height: 28px; gap: 2px; flex-shrink: 0; }" \
-    ".fl-chip { width: 32px; height: 26px; flex-shrink: 0; border-radius: " FL_RADIUS_SM "; background: transparent; color: " FL_COLOR_TEXT_MUTED "; }" \
     ".fl-empty { width: 100%; padding: 28px 8px; gap: 8px; align-items: center; flex-shrink: 0; }" \
     ".fl-empty-icon { font-size: 30px; color: " FL_COLOR_TEXT_DIM "; }" \
     ".fl-font-list { width: 100%; height: 180px; flex-shrink: 0; overflow-y: auto; gap: 0px; background: " FL_COLOR_FIELD "; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: " FL_RADIUS_MD "; }" \
@@ -553,7 +542,6 @@
 #define FL_STYLE_FILE_BROWSER_W 720
 #define FL_STYLE_FILE_BROWSER_H 520
 #define FL_STYLE_FILE_BROWSER_LIMIT 1000
-#define FL_CLASS_ICON_ACTION "fl-icon-action"
 #define FL_CLASS_FILE_BROWSER "fl-file-browser"
 #define FL_CLASS_FILE_LIST "fl-file-list"
 #define FL_CLASS_FILE_ROW "fl-file-row"
@@ -582,8 +570,6 @@
     ".fl-script-source { width: 100%; color: " FL_COLOR_TEXT_MEDIUM "; font-size: " FL_FONT_SM "; }"
 #define FL_STYLE_CSS_FILE_BROWSER \
     ".fl-file-browser { width: 100%; height: 100%; padding: 12px; gap: 8px; " FL_STYLE_BACKDROP " }" \
-    ".fl-icon-action { width: 28px; height: 28px; flex-shrink: 0; background: " FL_COLOR_CONTROL "; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: " FL_RADIUS_PILL "; color: " FL_COLOR_TEXT_BRIGHT "; }" \
-    ".fl-icon-action:hover { background: " FL_COLOR_CONTROL_HOVER "; }" \
     ".fl-file-list { width: 100%; flex-grow: 1; min-height: 0px; overflow-y: auto; gap: 0px; background: " FL_COLOR_FIELD "; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: " FL_RADIUS_MD "; }" \
     ".fl-file-row { width: 100%; height: 26px; flex-shrink: 0; padding: 4px 10px; gap: 8px; justify-content: space-between; background: transparent; }" \
     ".fl-file-row:hover { background: " FL_COLOR_HOVER "; }" \
@@ -594,10 +580,12 @@
 /* Timeline panel. */
 #define FL_STYLE_TL_LABEL_W 240.0f
 #define FL_STYLE_TL_PAD 12.0f
-#define FL_STYLE_TL_ROW_H 26.0f
-#define FL_STYLE_TL_LANE_H 34.0f
-#define FL_STYLE_TL_PLAYHEAD_W 6.0f
-#define FL_STYLE_TL_PLAYHEAD_INSET 3.0f
+#define FL_STYLE_TL_ROW_H 28.0f
+#define FL_STYLE_TL_LANE_H 28.0f
+#define FL_STYLE_TL_RULER_H 20.0f
+#define FL_STYLE_TL_HEADER_H (FL_STYLE_TL_RULER_H + FL_STYLE_TL_LANE_H)
+#define FL_STYLE_TL_PLAYHEAD_W 2.0f
+#define FL_STYLE_TL_PLAYHEAD_INSET 0.0f
 #define FL_STYLE_TL_KEY 14.0f
 #define FL_STYLE_TL_EDGE_W 14.0f
 #define FL_STYLE_TL_SNAP 6.0
@@ -611,10 +599,7 @@
 #define FL_CLASS_TIMELINE "fl-timeline"
 #define FL_CLASS_TL_SELECT "fl-tl-select"
 #define FL_CLASS_TL_TRACK_NAME "fl-tl-track-name"
-#define FL_CLASS_TL_TRACK_ACTION "fl-tl-track-action"
 #define FL_CLASS_TL_CLOCK "fl-tl-clock"
-#define FL_CLASS_TL_SNAP "fl-icon-action fl-tl-snap"
-#define FL_CLASS_TL_SNAP_OFF "fl-icon-action fl-tl-snap off"
 #define FL_CLASS_TL_SPACER "fl-tl-spacer"
 #define FL_CLASS_TL_SCROLL "fl-tl-scroll"
 #define FL_CLASS_TL_BODY "fl-tl-body"
@@ -629,7 +614,6 @@
 #define FL_CLASS_TL_LANE_LABEL_TEXT "fl-tl-lane-label-text"
 #define FL_CLASS_TL_LANES "fl-tl-lanes"
 #define FL_CLASS_TL_BEATLABE_SEGMENTS "fl-tl-beat-segments"
-#define FL_CLASS_TL_RIM "fl-tl-rim"
 #define FL_CLASS_TL_CONTENT "fl-tl-content"
 #define FL_CLASS_TL_ROW "fl-tl-row"
 #define FL_CLASS_TL_BEAT "fl-tl-beat"
@@ -650,45 +634,53 @@
 #define FL_CLASS_TL_CLIP "fl-tl-clip"
 #define FL_CLASS_TL_CLIP_SELECTED "fl-tl-clip selected"
 #define FL_CLASS_TL_PLAYHEAD "fl-tl-playhead"
-#define FL_CLASS_TL_PLAYHEAD_GLASS "fl-tl-playhead-glass"
+#define FL_CLASS_TL_NEEDLE "fl-tl-needle"
 #define FL_STYLE_CSS_TIMELINE \
     ".fl-timeline { width: 100%; height: 100%; gap: 0px; overflow: hidden; background: transparent; padding: 0px " FL_SPACE_SM " " FL_SPACE_SM "; }" \
-    ".fl-tl-select { width: 130px; flex-shrink: 0; }" \
+    ".fl-tl-transport, .fl-tl-authoring { width: 100%; height: 34px; flex-shrink: 0; gap: 6px; padding: 0px 4px; align-items: center; overflow: hidden; }" \
+    ".fl-tl-authoring { border-top: 1px solid " FL_COLOR_GLASS_BORDER "; }" \
+    ".fl-tl-selection { width: 100%; min-width: 0px; flex-shrink: 1; overflow: hidden; white-space: nowrap; font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MEDIUM "; }" \
+    ".fl-tl-header, .fl-tl-label-header { height: 48px; flex-shrink: 0; overflow: hidden; gap: 0px; }" \
+    ".fl-tl-label-header { width: 100%; padding: 0px; }" \
+    ".fl-tl-object-header { width: 100%; flex-shrink: 0; padding: 0px 10px; align-items: center; overflow: hidden; border-bottom: 1px solid " FL_COLOR_GLASS_BORDER "; }" \
+    ".fl-tl-tick { border-left: 1px solid " FL_COLOR_GLASS_BORDER "; padding: 3px 4px; }" \
+    ".fl-tl-tick-text { font-size: " FL_FONT_XS "; color: " FL_COLOR_TEXT_DIM "; white-space: nowrap; }" \
+    ".fl-tl-select { width: 112px; flex-shrink: 0; }" \
     ".fl-tl-track-name { flex-grow: 1; min-width: 0px; overflow: hidden; white-space: nowrap; font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MEDIUM "; }" \
-    ".fl-tl-track-action { width: 22px; height: 22px; padding: 0px; flex-shrink: 0; font-size: " FL_FONT_SM "; }" \
     ".fl-tl-clock { font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MEDIUM "; padding: 0px 8px; flex-shrink: 0; }" \
     ".fl-tl-spacer { flex-grow: 1; height: 1px; }" \
     ".fl-tl-scroll { width: 100%; flex-grow: 1; min-height: 0px; overflow: auto; gap: 0px; }" \
-    ".fl-tl-body { position: relative; width: 100%; flex-grow: 1; min-height: 0px; overflow: hidden; gap: 0px; padding: 0px; border-radius: " FL_RADIUS_CARD_GUTTER "; background: linear-gradient(to bottom, " FL_COLOR_TAB_GUTTER_TOP ", " FL_COLOR_TAB_GUTTER_BOTTOM "); }" \
-    ".fl-tl-labels { width: 240px; flex-shrink: 0; gap: 0px; }" \
+    ".fl-tl-labels { width: 240px; flex-shrink: 0; gap: 0px; border-right: 1px solid " FL_COLOR_GLASS_BORDER "; }" \
     ".fl-tl-label-viewport { width: 100%; flex-grow: 1; min-height: 0px; overflow: hidden; }" \
     ".fl-tl-label-content, .fl-tl-key-content { flex-shrink: 0; gap: 0px; }" \
-    ".fl-tl-lane-label { width: 100%; height: 34px; flex-shrink: 0; padding: 0px 10px; align-items: center; }" \
+    ".fl-tl-lane-label { width: 100%; height: 28px; flex-shrink: 0; padding: 0px 10px; align-items: center; }" \
     ".fl-tl-lane-label-text { font-size: " FL_FONT_XS "; color: " FL_COLOR_TEXT_DIM "; white-space: nowrap; }" \
-    ".fl-tl-label { width: 100%; height: 26px; flex-shrink: 0; padding: 0px 10px; align-items: center; overflow: hidden; }" \
-    ".fl-tl-label.selected { background: " FL_COLOR_SELECTION "; }" \
+    ".fl-tl-label { width: 100%; height: 28px; flex-shrink: 0; padding: 0px 10px; gap: 4px; align-items: center; overflow: hidden; border-bottom: 1px solid " FL_COLOR_GLASS_BORDER "; }" \
+    ".fl-tl-row.selected, .fl-tl-label.selected { background: " FL_COLOR_SELECTION "; }" \
     ".fl-tl-label-text { font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MEDIUM "; white-space: nowrap; }" \
     ".fl-tl-lanes { flex-grow: 1; min-width: 0px; min-height: 0px; overflow: hidden; gap: 0px; }" \
-    ".fl-tl-beat-segments { width: 100%; height: 34px; flex-shrink: 0; overflow: hidden; gap: 0px; }" \
-    ".fl-tl-rim { left: 0px; top: 0px; width: 100%; height: 100%; z-index: 6; pointer-events: none; background: transparent; border-radius: " FL_RADIUS_CARD_GUTTER "; box-shadow: inset 0px 3px 8px " FL_COLOR_TAB_GUTTER_SHADE "; border: 1px solid " FL_COLOR_TAB_GUTTER_EDGE "; border-top-color: " FL_COLOR_TAB_GUTTER_EDGE "; border-bottom-color: " FL_COLOR_TAB_GUTTER_LIP "; }" \
+    ".fl-tl-beat-segments { width: 100%; height: 28px; flex-shrink: 0; overflow: hidden; gap: 0px; }" \
     ".fl-tl-content { flex-shrink: 0; gap: 0px; }" \
-    ".fl-tl-row { height: 26px; flex-shrink: 0; border-bottom: 1px solid " FL_COLOR_GLASS_BORDER "; }" \
-    ".fl-tl-beat-empty { height: 34px; padding: 0px 10px; align-items: center; }" \
-    ".fl-tl-beat { padding: 0px; align-items: center; overflow: hidden; border-right: 1px solid " FL_COLOR_GLASS_BORDER "; background: " FL_COLOR_CONTROL "; }" \
+    ".fl-tl-row { height: 28px; flex-shrink: 0; border-bottom: 1px solid " FL_COLOR_GLASS_BORDER "; }" \
+    ".fl-tl-beat-empty { height: 28px; padding: 0px 10px; align-items: center; }" \
     ".fl-tl-beat { cursor: grab; }" \
     ".fl-tl-beat:active { cursor: grabbing; }" \
-    ".fl-tl-beat-label { left: 0px; top: 0px; width: 100%; height: 100%; z-index: 1; padding: 0px 8px; gap: 6px; align-items: center; justify-content: space-between; background: transparent; pointer-events: none; }" \
+    ".fl-tl-beat-label { left: 0px; top: 0px; width: 100%; height: 100%; z-index: 2; padding: 0px 8px; gap: 6px; align-items: center; justify-content: space-between; background: transparent; pointer-events: none; }" \
     ".fl-tl-beat:hover { background: " FL_COLOR_CONTROL_HOVER "; }" \
     ".fl-tl-beat.selected { background: " FL_COLOR_SELECTION "; }" \
     ".fl-tl-beat-text { font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MEDIUM "; white-space: nowrap; overflow: hidden; }" \
     ".fl-tl-beat-duration { font-size: " FL_FONT_XS "; color: " FL_COLOR_TEXT_DIM "; white-space: nowrap; flex-shrink: 0; }"
 #define FL_STYLE_CSS_TIMELINE_BEATS \
+    ".fl-tl-body { position: relative; width: 100%; flex-grow: 1; min-height: 0px; overflow: hidden; gap: 0px; padding: 0px; border-radius: " FL_RADIUS_CARD_GUTTER "; box-shadow: inset 0px 3px 8px " FL_COLOR_TAB_GUTTER_SHADE "; border: 1px solid " FL_COLOR_TAB_GUTTER_EDGE "; border-bottom-color: " FL_COLOR_TAB_GUTTER_LIP "; background: linear-gradient(to bottom, " FL_COLOR_TAB_GUTTER_TOP ", " FL_COLOR_TAB_GUTTER_BOTTOM "); }" \
+    ".fl-tl-time-ruler { height: 20px; flex-shrink: 0; overflow: hidden; background: transparent; }" \
+    ".fl-tl-needle { z-index: 0; background: " FL_COLOR_DANGER "; cursor: ew-resize; }" \
+    ".fl-tl-beat { z-index: 1; backdrop-filter: blur(2px); padding: 0px; align-items: center; overflow: hidden; border-radius: " FL_RADIUS_SM "; background: linear-gradient(to bottom, " FL_COLOR_CARD_GLASS_TOP ", " FL_COLOR_CARD_GLASS_BOTTOM "); border: 1px solid " FL_COLOR_TAB_PILL_RIM "; border-top-color: " FL_COLOR_TAB_PILL_SPECULAR "; border-bottom-color: " FL_COLOR_TAB_PILL_UNDER "; }" \
     ".fl-tl-clip { padding: 0px 8px; align-items: center; overflow: hidden; justify-content: flex-start; gap: 6px; border-radius: " FL_RADIUS_SM "; background: " FL_COLOR_CONTROL "; border: 1px solid " FL_COLOR_GLASS_BORDER "; }" \
     ".fl-tl-clip.selected { border-color: " FL_COLOR_ACCENT "; background: " FL_COLOR_SELECTION "; glow-radius: 8px; glow-color: " FL_COLOR_ACCENT_GLOW "; }" \
     ".fl-tl-beat-text { font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MEDIUM "; white-space: nowrap; overflow: hidden; }" \
     ".fl-tl-beat-duration { font-size: " FL_FONT_XS "; color: " FL_COLOR_TEXT_DIM "; white-space: nowrap; flex-shrink: 0; }" \
     ".fl-tl-beat-drop { background: " FL_COLOR_ACCENT "; z-index: 5; }" \
-    ".fl-tl-edge { z-index: 2; cursor: ew-resize; align-items: center; justify-content: center; background: transparent; }" \
+    ".fl-tl-edge { z-index: 3; cursor: ew-resize; align-items: center; justify-content: center; background: transparent; }" \
     ".fl-tl-edge-mark { width: 2px; height: 20px; background: " FL_COLOR_TEXT_DIM "; }" \
     ".fl-tl-edge:hover { background: " FL_COLOR_ACCENT "; }" \
     ".fl-tl-span { background: " FL_COLOR_GLASS_BORDER "; }" \
@@ -696,13 +688,11 @@
     ".fl-tl-key-text { font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MUTED "; }" \
     ".fl-tl-key-text.selected { color: " FL_COLOR_ACCENT "; }" \
     ".fl-tl-key-detail { font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MEDIUM "; white-space: nowrap; flex-shrink: 0; }" \
-    ".fl-tl-playhead { z-index: 5; cursor: ew-resize; }" \
-    ".fl-tl-playhead-glass { left: 0px; top: 0px; width: 100%; height: 100%; border-radius: " FL_RADIUS_PILL "; background: linear-gradient(to bottom, " FL_COLOR_CARD_GLASS_TOP ", " FL_COLOR_CARD_GLASS_BOTTOM "); border: 1px solid " FL_COLOR_TAB_PILL_RIM "; border-top-color: " FL_COLOR_TAB_PILL_SPECULAR "; border-bottom-color: " FL_COLOR_TAB_PILL_UNDER "; }" \
-    ".fl-tl-snap { color: " FL_COLOR_ACCENT "; }" \
-    ".fl-tl-snap.off { color: " FL_COLOR_TEXT_DIM "; }"
+    ".fl-tl-playhead { z-index: 5; background: " FL_COLOR_DANGER "; cursor: ew-resize; }"
+
 
 /* Motion: hover and selection fades shared by interactive controls. */
 #define FL_STYLE_CSS_MOTION \
-    ".ca-titlebar-menu-item, .ca-titlebar-control, .ca-popup-btn, .ca-dock-tab, .fl-action, .fl-icon-action, " \
-    ".fl-recent, .fl-tree-row, .fl-widget-card, .fl-asset-card, .fl-font-row, .fl-chip, .fl-file-row, " \
+    ".ca-titlebar-menu-item, .ca-titlebar-control, .ca-popup-btn, .ca-dock-tab, .fl-button, .fl-button-icon, " \
+    ".fl-recent, .fl-tree-row, .fl-widget-card, .fl-asset-card, .fl-font-row, .fl-file-row, " \
     ".fl-scene-card, .fl-script-row { transition: " FL_MOTION_FADE ", " FL_MOTION_FADE_BORDER "; }"

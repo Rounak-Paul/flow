@@ -1,4 +1,5 @@
 #include "fl_asset_panel.h"
+#include "ui/fl_button.h"
 #include "fl_asset_thumbnails.h"
 #include "fl_file_browser.h"
 #include "style.h"
@@ -223,7 +224,7 @@ static void rename_asset(Fl_AssetPanel *p, Fl_Id asset)
     if (!p->rename_window) return;
     ca_ui_begin(p->rename_window, &(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_FORM});
     p->rename_input = ca_input(&(Ca_InputDesc){.text = record->name, .style = FL_CLASS_INPUT});
-    ca_btn_begin(&(Ca_BtnDesc){.text = "Rename", .on_click = rename_apply, .click_data = p, .style = FL_CLASS_ACTION}); ca_btn_end();
+    fl_button(&(Fl_ButtonDesc){.text = "Rename", .on_click = rename_apply, .click_data = p});
     ca_ui_end(); ca_input_focus(p->rename_input);
 }
 
@@ -459,8 +460,11 @@ static void emit_tile(Fl_AssetPanel *p, const Fl_Asset *a)
     ca_text(&(Ca_TextDesc){.text = a->name, .style = FL_CLASS_ASSET_NAME});
     ca_btn_end();
     if (a->kind == FL_ASSET_AUDIO) {
-        ca_btn_begin(&(Ca_BtnDesc){.text = p->playing == a->id ? CA_ICON_NF_FA_STOP : CA_ICON_NF_FA_PLAY, .on_click = play_clicked,
-            .click_data = row, .style = p->playing == a->id ? FL_CLASS_PLAY_ACTIVE : FL_CLASS_PLAY}); ca_btn_end();
+        ca_div_begin(&(Ca_DivDesc){.position = CA_POSITION_ABSOLUTE, .style = FL_CLASS_ASSET_PLAY});
+        fl_button(&(Fl_ButtonDesc){.kind = FL_BUTTON_ICON, .text = p->playing == a->id ? CA_ICON_NF_FA_STOP : CA_ICON_NF_FA_PLAY,
+            .on_click = play_clicked, .click_data = row, .active = p->playing == a->id,
+            .tooltip = p->playing == a->id ? "Stop preview" : "Play preview"});
+        ca_div_end();
     }
     ca_div_end();
     ca_tooltip(&(Ca_TooltipDesc){.text = tip});
@@ -489,9 +493,9 @@ void fl_asset_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
     ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_PROPERTY_ROW});
     ca_input(&(Ca_InputDesc){.text = p->query, .placeholder = "Search", .id = "asset-search", .style = FL_CLASS_PROPERTY_INPUT,
         .on_change = query_changed, .change_data = p});
-    ca_btn_begin(&(Ca_BtnDesc){.text = CA_ICON_NF_FA_PLUS, .id = "asset-import", .on_click = browse_clicked, .click_data = p,
-        .style = FL_CLASS_ICON_ACTION}); ca_btn_end();
-    ca_tooltip(&(Ca_TooltipDesc){.text = "Import files"});
+    fl_button(&(Fl_ButtonDesc){.text = CA_ICON_NF_FA_PLUS, .id = "asset-import", .on_click = browse_clicked, .click_data = p,
+        .kind = FL_BUTTON_ICON,
+        .tooltip = "Import files"});
     ca_div_end();
     static const struct { int kind; const char *icon, *tip; } kinds[KIND_CHIPS] = {
         {0, CA_ICON_NF_FA_TABLE_CELLS, "All"}, {FL_ASSET_IMAGE, CA_ICON_NF_FA_IMAGE, "Images"},
@@ -499,9 +503,8 @@ void fl_asset_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
     ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_CHIPS});
     for (size_t i = 0; i < KIND_CHIPS; ++i) {
         p->chips[i] = (Fl_KindChip){p, kinds[i].kind};
-        ca_btn_begin(&(Ca_BtnDesc){.text = kinds[i].icon, .on_click = chip_clicked, .click_data = &p->chips[i],
-            .style = p->filter == kinds[i].kind ? FL_CLASS_CHIP_SELECTED : FL_CLASS_CHIP}); ca_btn_end();
-        ca_tooltip(&(Ca_TooltipDesc){.text = kinds[i].tip});
+        fl_button(&(Fl_ButtonDesc){.kind = FL_BUTTON_ICON, .text = kinds[i].icon, .on_click = chip_clicked,
+            .click_data = &p->chips[i], .active = p->filter == kinds[i].kind, .tooltip = kinds[i].tip});
     }
     ca_div_end();
     p->status = p->message[0] ? ca_text(&(Ca_TextDesc){.text = p->message, .style = FL_CLASS_MUTED, .wrap = true}) : NULL;

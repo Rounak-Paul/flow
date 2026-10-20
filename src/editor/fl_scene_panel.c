@@ -1,4 +1,5 @@
 #include "fl_scene_panel.h"
+#include "ui/fl_button.h"
 #include "components/fl_component.h"
 #include "style.h"
 #include "core/fl_log.h"
@@ -152,13 +153,10 @@ static void build_aspect_selector(Fl_ScenePanel *p, const Fl_Scene *scene)
         selected = count; options[count++] = custom;
     }
     ca_div_begin(&(Ca_DivDesc){.style = FL_CLASS_TOOLBAR_SPACER}); ca_div_end();
-    ca_btn_begin(&(Ca_BtnDesc){.text=CA_ICON_NF_MD_FIT_TO_PAGE_OUTLINE,.id="scene-fit-canvas",
-        .style=FL_CLASS_CANVAS_TOOL,.on_click=reset_canvas,.click_data=p}); ca_btn_end();
-    ca_tooltip(&(Ca_TooltipDesc){.text="Center target frame. Pan with right-drag or scroll."});
-    ca_btn_begin(&(Ca_BtnDesc){.text=CA_ICON_NF_MD_MAGNET,.id="scene-toggle-snap",
-        .style=fl_scene_edit_snap(p->edit) ? FL_CLASS_CANVAS_TOOL_ACTIVE : FL_CLASS_CANVAS_TOOL,
-        .on_click=toggle_snap,.click_data=p}); ca_btn_end();
-    ca_tooltip(&(Ca_TooltipDesc){.text=fl_scene_edit_snap(p->edit) ? "Grid snapping on (64 units)" : "Grid snapping off"});
+    fl_button(&(Fl_ButtonDesc){.text=CA_ICON_NF_MD_FIT_TO_PAGE_OUTLINE,.id="scene-fit-canvas",
+        .on_click=reset_canvas,.click_data=p, .kind = FL_BUTTON_ICON, .tooltip = "Center target frame. Pan with right-drag or scroll."});
+    fl_button(&(Fl_ButtonDesc){.text=CA_ICON_NF_MD_MAGNET,.id="scene-toggle-snap",
+        .on_click=toggle_snap,.click_data=p, .kind = FL_BUTTON_ICON, .active = fl_scene_edit_snap(p->edit), .tooltip = fl_scene_edit_snap(p->edit) ? "Grid snapping on (64 units)" : "Grid snapping off"});
     ca_text(&(Ca_TextDesc){.text = "Target", .style = FL_CLASS_LABEL});
     ca_select(&(Ca_SelectDesc){.options = options, .option_count = count, .selected = selected < 0 ? 0 : selected,
         .id = "scene-target-aspect", .style = FL_CLASS_ASPECT_SELECT, .disabled = !scene,
@@ -220,7 +218,7 @@ static void rename_row(Fl_Row row)
     if (!p->rename_window) return;
     ca_ui_begin(p->rename_window, &(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_FORM});
     p->rename_input = ca_input(&(Ca_InputDesc){.text = e ? e->name : s->name, .style = FL_CLASS_INPUT});
-    ca_btn_begin(&(Ca_BtnDesc){.text = "Rename", .on_click = rename_apply, .click_data = p, .style = FL_CLASS_ACTION}); ca_btn_end();
+    fl_button(&(Fl_ButtonDesc){.text = "Rename", .on_click = rename_apply, .click_data = p});
     ca_ui_end(); ca_input_focus(p->rename_input);
 }
 
@@ -597,7 +595,7 @@ void fl_scene_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
     if (!p->rows) return;
     ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_SCENE});
     ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_SCENE_TOOLBAR});
-    ca_btn_begin(&(Ca_BtnDesc){.text = "+ Scene", .on_click = add_scene, .click_data = p, .style = FL_CLASS_ACTION}); ca_btn_end();
+    fl_button(&(Fl_ButtonDesc){.text = "+ Scene", .on_click = add_scene, .click_data = p});
     build_aspect_selector(p, s);
     ca_div_end();
     ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_SCENE_GUTTER});

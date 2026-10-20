@@ -1,4 +1,5 @@
 #include "fl_script_panel.h"
+#include "ui/fl_button.h"
 #include "fl_file_browser.h"
 #include "style.h"
 #include "components/fl_script.h"
@@ -289,8 +290,7 @@ static void emit_detail(Fl_ScriptPanel *p, const Fl_Scene *scene, const Fl_Scrip
         {"Rename", "script-rename", rename_clicked}, {"Edit in editor", "script-edit", edit_clicked}, {"Attach to selection", "script-attach", attach_clicked},
         {"Duplicate", "script-duplicate", duplicate_clicked}, {"Delete", "script-delete", delete_clicked}};
     for (size_t i = 0; i < sizeof(actions) / sizeof(*actions); ++i) {
-        ca_btn_begin(&(Ca_BtnDesc){.text = actions[i].label, .id = actions[i].id, .on_click = actions[i].fn, .click_data = p, .style = FL_CLASS_ACTION});
-        ca_btn_end();
+        fl_button(&(Fl_ButtonDesc){.text = actions[i].label, .id = actions[i].id, .on_click = actions[i].fn, .click_data = p});
     }
     ca_div_end();
     char error[256];
@@ -314,10 +314,10 @@ void fl_script_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
     if (!scene || !fl_scene_script(scene, p->selected)) p->selected = scene && scene->script_count ? scene->scripts[0].id : 0;
     ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_SCRIPTS});
     ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_PROPERTY_ROW});
-    ca_btn_begin(&(Ca_BtnDesc){.text = CA_ICON_NF_FA_PLUS " New", .id = "script-new", .on_click = new_clicked, .click_data = p, .style = FL_CLASS_ACTION,
-                               .disabled = !scene}); ca_btn_end();
-    ca_btn_begin(&(Ca_BtnDesc){.text = CA_ICON_NF_FA_FILE_IMPORT " Import…", .id = "script-import", .on_click = import_clicked, .click_data = p,
-                               .style = FL_CLASS_ACTION, .disabled = !scene}); ca_btn_end();
+    fl_button(&(Fl_ButtonDesc){.text = CA_ICON_NF_FA_PLUS " New", .id = "script-new", .on_click = new_clicked, .click_data = p,
+                               .disabled = !scene});
+    fl_button(&(Fl_ButtonDesc){.text = CA_ICON_NF_FA_FILE_IMPORT " Import…", .id = "script-import", .on_click = import_clicked, .click_data = p,
+                                .disabled = !scene});
     ca_div_end();
     p->status = p->message[0] ? ca_text(&(Ca_TextDesc){.text = p->message, .style = FL_CLASS_MUTED, .wrap = true}) : NULL;
     if (!scene || !scene->script_count) {
