@@ -3,6 +3,7 @@
 #include "platform/fl_paths.h"
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdatomic.h>
 
 /*
  * Timeline audio mixer: plays any number of clips positioned on a scene
@@ -18,6 +19,8 @@ typedef struct Fl_MixerClip {
     Fl_Tick source_offset;      /* ticks skipped at the start of the file */
     Fl_Tick duration;           /* ticks played; zero plays to the end of the file */
     double gain;                /* linear */
+    double rate;                /* source/composition clock rate; zero selects 1 */
+    Fl_Tick envelope_offset, envelope_duration; /* original clip clock before region trimming; zero duration uses duration */
     Fl_Tick fade_in, fade_out;
 } Fl_MixerClip;
 typedef struct Fl_AudioMixerDesc { bool silent; } Fl_AudioMixerDesc;
@@ -33,3 +36,8 @@ bool fl_audio_mixer_start(Fl_AudioMixer *mixer, const Fl_MixerClip *clips, size_
 void fl_audio_mixer_stop(Fl_AudioMixer *mixer);
 /* Scene time reached by the device clock; false when the mixer is not running. */
 bool fl_audio_mixer_position(Fl_AudioMixer *mixer, Fl_Tick *tick);
+
+/* Mix into an owned RF64 float-stereo file using the same converters/envelopes as playback. Worker-only.
+   Duration is composition ticks; cancellation is checked every block. Removes partial output on failure. */
+bool fl_audio_mixer_file(const char *path, const Fl_MixerClip *clips, size_t count, Fl_Tick duration,
+                          uint32_t sample_rate, const atomic_bool *cancel);

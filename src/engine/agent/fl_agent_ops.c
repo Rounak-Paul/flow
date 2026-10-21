@@ -1,3 +1,4 @@
+#include "project/fl_prototype_authoring.h"
 #include "fl_agent_internal.h"
 #include "doc/fl_document.h"
 #include "components/fl_script.h"
@@ -639,6 +640,42 @@ static const Fl_Asset *need_script(Ctx *x, const cJSON *op, Fl_Fail *f, const ch
     return asset;
 }
 
+/* Capture reusable authored content through the shared native authoring owner. */
+static bool prototype_capture(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[]={"op","as","entity","name",NULL};
+    const Fl_Scene *scene; const Fl_Entity *entity; const char *name=NULL; Fl_Id id=0;
+    if (!agent_only_keys(op,f,"prototype.capture",keys) || !(entity=need_entity(x,op,"entity",&scene,f,"prototype.capture")) ||
+        !agent_get_string(op,"name",true,&name,f,"prototype.capture")) return false;
+    if (!fl_prototype_capture(x->project,scene->id,entity->id,name,&id)) return rejected(f,"prototype.capture","invalid hierarchy or prototype name");
+    report_id(result,id); return true;
+}
+
+/* Place a live instance at a native scene position. */
+static bool prototype_instantiate(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[]={"op","as","scene","parent","asset","x","y",NULL};
+    const Fl_Scene *scene; Fl_Id parent=0,asset=0,id=0; double px=0,py=0;
+    if (!agent_only_keys(op,f,"prototype.instantiate",keys) || !(scene=need_scene(x,op,"scene",f,"prototype.instantiate")) ||
+        !agent_get_id(op,"parent",&x->refs,false,&parent,f,"prototype.instantiate") || !agent_get_id(op,"asset",&x->refs,true,&asset,f,"prototype.instantiate") ||
+        !agent_get_number(op,"x",false,&px,NULL,f,"prototype.instantiate") || !agent_get_number(op,"y",false,&py,NULL,f,"prototype.instantiate")) return false;
+    if (!fl_prototype_instantiate(x->project,scene->id,parent,asset,px,py,&id)) return rejected(f,"prototype.instantiate","prototype resource, parent or placement");
+    report_id(result,id); return true;
+}
+
+/* Replace an instance's explicit overrides; native validation and history apply to the entire batch. */
+static bool prototype_overrides(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    (void)result; static const char *const keys[]={"op","as","entity","value",NULL};
+    const Fl_Scene *scene; const Fl_Entity *entity;
+    if (!agent_only_keys(op,f,"prototype.overrides",keys) || !(entity=need_entity(x,op,"entity",&scene,f,"prototype.overrides"))) return false;
+    const cJSON *value=cJSON_GetObjectItemCaseSensitive(op,"value");
+    if (!cJSON_IsArray(value)) return fl_fail(f,"invalid_argument","prototype.overrides requires an operation array in value");
+    char *text=cJSON_PrintUnformatted(value);
+    bool ok=text && fl_prototype_set_overrides(x->project,scene->id,entity->id,text,strlen(text)); free(text);
+    return ok || rejected(f,"prototype.overrides",fl_project_diagnostic(x->project)[0] ? fl_project_diagnostic(x->project) : "invalid prototype override");
+}
+
 /* Author editable asset bytes through the same validated document changeset as native editing. */
 static bool asset_source(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
 {
@@ -795,6 +832,7 @@ static const struct {const char *name; OpFn run;} OPERATIONS[] = {
     {"key.set", key_set}, {"key.remove", key_remove}, {"track.remove", track_remove},
     {"beat.add", beat_add}, {"beat.update", beat_update}, {"beat.remove", beat_remove}, {"beat.move", beat_move}, {"beat.split", beat_split},
     {"clip.add", clip_add}, {"clip.update", clip_update}, {"clip.remove", clip_remove},
+    {"prototype.capture",prototype_capture}, {"prototype.instantiate",prototype_instantiate}, {"prototype.overrides",prototype_overrides},
     {"asset.source", asset_source}, {"asset.rename", asset_edit}, {"asset.remove", asset_edit},
     {"script.create", script_create}, {"script.update", script_update}, {"script.remove", script_remove},
     {"script.attach", script_attach}, {"script.detach", script_detach},

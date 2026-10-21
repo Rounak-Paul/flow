@@ -14,6 +14,20 @@ const Fl_SourceFormat *fl_source_asset_format(Fl_AssetKind kind)
     switch (kind) {case FL_ASSET_LUA: return &lua; case FL_ASSET_PROTOTYPE: return &prototype; default: return NULL;}
 }
 
+typedef struct SourceReferences {Fl_SourceInfo *info; size_t capacity;} SourceReferences;
+/* Retain every semantic direct reference once per occurrence for deletion checks and dependency compilation. */
+static bool append_reference(Fl_Id asset, Fl_AssetKind kind, void *data)
+{
+    (void)kind; SourceReferences *references=data; Fl_SourceInfo *info=references->info;
+    if (info->reference_count==references->capacity) {
+        size_t capacity=references->capacity ? references->capacity*2 : 16;
+        if (capacity<references->capacity || capacity>SIZE_MAX/sizeof(Fl_Id)) return false;
+        Fl_Id *items=realloc(info->references,capacity*sizeof(*items)); if (!items) return false;
+        info->references=items; references->capacity=capacity;
+    }
+    info->references[info->reference_count++]=asset; return true;
+}
+
 bool fl_source_asset_compile(Fl_AssetKind kind, const char *source, size_t size, Fl_SourceInfo *info, char *error, size_t capacity)
 {
     if (!info) return false;
@@ -24,29 +38,16 @@ bool fl_source_asset_compile(Fl_AssetKind kind, const char *source, size_t size,
         if (error && capacity) snprintf(error,capacity,"Invalid source asset encoding or size");
         return false;
     }
-    if (kind==FL_ASSET_LUA) return fl_script_check(source,size,error,capacity);
+    if (kind==FL_ASSET_LUA) return fl_script_dependencies(source,size,&info->references,&info->reference_count,error,capacity);
     Fl_Json context={0}; Fl_Prototype prototype={0};
     bool valid=fl_prototype_read(&context,source,size,&prototype);
-    size_t count=prototype.scope.clip_count;
+    SourceReferences references={.info=info};
+    for (size_t i=0;valid && i<prototype.scope.clip_count;++i) valid=append_reference(prototype.scope.clips[i].asset,FL_ASSET_AUDIO,&references);
     for (size_t i=0;valid && i<prototype.scope.entity_count;++i) {
-        size_t n=prototype.scope.entities[i].component_count;
-        if (n>SIZE_MAX-count) valid=fl_json_fail(&context,"Prototype dependency limit exceeded");
-        else count+=n;
+        const Fl_Entity *e=&prototype.scope.entities[i];
+        for (size_t j=0;valid && j<e->component_count;++j) valid=fl_component_visit_assets(&e->components[j],append_reference,&references);
     }
-    if (valid && count>SIZE_MAX/sizeof(Fl_Id)) valid=fl_json_fail(&context,"Prototype dependency limit exceeded");
-    Fl_Id *references=valid && count ? malloc(count*sizeof(*references)) : NULL;
-    if (valid && count && !references) valid=fl_json_fail(&context,"Cannot allocate prototype dependencies");
-    if (valid) {
-        for (size_t i=0;i<prototype.scope.clip_count;++i) references[info->reference_count++]=prototype.scope.clips[i].asset;
-        for (size_t i=0;i<prototype.scope.entity_count;++i) {
-            const Fl_Entity *e=&prototype.scope.entities[i];
-            for (size_t j=0;j<e->component_count;++j) {
-                Fl_Id id;
-                if (fl_component_asset_reference(&e->components[j],&id,NULL)) references[info->reference_count++]=id;
-            }
-        }
-        info->references=references;
-    } else free(references);
+    if (!valid) {free(info->references); *info=(Fl_SourceInfo){0}; fl_json_fail(&context,"Cannot compile prototype resource dependencies");}
     fl_prototype_clear(&prototype);
     if (!valid && error && capacity) snprintf(error,capacity,"%s",context.error);
     return valid;

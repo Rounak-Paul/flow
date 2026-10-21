@@ -1,9 +1,11 @@
 #include "project/fl_source_asset.h"
 #include "fl_script_runtime.h"
 #include "fl_lua_value.h"
+#include "fl_lua_document.h"
 #include "time/fl_scene_state.h"
 #include "core/fl_log.h"
 #include "doc/fl_json.h"
+#include "doc/fl_document.h"
 #include "schema/fl_parameters.h"
 #include "schema/fl_properties.h"
 #include <lua.h>
@@ -21,6 +23,10 @@
 #define SCRIPT_MEMORY_LIMIT (16u * 1024u * 1024u)
 #define SCRIPT_INSTRUCTIONS 1000000
 #define SCRIPT_HOOK_INTERVAL 1000
+#define SCRIPT_IMPORT_LIMIT 128u
+#define SCRIPT_IMPORT_DEPTH 32u
+
+typedef struct Fl_ImportChunk {Fl_Id asset; int ref;} Fl_ImportChunk;
 
 typedef struct Fl_ScriptSnapshot {unsigned char *bytes; size_t size; int64_t step;} Fl_ScriptSnapshot;
 
@@ -28,9 +34,9 @@ typedef struct Fl_ScriptSnapshot {unsigned char *bytes; size_t size; int64_t ste
 typedef struct Fl_ScriptProgram {
     int ref;
     Fl_Id component, asset;
-    cJSON *parameters, *parameter_schema, *effective_parameters;
+    cJSON *parameters, *parameter_schema, *effective_parameters, *bindings;
     bool schema_ready, compile_failed;
-    bool lifecycle_ready, has_initialize, has_step, has_sample, state_initialized;
+    bool lifecycle_ready, has_initialize, has_step, has_sample, has_build, state_initialized;
     Fl_Tick step_ticks;
     int64_t simulation_cycle;
     Fl_ScriptSnapshot latest, checkpoints[SCRIPT_CHECKPOINTS];
@@ -55,9 +61,14 @@ struct Fl_ScriptRuntime {
     size_t simulation_bytes;
     Fl_EntityState *state;
     const Fl_Asset *script;
+    cJSON *build_output, *binding_output;
+    Fl_ImportChunk imports[SCRIPT_IMPORT_LIMIT];
+    size_t import_count;
 };
 
 typedef union Fl_LuaAllocation { max_align_t alignment; size_t size; } Fl_LuaAllocation;
+
+static void validate_bindings(lua_State *lua, int module, const Fl_ScriptProgram *program);
 
 /* Account for actual allocation sizes; shrinking never fails or undercounts retained memory. */
 static void *script_allocate(void *data, void *pointer, size_t old_size, size_t size)
@@ -188,7 +199,7 @@ static void push_value(lua_State *L, int property, const double value[4])
 }
 
 /* Construct the per-evaluation self table from the current document state. */
-static void push_self(lua_State *L, Fl_ScriptRuntime *r, const double values[FL_PROP_COUNT][4])
+static void push_entity(lua_State *L, Fl_ScriptRuntime *r, size_t entity, const Fl_EntityState *state, const double values[FL_PROP_COUNT][4])
 {
     lua_createtable(L, 0, 6); int self = lua_gettop(L);
     static const char *const groups[] = {"transform", "appearance", "crop"};
@@ -201,13 +212,13 @@ static void push_self(lua_State *L, Fl_ScriptRuntime *r, const double values[FL_
         push_value(L, p, values[p]); lua_setfield(L, definition->lua_group ? -2 : self, definition->lua_field);
         if (definition->lua_group) lua_pop(L, 1);
     }
-    const Fl_Component *text = fl_entity_component(&r->scene->entities[r->entity], FL_COMPONENT_TEXT);
+    const Fl_Component *text = fl_entity_component(&r->scene->entities[entity], FL_COMPONENT_TEXT);
     if (text) {
-        lua_pushlstring(L, r->state->text_override ? r->state->text : text->size ? (const char *)text->data : "",
-                       r->state->text_override ? r->state->text_size : text->size);
+        lua_pushlstring(L, state->text_override ? state->text : text->size ? (const char *)text->data : "",
+                       state->text_override ? state->text_size : text->size);
         lua_setfield(L, self, "text");
     }
-    char id[24]; snprintf(id, sizeof(id), "%llu", (unsigned long long)r->scene->entities[r->entity].id);
+    char id[24]; snprintf(id, sizeof(id), "%llu", (unsigned long long)r->scene->entities[entity].id);
     lua_pushstring(L, id); lua_setfield(L, self, "id");
 }
 
@@ -385,15 +396,15 @@ static bool store_snapshot(Fl_ScriptRuntime *runtime, Fl_ScriptSnapshot *snapsho
 static void capture_lifecycle(lua_State *lua, int module, Fl_ScriptProgram *program)
 {
     if (program->lifecycle_ready) return;
-    const char *names[]={"initialize","step","sample"};
-    bool *capabilities[]={&program->has_initialize,&program->has_step,&program->has_sample};
-    for (size_t i=0;i<3;++i) {
+    const char *names[]={"initialize","step","sample","build"};
+    bool *capabilities[]={&program->has_initialize,&program->has_step,&program->has_sample,&program->has_build};
+    for (size_t i=0;i<4;++i) {
         lua_getfield(lua,module,names[i]);
         if (!lua_isnil(lua,-1) && !lua_isfunction(lua,-1)) luaL_error(lua,"%s must be a function",names[i]);
         *capabilities[i]=lua_isfunction(lua,-1); lua_pop(lua,1);
     }
-    if (!program->has_initialize && !program->has_step && !program->has_sample)
-        luaL_error(lua,"behavior module requires sample(ctx), initialize(ctx) or step(ctx)");
+    if (!program->has_initialize && !program->has_step && !program->has_sample && !program->has_build)
+        luaL_error(lua,"behavior module requires build(ctx), initialize(ctx), step(ctx) or sample(ctx)");
     lua_getfield(lua,module,"step_hz");
     lua_Integer hz=120;
     if (!lua_isnil(lua,-1)) {
@@ -402,6 +413,77 @@ static void capture_lifecycle(lua_State *lua, int module, Fl_ScriptProgram *prog
     }
     lua_pop(lua,1); program->step_ticks=FL_TICKS_PER_SECOND/(Fl_Tick)hz;
     program->lifecycle_ready=true;
+}
+
+/* Exact resource IDs remain independent of floating-point precision and asset names/paths. */
+static Fl_Id import_id(lua_State *lua, int index)
+{
+    if (lua_isinteger(lua,index)) {
+        lua_Integer value=lua_tointeger(lua,index); if (value>0) return (Fl_Id)value;
+    } else if (lua_type(lua,index)==LUA_TSTRING) {
+        size_t size=0; const char *text=lua_tolstring(lua,index,&size); uint64_t id=0;
+        if (size && size<=20) {
+            for (size_t i=0;i<size;++i) {
+                unsigned digit=(unsigned char)text[i]-'0';
+                if (digit>9 || id>(UINT64_MAX-digit)/10) return (Fl_Id)luaL_error(lua,"imports require positive exact Lua asset IDs");
+                id=id*10+digit;
+            }
+            if (id) return id;
+        }
+    }
+    return (Fl_Id)luaL_error(lua,"imports require positive exact Lua asset IDs");
+}
+
+/* Validate declaration keys before iteration; imported values are never arbitrary filesystem modules. */
+static void import_alias(lua_State *lua, int index)
+{
+    size_t size=0; const char *name=lua_type(lua,index)==LUA_TSTRING ? lua_tolstring(lua,index,&size) : NULL;
+    if (!name || !size || size>64 || !fl_json_utf8_valid(name,size)) luaL_error(lua,"import aliases require bounded UTF-8 names");
+}
+
+/* Resolve a fresh per-invocation module graph; cached chunks contain no surviving module/global state. */
+static void resolve_imports(lua_State *lua, Fl_ScriptRuntime *runtime, int module, const Fl_Asset *asset,
+                             int cache, Fl_Id *path, size_t depth)
+{
+    module=lua_absindex(lua,module); cache=lua_absindex(lua,cache);
+    if (depth==SCRIPT_IMPORT_DEPTH) luaL_error(lua,"Lua import nesting exceeds 32 modules");
+    path[depth]=asset->id;
+    lua_getfield(lua,module,"imports"); int declarations=lua_gettop(lua);
+    if (lua_isnil(lua,declarations)) {lua_pop(lua,1); return;}
+    luaL_checktype(lua,declarations,LUA_TTABLE); lua_newtable(lua); int resolved=lua_gettop(lua);
+    size_t count=0; lua_pushnil(lua);
+    while (lua_next(lua,declarations)) {
+        import_alias(lua,-2); Fl_Id id=import_id(lua,-1);
+        if (++count>SCRIPT_IMPORT_LIMIT) luaL_error(lua,"Lua import budget exceeded");
+        bool declared=false;
+        for (size_t i=0;i<asset->reference_count;++i) if (asset->references[i]==id) {declared=true; break;}
+        if (!declared) luaL_error(lua,"imports must match the compiled asset declarations");
+        for (size_t i=0;i<=depth;++i) if (path[i]==id) luaL_error(lua,"recursive Lua import dependency");
+        const Fl_Asset *import=fl_project_asset(runtime->scene->project,id);
+        if (!import || import->kind!=FL_ASSET_LUA) luaL_error(lua,"missing or incompatible Lua import");
+        lua_pushlstring(lua,(const char *)&id,sizeof(id)); lua_rawget(lua,cache);
+        if (lua_isnil(lua,-1)) {
+            lua_pop(lua,1); size_t position=0;
+            while (position<runtime->import_count && runtime->imports[position].asset!=id) ++position;
+            if (position==runtime->import_count) {
+                if (position==SCRIPT_IMPORT_LIMIT) luaL_error(lua,"Lua compiled import budget exceeded");
+                char name[FL_SOURCE_NAME_MAX+2]; snprintf(name,sizeof(name),"=%s",import->name);
+                if (luaL_loadbufferx(lua,import->source,(size_t)import->size,name,"t")!=LUA_OK) lua_error(lua);
+                runtime->imports[position]=(Fl_ImportChunk){.asset=id,.ref=luaL_ref(lua,LUA_REGISTRYINDEX)}; ++runtime->import_count;
+            }
+            int top=lua_gettop(lua); lua_rawgeti(lua,LUA_REGISTRYINDEX,runtime->imports[position].ref); int chunk=lua_gettop(lua);
+            environment(lua,runtime->scene->entities[runtime->entity].id ^ runtime->programs[runtime->program_index].component ^ id);
+            lua_pushvalue(lua,-1); if (!lua_setupvalue(lua,chunk,1)) lua_pop(lua,1);
+            lua_pushvalue(lua,chunk); lua_call(lua,0,1); luaL_checktype(lua,-1,LUA_TTABLE);
+            int imported_module=lua_gettop(lua); resolve_imports(lua,runtime,imported_module,import,cache,path,depth+1);
+            lua_pushlstring(lua,(const char *)&id,sizeof(id)); lua_pushvalue(lua,imported_module); lua_rawset(lua,cache);
+            lua_pushvalue(lua,imported_module); lua_replace(lua,top+1); lua_settop(lua,top+1);
+        }
+        lua_pushvalue(lua,-3); lua_pushvalue(lua,-2); lua_rawset(lua,resolved);
+        lua_pop(lua,2);
+    }
+    if (count!=asset->reference_count) luaL_error(lua,"imports must be static declarations");
+    lua_pushvalue(lua,resolved); lua_setfield(lua,module,"imports"); lua_pop(lua,2);
 }
 
 /* Reconstruct the module for every invocation; closures and globals never retain hidden state. */
@@ -426,11 +508,98 @@ static int load_module(lua_State *lua, Fl_ScriptRuntime *runtime)
     lua_pushvalue(lua,-1); if (!lua_setupvalue(lua,chunk,1)) lua_pop(lua,1);
     lua_pushvalue(lua,chunk); lua_call(lua,0,1); int module=lua_gettop(lua);
     if (!lua_istable(lua,module)) luaL_error(lua,"return a behavior module with sample(ctx)");
-    capture_parameter_schema(lua,module,program); capture_lifecycle(lua,module,program);
+    lua_newtable(lua); int cache=lua_gettop(lua); Fl_Id path[SCRIPT_IMPORT_DEPTH];
+    resolve_imports(lua,runtime,module,runtime->script,cache,path,0); lua_pop(lua,1);
+    capture_parameter_schema(lua,module,program); capture_lifecycle(lua,module,program); validate_bindings(lua,module,program);
     return module;
 }
 
 typedef enum Fl_CallbackPhase { CALLBACK_INITIALIZE, CALLBACK_STEP, CALLBACK_SAMPLE } Fl_CallbackPhase;
+
+/* Validate declared input types against this attachment; scene references resolve at callback time. */
+static void validate_bindings(lua_State *lua, int module, const Fl_ScriptProgram *program)
+{
+    module=lua_absindex(lua,module); lua_getfield(lua,module,"bindings"); int schema=lua_gettop(lua);
+    if (!lua_isnil(lua,schema) && !lua_istable(lua,schema)) luaL_error(lua,"bindings must be a schema table");
+    for (const cJSON *binding=program->bindings->child;binding;binding=binding->next) {
+        if (lua_isnil(lua,schema)) luaL_error(lua,"undeclared binding %s",binding->string);
+        lua_getfield(lua,schema,binding->string);
+        if (!lua_istable(lua,-1)) luaL_error(lua,"undeclared binding %s",binding->string);
+        lua_getfield(lua,-1,"type");
+        const char *type=lua_type(lua,-1)==LUA_TSTRING ? lua_tostring(lua,-1) : NULL;
+        if (!type || lua_rawlen(lua,-1)!=strlen(type) || strcmp(type,cJSON_GetObjectItemCaseSensitive(binding,"type")->valuestring))
+            luaL_error(lua,"binding type mismatch: %s",binding->string);
+        lua_pop(lua,2);
+    }
+    size_t count=0;
+    if (lua_istable(lua,schema)) {
+        lua_pushnil(lua);
+        while (lua_next(lua,schema)) {
+            size_t size=0; const char *name=lua_type(lua,-2)==LUA_TSTRING ? lua_tolstring(lua,-2,&size) : NULL;
+            if (++count>FL_SCRIPT_BINDING_COUNT || !name || !size || size>63 || strlen(name)!=size || !fl_json_utf8_valid(name,size) || !lua_istable(lua,-1))
+                luaL_error(lua,"invalid binding schema");
+            lua_getfield(lua,-1,"type"); const char *type=lua_type(lua,-1)==LUA_TSTRING ? lua_tostring(lua,-1) : NULL;
+            if (!type || lua_rawlen(lua,-1)!=strlen(type) || (strcmp(type,"entity") && strcmp(type,"component") && strcmp(type,"region") && strcmp(type,"asset")))
+                luaL_error(lua,"invalid binding type: %s",name);
+            lua_pop(lua,1); lua_getfield(lua,-1,"optional");
+            if (!lua_isnil(lua,-1) && !lua_isboolean(lua,-1)) luaL_error(lua,"binding optional must be boolean");
+            if (!lua_toboolean(lua,-1) && !cJSON_GetObjectItemCaseSensitive(program->bindings,name)) luaL_error(lua,"missing binding: %s",name);
+            lua_pop(lua,2);
+        }
+    }
+    lua_pop(lua,1);
+}
+
+/* Snapshot native inputs at the callback tick; behavior output ordering never changes these reads. */
+static void push_bindings(lua_State *lua, Fl_ScriptRuntime *runtime, Fl_Tick tick)
+{
+    const Fl_ScriptProgram *program=&runtime->programs[runtime->program_index];
+    lua_newtable(lua); int table=lua_gettop(lua);
+    for (const cJSON *binding=program->bindings->child;binding;binding=binding->next) {
+        Fl_Json context={0}; uint64_t id=0,owner=0;
+        fl_json_uint(&context,cJSON_GetObjectItemCaseSensitive(binding,"id"),&id);
+        const char *type=cJSON_GetObjectItemCaseSensitive(binding,"type")->valuestring;
+        if (!strcmp(type,"entity")) {
+            const Fl_Entity *entity=fl_scene_entity(runtime->scene,id); Fl_EntityState native;
+            if (!entity || !fl_entity_state_sample(runtime->scene,(size_t)(entity-runtime->scene->entities),tick,&native))
+                luaL_error(lua,"unresolved entity binding: %s",binding->string);
+            double values[FL_PROP_COUNT][4]={{0}}; state_values(&native,values);
+            push_entity(lua,runtime,(size_t)(entity-runtime->scene->entities),&native,values);
+        } else if (!strcmp(type,"component")) {
+            fl_json_uint(&context,cJSON_GetObjectItemCaseSensitive(binding,"entity"),&owner);
+            const Fl_Entity *entity=fl_scene_entity(runtime->scene,owner);
+            const Fl_Component *component=entity ? fl_entity_component_instance(entity,id) : NULL;
+            if (!component) luaL_error(lua,"unresolved component binding: %s",binding->string);
+            if (component->size>FL_SCRIPT_PARAMETER_LIMIT) luaL_error(lua,"component binding snapshot budget exceeded: %s",binding->string);
+            if (component->type==FL_COMPONENT_ANIMATION) {
+                const Fl_Animation *animation=(const Fl_Animation *)component->data; size_t keys=0;
+                for (size_t i=0;i<animation->track_count;++i) {
+                    if (animation->tracks[i].key_count>512-keys) luaL_error(lua,"component binding key budget exceeded: %s",binding->string);
+                    keys+=animation->tracks[i].key_count;
+                }
+            }
+            cJSON_Delete(runtime->binding_output); runtime->binding_output=NULL;
+            runtime->binding_output=fl_document_component_write(&context,component);
+            if (!runtime->binding_output || context.error[0]) luaL_error(lua,"cannot snapshot component binding: %s",binding->string);
+            push_json(lua,runtime->binding_output,0);
+            cJSON_Delete(runtime->binding_output); runtime->binding_output=NULL;
+        } else if (!strcmp(type,"region")) {
+            Fl_Tick start,end;
+            if (!fl_scene_beat_range(runtime->scene,id,&start,&end)) luaL_error(lua,"unresolved region binding: %s",binding->string);
+            lua_newtable(lua);
+            lua_pushinteger(lua,start); lua_setfield(lua,-2,"start_tick");
+            lua_pushinteger(lua,end); lua_setfield(lua,-2,"end_tick");
+        } else {
+            const Fl_Asset *asset=fl_project_asset(runtime->scene->project,id);
+            if (!asset) luaL_error(lua,"unresolved asset binding: %s",binding->string);
+            lua_newtable(lua); lua_pushstring(lua,asset->name); lua_setfield(lua,-2,"name");
+            lua_pushinteger(lua,asset->kind); lua_setfield(lua,-2,"kind");
+        }
+        char exact[24]; snprintf(exact,sizeof(exact),"%llu",(unsigned long long)id);
+        lua_pushstring(lua,exact); lua_setfield(lua,-2,"id");
+        lua_setfield(lua,table,binding->string);
+    }
+}
 
 /* Build inputs at this callback's actual media time; only sampling sees previous evaluated layers. */
 static int push_context(lua_State *lua, Fl_ScriptRuntime *runtime, Fl_CallbackPhase phase, Fl_Tick local_tick, int64_t step)
@@ -444,7 +613,7 @@ static int push_context(lua_State *lua, Fl_ScriptRuntime *runtime, Fl_CallbackPh
         runtime->state=&native;
     }
     double values[FL_PROP_COUNT][4]={{0}}; state_values(runtime->state,values);
-    push_self(lua,runtime,values); int self=lua_gettop(lua); runtime->state=requested;
+    push_entity(lua,runtime,runtime->entity,runtime->state,values); int self=lua_gettop(lua); runtime->state=requested;
     lua_newtable(lua); int context=lua_gettop(lua);
     lua_pushvalue(lua,self); lua_setfield(lua,context,"entity");
     lua_newtable(lua); int time=lua_gettop(lua);
@@ -461,6 +630,7 @@ static int push_context(lua_State *lua, Fl_ScriptRuntime *runtime, Fl_CallbackPh
     lua_pushstring(lua,phase==CALLBACK_SAMPLE ? runtime->time.phase==FL_TIME_BEFORE ? "before" : runtime->time.phase==FL_TIME_AFTER ? "after" : "active" : "active");
     lua_setfield(lua,time,"phase"); lua_setfield(lua,context,"time");
     push_parameters(lua,program); lua_setfield(lua,context,"params");
+    push_bindings(lua,runtime,composition); lua_setfield(lua,context,"bindings");
     if (program->latest.bytes) {
         char error[256];
         if (!fl_lua_value_push(lua,program->latest.bytes,program->latest.size,error)) luaL_error(lua,"%s",error);
@@ -469,14 +639,30 @@ static int push_context(lua_State *lua, Fl_ScriptRuntime *runtime, Fl_CallbackPh
     return context;
 }
 
-/* Counter-based callback streams make random draws reproducible without serializing Lua library state. */
+/* Seed each isolated module environment without relying on ambient time or previous callback history. */
+static void seed_environment(lua_State *lua, int environment_index, uint64_t seed)
+{
+    environment_index=lua_absindex(lua,environment_index);
+    lua_getfield(lua,environment_index,"math"); lua_getfield(lua,-1,"randomseed");
+    lua_pushinteger(lua,(lua_Integer)(seed&INT64_MAX)); lua_pushinteger(lua,0); lua_call(lua,2,0); lua_pop(lua,1);
+}
+
+/* Counter-based callback streams include helper modules, so imported step noise advances reproducibly too. */
 static void seed_callback(lua_State *lua, Fl_ScriptRuntime *runtime, int environment_index, Fl_CallbackPhase phase, int64_t step)
 {
     Fl_ScriptProgram *program=&runtime->programs[runtime->program_index];
     uint64_t seed=runtime->scene->entities[runtime->entity].id ^ (program->component*UINT64_C(0x9e3779b97f4a7c15));
     if (phase!=CALLBACK_SAMPLE) seed^=(uint64_t)step*UINT64_C(0xbf58476d1ce4e5b9) ^ (uint64_t)runtime->time.cycle*UINT64_C(0x94d049bb133111eb) ^ (uint64_t)(phase+1);
-    lua_getfield(lua,environment_index,"math"); lua_getfield(lua,-1,"randomseed");
-    lua_pushinteger(lua,(lua_Integer)(seed&INT64_MAX)); lua_pushinteger(lua,0); lua_call(lua,2,0); lua_pop(lua,1);
+    seed_environment(lua,environment_index,seed);
+    for (size_t i=0;i<runtime->import_count;++i) {
+        lua_rawgeti(lua,LUA_REGISTRYINDEX,runtime->imports[i].ref);
+        const char *name=lua_getupvalue(lua,-1,1);
+        if (name) {
+            if (!strcmp(name,"_ENV") && lua_istable(lua,-1)) seed_environment(lua,-1,seed ^ runtime->imports[i].asset);
+            lua_pop(lua,1);
+        }
+        lua_pop(lua,1);
+    }
 }
 
 /* Invoke one capability under the caller's protected boundary, capturing only explicit state for simulation. */
@@ -485,6 +671,8 @@ static void invoke_callback(lua_State *lua, Fl_ScriptRuntime *runtime, Fl_Callba
     Fl_ScriptProgram *program=&runtime->programs[runtime->program_index]; int top=lua_gettop(lua);
     int module=load_module(lua,runtime), environment_index=module-1;
     int context=push_context(lua,runtime,phase,local_tick,step);
+    lua_getfield(lua,module,"imports"); if (lua_isnil(lua,-1)) {lua_pop(lua,1); lua_newtable(lua);}
+    lua_setfield(lua,context,"imports");
     static const char *const names[]={"initialize","step","sample"};
     lua_getfield(lua,module,names[phase]);
     if (!lua_isnil(lua,-1)) {
@@ -576,7 +764,8 @@ Fl_ScriptRuntime *fl_script_runtime_create(const Fl_Scene *s)
             if (!fl_script_decode(c,&script)) {fl_script_runtime_destroy(r); return NULL;}
             Fl_ScriptProgram *p=&r->programs[program++]; p->ref=LUA_NOREF; p->component=c->id; p->asset=script.script;
             p->parameters=fl_json_parse(&context,script.parameters,script.parameters_size);
-            if (!p->parameters) {fl_script_runtime_destroy(r); return NULL;}
+            p->bindings=fl_json_parse(&context,script.bindings,script.bindings_size);
+            if (!cJSON_IsObject(p->parameters) || !fl_script_bindings_valid(&context,p->bindings)) {fl_script_runtime_destroy(r); return NULL;}
         }
     }
     r->lua = lua_newstate(script_allocate, r);
@@ -590,8 +779,9 @@ Fl_ScriptRuntime *fl_script_runtime_create(const Fl_Scene *s)
 void fl_script_runtime_destroy(Fl_ScriptRuntime *r)
 {
     if (!r) return;
+    cJSON_Delete(r->build_output); cJSON_Delete(r->binding_output);
     if (r->lua) lua_close(r->lua);
-    if (r->programs) for (size_t i=0;i<r->count;++i) {clear_simulation(r,&r->programs[i]); free(r->programs[i].scratch.data); cJSON_Delete(r->programs[i].parameters); cJSON_Delete(r->programs[i].parameter_schema); cJSON_Delete(r->programs[i].effective_parameters);}
+    if (r->programs) for (size_t i=0;i<r->count;++i) {clear_simulation(r,&r->programs[i]); free(r->programs[i].scratch.data); cJSON_Delete(r->programs[i].parameters); cJSON_Delete(r->programs[i].bindings); cJSON_Delete(r->programs[i].parameter_schema); cJSON_Delete(r->programs[i].effective_parameters);}
     fl_script_runtime_begin_frame(r); free(r->texts);
     free(r->starts); free(r->programs); free(r);
 }
@@ -694,7 +884,7 @@ static int validate_module(lua_State *lua)
     return 0;
 }
 
-bool fl_script_validate_scene(const Fl_Scene *scene, char *error, size_t error_size)
+bool fl_script_validate_scene(const Fl_Scene *scene, const atomic_bool *cancel, char *error, size_t error_size)
 {
     if (error && error_size) error[0]=0;
     if (!scene) return false;
@@ -707,8 +897,10 @@ bool fl_script_validate_scene(const Fl_Scene *scene, char *error, size_t error_s
     if (!attached) return true;
     Fl_ScriptRuntime *runtime=fl_script_runtime_create(scene);
     if (!runtime) {if (error && error_size) snprintf(error,error_size,"Cannot allocate behavior validation"); return false;}
+    runtime->cancel=cancel;
     lua_State *lua=runtime->lua; bool ok=true;
     for (size_t i=0;ok && i<scene->entity_count;++i) for (size_t j=runtime->starts[i];ok && j<runtime->starts[i+1];++j) {
+        if (cancel && atomic_load_explicit(cancel,memory_order_relaxed)) {if (error && error_size) snprintf(error,error_size,"Evaluation cancelled"); ok=false; break;}
         const Fl_Component *component=fl_entity_component_instance(&scene->entities[i],runtime->programs[j].component);
         Fl_Script script;
         if (!fl_script_decode(component,&script) || !script.enabled) continue;
@@ -727,4 +919,102 @@ bool fl_script_validate_scene(const Fl_Scene *scene, char *error, size_t error_s
         lua_settop(lua,0); lua_gc(lua,LUA_GCCOLLECT);
     }
     fl_script_runtime_destroy(runtime); return ok;
+}
+
+/* Build runs under the same VM/instruction boundary as sampling, with canonical authored inputs at tick zero. */
+static int build_document(lua_State *lua)
+{
+    Fl_ScriptRuntime *runtime=*(Fl_ScriptRuntime **)lua_getextraspace(lua);
+    int module=load_module(lua,runtime);
+    push_parameters(lua,&runtime->programs[runtime->program_index]); lua_pop(lua,1);
+    lua_getfield(lua,module,"build");
+    if (lua_isnil(lua,-1)) return 0;
+    int function=lua_gettop(lua);
+    int context=push_context(lua,runtime,CALLBACK_SAMPLE,0,0);
+    lua_getfield(lua,module,"imports"); if (lua_isnil(lua,-1)) {lua_pop(lua,1); lua_newtable(lua);}
+    lua_setfield(lua,context,"imports");
+    lua_pushvalue(lua,function); lua_pushvalue(lua,context); lua_call(lua,1,1);
+    if (!lua_istable(lua,-1)) return luaL_error(lua,"build(ctx) must return a typed Flow prototype document");
+    Fl_Json json={0}; runtime->build_output=fl_lua_document_capture(lua,-1,&json);
+    if (!runtime->build_output) return luaL_error(lua,"%s",json.error);
+    return 0;
+}
+
+bool fl_script_runtime_build(Fl_ScriptRuntime *runtime, const Fl_Scene *scene, size_t entity, Fl_Id component,
+                              const atomic_bool *cancel, cJSON **output, char *error, size_t capacity)
+{
+    if (output) *output=NULL;
+    if (error && capacity) error[0]=0;
+    if (!runtime || !scene || entity>=scene->entity_count || !output) return false;
+    size_t program=runtime->starts[entity];
+    while (program<runtime->starts[entity+1] && runtime->programs[program].component!=component) ++program;
+    if (program==runtime->starts[entity+1]) return false;
+    const Fl_Component *attachment=fl_entity_component_instance(&scene->entities[entity],component); Fl_Script script;
+    if (!fl_script_decode(attachment,&script)) return false;
+    if (!script.enabled) return true;
+    const Fl_Asset *asset=fl_project_asset(scene->project,script.script);
+    if (!asset || asset->kind!=FL_ASSET_LUA) return false;
+    Fl_EntityState native; if (!fl_entity_state_sample(scene,entity,0,&native)) return false;
+    runtime->scene=scene; runtime->entity=entity; runtime->program_index=program; runtime->script=asset;
+    runtime->state=&native; runtime->tick=0; runtime->mapping=fl_time_mapping_default(); runtime->cancel=cancel;
+    runtime->time=(Fl_TimeSample){.duration=fl_scene_length(scene),.active=true}; runtime->instructions=SCRIPT_INSTRUCTIONS;
+    lua_State *lua=runtime->lua; lua_settop(lua,0); lua_sethook(lua,instruction_limit,LUA_MASKCOUNT,SCRIPT_HOOK_INTERVAL);
+    lua_pushcfunction(lua,build_document); bool ok=lua_pcall(lua,0,0,0)==LUA_OK;
+    lua_sethook(lua,NULL,0,0); runtime->cancel=NULL; runtime->state=NULL;
+    if (!ok && error && capacity) snprintf(error,capacity,"%s [%llu] build: %s",asset->name,(unsigned long long)component,lua_tostring(lua,-1));
+    lua_settop(lua,0);
+    if (ok) {*output=runtime->build_output; runtime->build_output=NULL;}
+    else {cJSON_Delete(runtime->build_output); runtime->build_output=NULL;}
+    return ok;
+}
+
+typedef struct ImportDiscovery {
+    Fl_ScriptRuntime runtime;
+    const char *source;
+    size_t size,count;
+    Fl_Id ids[SCRIPT_IMPORT_LIMIT];
+} ImportDiscovery;
+
+/* Execute declarations only; callback bodies and imported modules never run during source discovery. */
+static int discover_imports(lua_State *lua)
+{
+    ImportDiscovery *discovery=lua_touserdata(lua,lua_upvalueindex(1));
+    if (luaL_loadbufferx(lua,discovery->source,discovery->size,"=script","t")!=LUA_OK) return lua_error(lua);
+    int chunk=lua_gettop(lua); environment(lua,0);
+    lua_pushvalue(lua,-1); if (!lua_setupvalue(lua,chunk,1)) lua_pop(lua,1);
+    lua_pushvalue(lua,chunk); lua_call(lua,0,1);
+    if (!lua_istable(lua,-1)) return 0;
+    lua_getfield(lua,-1,"imports"); if (lua_isnil(lua,-1)) return 0;
+    luaL_checktype(lua,-1,LUA_TTABLE); int imports=lua_gettop(lua); lua_pushnil(lua);
+    while (lua_next(lua,imports)) {
+        import_alias(lua,-2);
+        if (discovery->count==SCRIPT_IMPORT_LIMIT) return luaL_error(lua,"Lua import budget exceeded");
+        discovery->ids[discovery->count++]=import_id(lua,-1); lua_pop(lua,1);
+    }
+    return 0;
+}
+
+bool fl_script_dependencies(const char *source, size_t size, Fl_Id **references, size_t *count,
+                             char *error, size_t capacity)
+{
+    if (error && capacity) error[0]=0;
+    if (!references || !count || !source || !size || size>FL_SCRIPT_SOURCE_LIMIT) return false;
+    *references=NULL; *count=0; ImportDiscovery discovery={.source=source,.size=size};
+    Fl_ScriptRuntime *runtime=&discovery.runtime; runtime->instructions=SCRIPT_INSTRUCTIONS;
+    lua_State *lua=lua_newstate(script_allocate,runtime);
+    if (!lua) {if (error && capacity) snprintf(error,capacity,"Cannot allocate Lua declaration evaluator"); return false;}
+    *(Fl_ScriptRuntime **)lua_getextraspace(lua)=runtime;
+    lua_pushcfunction(lua,initialize); bool ok=lua_pcall(lua,0,0,0)==LUA_OK;
+    if (ok) {
+        lua_sethook(lua,instruction_limit,LUA_MASKCOUNT,SCRIPT_HOOK_INTERVAL);
+        lua_pushlightuserdata(lua,&discovery); lua_pushcclosure(lua,discover_imports,1); ok=lua_pcall(lua,0,0,0)==LUA_OK;
+    }
+    if (!ok && error && capacity) snprintf(error,capacity,"%s",lua_tostring(lua,-1));
+    lua_close(lua);
+    if (ok && discovery.count) {
+        *references=malloc(discovery.count*sizeof(**references));
+        if (!*references) {if (error && capacity) snprintf(error,capacity,"Cannot allocate Lua import references"); return false;}
+        memcpy(*references,discovery.ids,discovery.count*sizeof(**references)); *count=discovery.count;
+    }
+    return ok;
 }

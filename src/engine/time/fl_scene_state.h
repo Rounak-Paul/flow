@@ -5,6 +5,7 @@
 
 /* Evaluated per-entity values at one scene time (base components overridden by tracks). */
 typedef struct Fl_EntityState {
+    Fl_Tick local_tick;         /* source scope tick, used by native media */
     Fl_Transform transform;
     Fl_Appearance appearance;
     double opacity;             /* own opacity, 0..1; geometry multiplies ancestors */
@@ -13,6 +14,8 @@ typedef struct Fl_EntityState {
     const char *text;           /* replacement borrowed from the evaluator until the next frame */
     size_t text_size;
 } Fl_EntityState;
+typedef struct Fl_Composition Fl_Composition;
+
 /* Cache of evaluated entity values, indexed like the scene's entities. */
 typedef struct Fl_SceneState {
     Fl_Id scene;
@@ -22,6 +25,8 @@ typedef struct Fl_SceneState {
     Fl_EntityState *entities;
     size_t count, capacity;
     Fl_ScriptRuntime *scripts;
+    Fl_Composition *composition;
+    char error[256];
 } Fl_SceneState;
 
 /* Apply ease to normalised progress t in [0, 1]. */
@@ -43,3 +48,14 @@ void fl_entity_state_apply(Fl_EntityState *state, Fl_AnimProperty property, cons
 
 /* Sample one entity's authored native components and keyframes, without behavior outputs or allocation. */
 bool fl_entity_state_sample(const Fl_Scene *scene, size_t entity, Fl_Tick tick, Fl_EntityState *out);
+
+/* Borrow the evaluated hierarchy when expanded, otherwise the supplied authored scene. */
+const Fl_Scene *fl_scene_state_scene(const Fl_SceneState *state, const Fl_Scene *authored);
+/* Internal native scope evaluation; composition owns scope clocks and expansion. */
+bool fl_scene_state_update_native(Fl_SceneState *state, const Fl_Scene *scene, Fl_Tick tick, const atomic_bool *cancel);
+
+/* Borrow the authored hierarchy's behavior runtime, including when a composition owns it. */
+const Fl_ScriptRuntime *fl_scene_state_scripts(const Fl_SceneState *state);
+
+/* Borrow a behavior diagnostic using evaluated hierarchy indexing, including generated scopes. */
+const char *fl_scene_state_entity_error(const Fl_SceneState *state, size_t entity);

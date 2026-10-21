@@ -466,3 +466,5 @@ void fl_job_parallel_for(Fl_JobSystem *jobs, size_t count, size_t min_batch,
     free(ranges);
     free(handles);
 }
+
+Fl_EventBus *fl_jobs_event_bus(const Fl_JobSystem *jobs) {return jobs ? jobs->bus : NULL;}

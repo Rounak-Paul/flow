@@ -43,3 +43,7 @@ size_t fl_fonts_family_count(const Fl_Fonts *fonts);
 const char *fl_fonts_family(const Fl_Fonts *fonts, size_t index, Fl_FontSource *source);
 /* Borrow the winning source's faces for family; zero when the family is unknown. */
 size_t fl_fonts_faces(const Fl_Fonts *fonts, const char *family, const Fl_FontFace **faces);
+
+/* Freeze the actual faces selected for requests, plus bundled fallback, without observers, scans or source paths.
+   The result is independent of the live font service and project lifetime. Owner thread only. */
+Fl_Fonts *fl_fonts_snapshot(const Fl_Fonts *fonts, const Fl_Typography *requests, size_t count);

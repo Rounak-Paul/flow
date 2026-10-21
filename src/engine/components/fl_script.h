@@ -1,10 +1,11 @@
 #pragma once
 #include "fl_animation.h"
+#include "fl_script_bindings.h"
 #include "time/fl_time_mapping.h"
 
 #define FL_SCRIPT_SOURCE_LIMIT (128u * 1024u)
 /* Script attachment schema: asset, local clock and independent JSON parameter values. */
-#define FL_SCRIPT_VERSION 5u
+#define FL_SCRIPT_VERSION 6u
 #define FL_SCRIPT_PARAMETER_LIMIT (32u * 1024u)
 
 /* An entity's Lua component: which Lua asset it runs, and whether it is active. */
@@ -14,6 +15,8 @@ typedef struct Fl_Script {
     Fl_TimeMapping time;
     const char *parameters;       /* borrowed JSON object bytes; NULL means {} */
     size_t parameters_size;
+    const char *bindings;         /* borrowed named typed references; NULL means {} */
+    size_t bindings_size;
 } Fl_Script;
 
 /* Allocate a script payload in out; caller releases out->data with free. False when script.script is zero. */

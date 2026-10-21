@@ -1,4 +1,6 @@
 #include "fl_scene_state.h"
+#include "fl_composition.h"
+#include <stdio.h>
 #include "components/fl_animation.h"
 #include "components/fl_style.h"
 #include <math.h>
@@ -75,7 +77,7 @@ bool fl_entity_state_sample(const Fl_Scene *scene, size_t index, Fl_Tick tick, F
 {
     if (!scene || !out || index>=scene->entity_count) return false;
     const Fl_Entity *entity=&scene->entities[index];
-    *out=(Fl_EntityState){.transform={.scale_x=1,.scale_y=1}};
+    *out=(Fl_EntityState){.local_tick=tick,.transform={.scale_x=1,.scale_y=1}};
     fl_transform_decode(fl_entity_component(entity,FL_COMPONENT_TRANSFORM),&out->transform);
     out->appearance=fl_widget_appearance(entity); out->opacity=fl_widget_opacity(entity);
     Fl_Style style=fl_entity_style(entity); memcpy(out->crop,style.crop,sizeof(out->crop));
@@ -85,7 +87,7 @@ bool fl_entity_state_sample(const Fl_Scene *scene, size_t index, Fl_Tick tick, F
     return true;
 }
 
-bool fl_scene_state_update_cancel(Fl_SceneState *st, const Fl_Scene *s, Fl_Tick tick, const atomic_bool *cancel)
+bool fl_scene_state_update_native(Fl_SceneState *st, const Fl_Scene *s, Fl_Tick tick, const atomic_bool *cancel)
 {
     if (!st) return false;
     if (cancel && atomic_load_explicit(cancel,memory_order_relaxed)) {st->valid=false; return false;}
@@ -132,6 +134,38 @@ bool fl_scene_state_update_cancel(Fl_SceneState *st, const Fl_Scene *s, Fl_Tick 
     return true;
 }
 
+const Fl_Scene *fl_scene_state_scene(const Fl_SceneState *state, const Fl_Scene *authored)
+{
+    return state && state->valid && state->composition ? fl_composition_scene(state->composition) : authored;
+}
+
+bool fl_scene_state_update_cancel(Fl_SceneState *state, const Fl_Scene *scene, Fl_Tick tick, const atomic_bool *cancel)
+{
+    if (!state) return false;
+    if (cancel && atomic_load_explicit(cancel,memory_order_relaxed)) {state->valid=false; return false;}
+    if (!scene) {fl_scene_state_clear(state); return true;}
+    if (!fl_composition_required(scene)) {
+        if (state->composition) fl_scene_state_clear(state);
+        return fl_scene_state_update_native(state,scene,tick,cancel);
+    }
+    if (state->valid && state->scene==scene->id && state->revision==scene->revision && state->tick==tick) return true;
+    if (!state->composition || state->scene!=scene->id || state->revision!=scene->revision) {
+        char error[256]; Fl_Composition *next=fl_composition_create(scene,cancel,error,sizeof(error));
+        if (!next) {state->valid=false; snprintf(state->error,sizeof(state->error),"%s",error); return false;}
+        fl_scene_state_clear(state); state->composition=next; state->scene=scene->id; state->revision=scene->revision;
+    }
+    const Fl_Scene *flat=fl_composition_scene(state->composition);
+    if (flat->entity_count>state->capacity) {
+        Fl_EntityState *entities=realloc(state->entities,flat->entity_count*sizeof(*entities));
+        if (!entities) {state->valid=false; return false;}
+        state->entities=entities; state->capacity=flat->entity_count;
+    }
+    state->error[0]=0;
+    state->valid=false;
+    if (!fl_composition_sample(state->composition,tick,state,cancel)) return false;
+    state->count=flat->entity_count; state->tick=tick; state->valid=true; return true;
+}
+
 bool fl_scene_state_update(Fl_SceneState *state, const Fl_Scene *scene, Fl_Tick tick)
 {
     return fl_scene_state_update_cancel(state,scene,tick,NULL);
@@ -141,6 +175,17 @@ void fl_scene_state_clear(Fl_SceneState *st)
 {
     if (!st) return;
     fl_script_runtime_destroy(st->scripts);
+    fl_composition_destroy(st->composition);
     free(st->entities);
     *st = (Fl_SceneState){0};
+}
+
+const Fl_ScriptRuntime *fl_scene_state_scripts(const Fl_SceneState *state)
+{
+    return state ? state->composition ? fl_composition_scripts(state->composition) : state->scripts : NULL;
+}
+
+const char *fl_scene_state_entity_error(const Fl_SceneState *state, size_t entity)
+{
+    return !state ? "" : state->composition ? fl_composition_entity_error(state->composition,entity) : fl_script_runtime_error(state->scripts,entity);
 }

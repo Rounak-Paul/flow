@@ -4,6 +4,7 @@
 #include "core/fl_atomic.h"
 #include "core/fl_log.h"
 #include "core/fl_thread.h"
+#include "platform/fl_fs.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -81,12 +82,9 @@ static uint64_t pull(Fl_Voice *v, float *out, uint64_t frames)
     return made;
 }
 
-/* Device thread: mix every voice overlapping this period. */
-static void render(ma_device *device, void *output, const void *input, ma_uint32 frames)
+/* Shared device/offline mixer: advance the same converters and clip envelopes. */
+static void mix(Fl_AudioMixer *m, float *out, uint32_t frames)
 {
-    (void)input;
-    Fl_AudioMixer *m = device->pUserData;
-    float *out = output;
     memset(out, 0, (size_t)frames * OUTPUT_CHANNELS * sizeof(float));
     fl_mutex_lock(&m->lock);
     int64_t base = (int64_t)fl_atomic_load_u64(&m->rendered);
@@ -112,6 +110,12 @@ static void render(ma_device *device, void *output, const void *input, ma_uint32
     for (size_t i = 0; i < (size_t)frames * OUTPUT_CHANNELS; ++i) out[i] = fmaxf(-1.0f, fminf(1.0f, out[i]));
     fl_atomic_fetch_add_u64(&m->rendered, frames);
     fl_mutex_unlock(&m->lock);
+}
+
+/* Device callback delegates to the same mixer used by deterministic offline rendering. */
+static void render(ma_device *device, void *output, const void *input, ma_uint32 frames)
+{
+    (void)input; mix(device->pUserData,output,frames);
 }
 
 /* Open the context/device on first use. */
@@ -150,9 +154,10 @@ void fl_audio_mixer_destroy(Fl_AudioMixer *m)
 }
 
 /* Convert ticks to frames at rate, rounding down. */
-static int64_t frames_of(Fl_Tick ticks, uint32_t rate)
+static int64_t frames_of(long double ticks, uint32_t rate)
 {
-    return ticks <= 0 ? 0 : (int64_t)((double)ticks * rate / FL_TICKS_PER_SECOND);
+    long double frames=ticks*(long double)rate/FL_TICKS_PER_SECOND;
+    return frames<=0 ? 0 : frames>=(long double)INT64_MAX ? INT64_MAX : (int64_t)frames;
 }
 
 /* Open and position one voice in place; false when the clip cannot play from this start. */
@@ -160,25 +165,32 @@ static bool prepare_voice(Fl_Voice *v, const Fl_MixerClip *c, Fl_Tick from, uint
 {
     Fl_AudioInfo info;
     *v = (Fl_Voice){0};
-    Fl_Tick skipped = from > c->start ? from - c->start : 0;
+    double speed=c->rate ? c->rate : 1;
+    if (!isfinite(speed) || speed<1.0/65536 || speed>65536 || !isfinite(c->gain) || c->gain<0 || c->gain>4 ||
+        c->source_offset<0 || c->duration<0 || c->fade_in<0 || c->fade_out<0 || c->envelope_offset<0 || c->envelope_duration<0) return false;
+    Fl_Tick skipped=from>c->start ? (from>0 && c->start<from-INT64_MAX ? INT64_MAX : from-c->start) : 0;
     if (c->duration && skipped >= c->duration) return false;
     v->reader = fl_audio_open(c->path, &info);
     if (!v->reader) return false;
-    uint64_t source = (uint64_t)frames_of(c->source_offset + skipped, info.sample_rate);
+    uint64_t source = (uint64_t)frames_of((long double)c->source_offset+(long double)skipped*speed,info.sample_rate);
     if (info.frames && source >= info.frames) { fl_audio_close(v->reader); return false; }
     v->input = malloc((size_t)CHUNK_FRAMES * info.channels * sizeof(float));
     ma_data_converter_config config = ma_data_converter_config_init(ma_format_f32, ma_format_f32, info.channels,
         OUTPUT_CHANNELS, info.sample_rate, rate);
     config.resampling.algorithm = ma_resample_algorithm_linear;
+    config.allowDynamicSampleRate=MA_TRUE;
     if (!v->input || (source && !fl_audio_seek(v->reader, source)) || ma_data_converter_init(&config, NULL, &v->converter) != MA_SUCCESS) {
         free(v->input); fl_audio_close(v->reader); *v = (Fl_Voice){0}; return false;
     }
+    if (ma_data_converter_set_rate_ratio(&v->converter,(float)((double)info.sample_rate*speed/rate))!=MA_SUCCESS) {
+        ma_data_converter_uninit(&v->converter,NULL); free(v->input); fl_audio_close(v->reader); *v=(Fl_Voice){0}; return false;
+    }
     v->channels = info.channels;
     v->start = c->start > from ? frames_of(c->start - from, rate) : 0;
-    v->clip_offset = frames_of(skipped, rate);
-    v->clip_length = c->duration ? frames_of(c->duration, rate) : INT64_MAX;
-    v->length = c->duration ? v->clip_length - v->clip_offset : INT64_MAX;
-    v->fade_in = frames_of(c->fade_in, rate); v->fade_out = frames_of(c->fade_out, rate);
+    v->clip_offset=frames_of((long double)c->envelope_offset/speed+skipped,rate);
+    v->clip_length=c->envelope_duration ? frames_of((long double)c->envelope_duration/speed,rate) : c->duration ? frames_of(c->duration,rate) : INT64_MAX;
+    v->length=c->duration ? frames_of(c->duration-skipped,rate) : INT64_MAX;
+    v->fade_in=frames_of((long double)c->fade_in/speed,rate); v->fade_out=frames_of((long double)c->fade_out/speed,rate);
     v->gain = c->gain;
     return true;
 }
@@ -220,4 +232,49 @@ bool fl_audio_mixer_position(Fl_AudioMixer *m, Fl_Tick *tick)
     uint64_t frames = fl_atomic_load_u64(&m->rendered);
     *tick = m->from + (Fl_Tick)((double)frames * FL_TICKS_PER_SECOND / m->device.sampleRate);
     return true;
+}
+
+/* Encode canonical little-endian RF64 fields without host-layout assumptions. */
+static void little_endian(unsigned char *out, uint64_t value, size_t size)
+{
+    for (size_t i=0;i<size;++i) out[i]=(unsigned char)(value>>(8*i));
+}
+
+bool fl_audio_mixer_file(const char *path, const Fl_MixerClip *clips, size_t count, Fl_Tick duration,
+                          uint32_t sample_rate, const atomic_bool *cancel)
+{
+    if (!path || (count && !clips) || count>4096 || duration<=0 || sample_rate<8000 || sample_rate>192000) return false;
+    int64_t frames=frames_of(duration,sample_rate);
+    if (frames<=0 || (uint64_t)frames>(UINT64_MAX-72)/8) return false;
+    Fl_AudioMixer *m=fl_audio_mixer_create(NULL); if (!m) return false;
+    m->voices=count ? calloc(count,sizeof(*m->voices)) : NULL;
+    bool ok=!count || m->voices!=NULL;
+    for (size_t i=0;ok && i<count;++i) {
+        if (cancel && atomic_load_explicit(cancel,memory_order_relaxed)) {ok=false; break;}
+        if (clips[i].duration && clips[i].start>=duration) continue;
+        if (!prepare_voice(&m->voices[m->voice_count],&clips[i],0,sample_rate)) {ok=false; break;}
+        ++m->voice_count;
+    }
+    FILE *output=ok ? fl_fs_fopen(path,"wbx") : NULL; ok=ok && output;
+    unsigned char header[80]={0};
+    memcpy(header,"RF64",4); little_endian(header+4,UINT32_MAX,4); memcpy(header+8,"WAVEds64",8);
+    little_endian(header+16,28,4); little_endian(header+20,(uint64_t)frames*8+72,8);
+    little_endian(header+28,(uint64_t)frames*8,8); little_endian(header+36,(uint64_t)frames,8);
+    memcpy(header+48,"fmt ",4); little_endian(header+52,16,4); little_endian(header+56,3,2); little_endian(header+58,2,2);
+    little_endian(header+60,sample_rate,4); little_endian(header+64,(uint64_t)sample_rate*8,4); little_endian(header+68,8,2); little_endian(header+70,32,2);
+    memcpy(header+72,"data",4); little_endian(header+76,UINT32_MAX,4);
+    if (ok) ok=fwrite(header,1,sizeof(header),output)==sizeof(header);
+    float samples[CHUNK_FRAMES*OUTPUT_CHANNELS]; unsigned char encoded[sizeof(samples)];
+    m->running=true;
+    for (int64_t done=0;ok && done<frames;) {
+        if (cancel && atomic_load_explicit(cancel,memory_order_relaxed)) {ok=false; break;}
+        uint32_t n=(uint32_t)(frames-done>CHUNK_FRAMES ? CHUNK_FRAMES : frames-done);
+        mix(m,samples,n);
+        for (size_t i=0;i<(size_t)n*OUTPUT_CHANNELS;++i) {uint32_t bits; memcpy(&bits,&samples[i],4); little_endian(encoded+i*4,bits,4);}
+        size_t bytes=(size_t)n*OUTPUT_CHANNELS*4; ok=fwrite(encoded,1,bytes,output)==bytes; done+=n;
+    }
+    if (ok) ok=fl_fs_flush(output);
+    if (output && fclose(output)) ok=false;
+    if (!ok && output) fl_fs_remove(path);
+    fl_audio_mixer_destroy(m); return ok;
 }

@@ -78,3 +78,8 @@ void fl_opacity_encode(double opacity, unsigned char out[8]);
 bool fl_opacity_decode(const Fl_Component *component, double *opacity);
 /* Read base opacity, defaulting to fully opaque. */
 double fl_widget_opacity(const Fl_Entity *entity);
+
+/* Visit all direct resource references, including retained prototype overrides. Kind zero means the override's
+   expected kind is resolved from its target during composition compilation. False stops traversal. */
+typedef bool (*Fl_AssetVisitor)(Fl_Id asset, Fl_AssetKind kind, void *data);
+bool fl_component_visit_assets(const Fl_Component *component, Fl_AssetVisitor visitor, void *data);

@@ -1,4 +1,6 @@
 #include "project/fl_source_asset.h"
+#include "project/fl_prototype_authoring.h"
+#include "time/fl_composition.h"
 #include "flow_test.h"
 #include "components/fl_animation.h"
 #include "components/fl_component.h"
@@ -45,7 +47,7 @@ static void failure(Fl_Project *project, const Fl_Scene *scene, Fl_Id entity, Fl
 {
     CHECK(script(project, scene->id, entity, source, true));
     CHECK(sample(state, scene, entity, SECOND) == 25);
-    const char *error = fl_script_runtime_error(state->scripts, (size_t)(fl_scene_entity(scene, entity) - scene->entities));
+    const char *error = fl_script_runtime_error(fl_scene_state_scripts(state), (size_t)(fl_scene_entity(scene, entity) - scene->entities));
     CHECK(strstr(error, message) != NULL);
 }
 
@@ -178,7 +180,7 @@ static void retiming(const char *directory)
     project=fl_project_open(dir,NULL); CHECK(project); if (!project) return;
     scene=fl_project_scene(project,scene_id); CHECK(sample(&state,scene,entity,3*SECOND)==100);
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_BEAT_REMOVE,.scene=scene_id,.beat=right},NULL));
-    CHECK(sample(&state,scene,entity,SECOND)==0 && strstr(fl_script_runtime_error(state.scripts,0),"Unbound"));
+    CHECK(sample(&state,scene,entity,SECOND)==0 && strstr(fl_script_runtime_error(fl_scene_state_scripts(&state),0),"Unbound"));
     CHECK(fl_project_asset(project,asset) && fl_entity_component_instance(fl_scene_entity(scene,entity),attachment));
     fl_scene_state_clear(&state); fl_project_destroy(project);
 }
@@ -207,7 +209,7 @@ static void simulation(const char *root)
         .anchor={.offset=5*SECOND},.value={30}},NULL));
     /* Binary strings are valid simulation state but sampled text still requires valid text. */
     Fl_SceneState state={0}; sample(&state,scene,entity,SECOND);
-    CHECK(strstr(fl_script_runtime_error(state.scripts,0),"UTF-8")); fl_scene_state_clear(&state);
+    CHECK(strstr(fl_script_runtime_error(fl_scene_state_scripts(&state),0),"UTF-8")); fl_scene_state_clear(&state);
     source=
         "local hidden=0; return {step_hz=60,"
         "initialize=function(ctx) ctx.state={x=0,count=0,input=0,random=0,integer=9223372036854775807,buffer='a\\0b'} end,"
@@ -251,7 +253,107 @@ static void simulation(const char *root)
     CHECK(strstr(fl_project_diagnostic(project),"step_hz"));
     scene=fl_project_scene(project,scene_id);
     CHECK(script(project,scene_id,entity,"return {initialize=function(ctx) ctx.state={callback=function() end} end, sample=function(ctx) end}",true));
-    sample(&state,scene,entity,SECOND); CHECK(strstr(fl_script_runtime_error(state.scripts,0),"functions"));
+    sample(&state,scene,entity,SECOND); CHECK(strstr(fl_script_runtime_error(fl_scene_state_scripts(&state),0),"functions"));
+    fl_scene_state_clear(&state); fl_project_destroy(project);
+}
+
+/* Imports retain resources, reject cycles and reconstruct shared modules once per isolated invocation. */
+static void imports(const char *directory)
+{
+    char path[FL_PATH_MAX]; CHECK(fl_fs_join(path,sizeof(path),directory,"imports"));
+    Fl_Project *project=fl_project_create(path,"Imports",NULL); CHECK(project); if (!project) return;
+    Fl_Id scene=fl_project_scene_at(project,0)->id,entity=0,helper=0;
+    const char *library="local n=0; return {next=function() n=n+1;return n end}";
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET,.source_kind=FL_ASSET_LUA,.name="Helper",.source=library,.source_size=strlen(library)},&helper));
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_ADD,.scene=scene,.name="Imported motion"},&entity));
+    char source[512]; snprintf(source,sizeof(source),"return {imports={one='%llu',two='%llu'},sample=function(ctx) ctx.entity.transform.x=ctx.imports.one.next()+ctx.imports.two.next() end}",(unsigned long long)helper,(unsigned long long)helper);
+    CHECK(script(project,scene,entity,source,true));
+    Fl_SceneState state={0};
+    CHECK(sample(&state,fl_project_scene(project,scene),entity,SECOND)==3);
+    CHECK(sample(&state,fl_project_scene(project,scene),entity,2*SECOND)==3);
+    CHECK(sample(&state,fl_project_scene(project,scene),entity,SECOND)==3);
+    CHECK(!fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_REMOVE,.asset=helper},NULL));
+    const char *changed="local n=10;return {next=function() n=n+1;return n end}";
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET,.source_kind=FL_ASSET_LUA,.asset=helper,.source=changed,.source_size=strlen(changed)},NULL));
+    CHECK(sample(&state,fl_project_scene(project,scene),entity,SECOND)==23);
+    Fl_Id nested=0;
+    snprintf(source,sizeof(source),"local m={imports={child='%llu'}};m.next=function()return m.imports.child.next() end;return m",(unsigned long long)helper);
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET,.source_kind=FL_ASSET_LUA,.name="Nested",.source=source,.source_size=strlen(source)},&nested));
+    snprintf(source,sizeof(source),"return {imports={nested='%llu'},sample=function(ctx)ctx.entity.transform.x=ctx.imports.nested.next() end}",(unsigned long long)nested);
+    CHECK(script(project,scene,entity,source,true));
+    CHECK(sample(&state,fl_project_scene(project,scene),entity,SECOND)==11);
+    char cycle[128]; snprintf(cycle,sizeof(cycle),"return {imports={nested='%llu'},next=function()return 1 end}",(unsigned long long)nested);
+    CHECK(!fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET,.source_kind=FL_ASSET_LUA,.asset=helper,.source=cycle,.source_size=strlen(cycle)},NULL));
+    CHECK(strstr(fl_project_diagnostic(project),"recursive"));
+    const char *noise="return {draw=function()return math.random() end}";
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET,.source_kind=FL_ASSET_LUA,.name="Noise",.source=noise,.source_size=strlen(noise)},&helper));
+    snprintf(source,sizeof(source),"return {imports={noise='%llu'},step_hz=60,initialize=function(ctx)ctx.state={sum=0} end,step=function(ctx)ctx.state.sum=ctx.state.sum+ctx.imports.noise.draw() end,sample=function(ctx)ctx.entity.transform.x=ctx.state.sum end}",(unsigned long long)helper);
+    CHECK(script(project,scene,entity,source,true));
+    double half=sample(&state,fl_project_scene(project,scene),entity,SECOND/2),whole=sample(&state,fl_project_scene(project,scene),entity,SECOND);
+    CHECK(half>0 && whole>half && fabs(whole-2*half)>1e-9);
+    CHECK(sample(&state,fl_project_scene(project,scene),entity,SECOND/2)==half);
+    CHECK(sample(&state,fl_project_scene(project,scene),entity,SECOND)==whole);
+    fl_scene_state_clear(&state); CHECK(sample(&state,fl_project_scene(project,scene),entity,SECOND)==whole);
+    CHECK(fl_project_save(project)); fl_scene_state_clear(&state); fl_project_destroy(project);
+    project=fl_project_open(path,NULL); CHECK(project);
+    if (project) {CHECK(sample(&state,fl_project_scene(project,scene),entity,SECOND)==whole); fl_scene_state_clear(&state); fl_project_destroy(project);}
+}
+
+/* Typed bindings survive persistence and read native time inputs independently of behavior order. */
+static void bindings(const char *directory)
+{
+    char dir[FL_PATH_MAX]; CHECK(fl_fs_join(dir,sizeof(dir),directory,"bindings"));
+    Fl_Project *project=fl_project_create(dir,"Bindings",NULL); CHECK(project); if (!project) return;
+    Fl_Id scene_id=fl_project_scene_at(project,0)->id,reader=0,target=0,asset=0,resource=0,attachment=0;
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_ADD,.scene=scene_id,.name="Reader"},&reader));
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_ADD,.scene=scene_id,.name="Target"},&target));
+    unsigned char bytes[56]; fl_transform_encode(&(Fl_Transform){.x=37,.width=100,.height=100,.scale_x=1,.scale_y=1},bytes);
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_COMPONENT_SET,.scene=scene_id,.entity=target,.component={.type=FL_COMPONENT_TRANSFORM,.version=1,.size=56,.data=bytes}},NULL));
+    CHECK(script(project,scene_id,target,"return {sample=function(ctx) ctx.entity.transform.x=999 end}",true));
+    const char *source="return {bindings={target={type='entity'},transform={type='component'},region={type='region'},resource={type='asset'},unused={type='entity',optional=true}},sample=function(ctx) assert(ctx.bindings.transform.type=='transform'); assert(ctx.bindings.resource.name=='Bound resource'); assert(ctx.bindings.region.end_tick>ctx.bindings.region.start_tick); ctx.entity.transform.x=ctx.bindings.target.transform.x;ctx.bindings.target.transform.x=888 end}";
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET,.source_kind=FL_ASSET_LUA,.name="Reader behavior",.source=source,.source_size=strlen(source)},&asset));
+    const char *library="return {}";
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET,.source_kind=FL_ASSET_LUA,.name="Bound resource",.source=library,.source_size=strlen(library)},&resource));
+    const Fl_Scene *scene=fl_project_scene(project,scene_id);
+    Fl_Id transform=fl_entity_component(fl_scene_entity(scene,target),FL_COMPONENT_TRANSFORM)->id;
+    char references[512]; snprintf(references,sizeof(references),"{\"target\":{\"type\":\"entity\",\"id\":\"%llu\"},\"transform\":{\"type\":\"component\",\"entity\":\"%llu\",\"id\":\"%llu\"},\"region\":{\"type\":\"region\",\"id\":\"%llu\"},\"resource\":{\"type\":\"asset\",\"id\":\"%llu\"}}",(unsigned long long)target,(unsigned long long)target,(unsigned long long)transform,(unsigned long long)scene->beats[0].id,(unsigned long long)resource);
+    Fl_Script configuration={.script=asset,.enabled=true,.bindings=references,.bindings_size=strlen(references)};
+    Fl_Component component={0}; CHECK(fl_script_encode(&configuration,&component));
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_COMPONENT_SET,.scene=scene_id,.entity=reader,.component=component},&attachment)); fl_component_clear(&component);
+    CHECK(!fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_REMOVE,.asset=resource},NULL));
+    const char *invalid="return {bindings={target={type='asset'}},sample=function(ctx) end}";
+    CHECK(!fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET,.source_kind=FL_ASSET_LUA,.asset=asset,.source=invalid,.source_size=strlen(invalid)},NULL));
+    Fl_SceneState state={0}; CHECK(sample(&state,fl_project_scene(project,scene_id),reader,SECOND)==37);
+    CHECK(!fl_script_runtime_component_error(fl_scene_state_scripts(&state),attachment)[0]);
+    char simulated[2048]; const char *callback=strstr(source,",sample="); CHECK(callback);
+    snprintf(simulated,sizeof(simulated),"%.*s,step_hz=10,initialize=function(ctx) ctx.state={x=0} end,step=function(ctx) ctx.state.x=ctx.state.x+ctx.bindings.target.transform.x*ctx.time.dt end,sample=function(ctx) ctx.entity.transform.x=ctx.state.x end}",(int)(callback-source),source);
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET,.source_kind=FL_ASSET_LUA,.asset=asset,.source=simulated,.source_size=strlen(simulated)},NULL));
+    CHECK(fabs(sample(&state,fl_project_scene(project,scene_id),reader,SECOND)-37)<1e-10);
+    CHECK(fabs(sample(&state,fl_project_scene(project,scene_id),reader,SECOND/2)-18.5)<1e-10);
+    CHECK(fabs(sample(&state,fl_project_scene(project,scene_id),reader,SECOND)-37)<1e-10);
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET,.source_kind=FL_ASSET_LUA,.asset=asset,.source=source,.source_size=strlen(source)},NULL));
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_PARENT,.scene=scene_id,.entity=target,.parent=reader},NULL));
+    Fl_Id prototype=0,instance=0;
+    CHECK(fl_prototype_capture(project,scene_id,reader,"Bound hierarchy",&prototype));
+    CHECK(fl_prototype_instantiate(project,scene_id,0,prototype,100,100,&instance));
+    CHECK(fl_scene_state_update(&state,fl_project_scene(project,scene_id),SECOND));
+    bool generated=false;
+    for (size_t i=0;i<state.count;++i) {
+        const Fl_Origin *origin=fl_composition_origin(state.composition,i);
+        if (origin && origin->generated && origin->owner==instance && origin->entity==reader) {
+            generated=true; CHECK(state.entities[i].transform.x==37);
+            CHECK(!fl_scene_state_entity_error(&state,i)[0]);
+        }
+    }
+    CHECK(generated);
+    CHECK(fl_project_save(project)); fl_scene_state_clear(&state); fl_project_destroy(project);
+    project=fl_project_open(dir,NULL); CHECK(project); if (!project) return;
+    CHECK(sample(&state,fl_project_scene(project,scene_id),reader,SECOND)==37);
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_REMOVE,.scene=scene_id,.entity=target},NULL));
+    sample(&state,fl_project_scene(project,scene_id),reader,SECOND);
+    CHECK(strstr(fl_script_runtime_component_error(fl_scene_state_scripts(&state),attachment),"unresolved"));
+    configuration.bindings="{\"target\":{\"type\":\"unknown\",\"id\":1}}"; configuration.bindings_size=strlen(configuration.bindings);
+    CHECK(!fl_script_encode(&configuration,&component));
     fl_scene_state_clear(&state); fl_project_destroy(project);
 }
 
@@ -287,7 +389,7 @@ int main(int argc, char **argv)
     Fl_Transform transform;
     CHECK(fl_transform_decode(fl_entity_component(fl_scene_entity(scene,box),FL_COMPONENT_TRANSFORM),&transform));
     CHECK(transform.x==25);
-    CHECK(!*fl_script_runtime_error(state.scripts,0));
+    CHECK(!*fl_script_runtime_error(fl_scene_state_scripts(&state),0));
     Fl_SceneGeometry geometry={0};
     CHECK(fl_scene_geometry_update(&geometry,scene,&state));
     CHECK(fabs(geometry.entities[1].world.v[2] - 155)<1e-9);
@@ -362,7 +464,7 @@ int main(int argc, char **argv)
     CHECK(base_text->size == 4 && !memcmp(base_text->data, "Text", 4));
     CHECK(script(project, scene_id, label, "return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.text = 5 end }", true));
     sample(&state, scene, label, SECOND);
-    CHECK(strstr(fl_script_runtime_error(state.scripts, label_index), "string") && !state.entities[label_index].text_override);
+    CHECK(strstr(fl_script_runtime_error(fl_scene_state_scripts(&state), label_index), "string") && !state.entities[label_index].text_override);
     CHECK(script(project, scene_id, label, "return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.text = self.text end }", true));
     sample(&state, scene, label, SECOND);
     CHECK(!state.entities[label_index].text_override);
@@ -383,7 +485,7 @@ int main(int argc, char **argv)
     CHECK(script(project, scene_id, label,
         "return {sample=function(ctx) ctx.entity.text=string.char(255) end}", true));
     sample(&state, scene, label, SECOND);
-    CHECK(!state.entities[label_index].text_override && strstr(fl_script_runtime_error(state.scripts,label_index), "UTF-8"));
+    CHECK(!state.entities[label_index].text_override && strstr(fl_script_runtime_error(fl_scene_state_scripts(&state),label_index), "UTF-8"));
     CHECK(script(project, scene_id, box,
         "return {sample=function(ctx) ctx.entity.crop.x=0.2;ctx.entity.crop.width=0.5 end}", true));
     sample(&state, scene, box, SECOND);
@@ -408,5 +510,7 @@ int main(int argc, char **argv)
     CHECK(fl_project_save(project));
     fl_scene_state_clear(&state);
     repository(project, scene_id, argv[1]);
+    imports(argv[1]);
+    bindings(argv[1]);
     return FLOW_TEST_RESULT("fl_script_tests");
 }

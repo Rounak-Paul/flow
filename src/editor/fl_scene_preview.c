@@ -113,10 +113,11 @@ void fl_scene_preview_render(Ca_Viewport *viewport,void *data)
     const Fl_Scene *scene=fl_project_scene(project,fl_scene_edit_scene(p->edit));
     const Fl_SceneGeometry *g=fl_scene_edit_geometry(p->edit);
     const Fl_SceneState *state=fl_scene_edit_state(p->edit);
+    scene=fl_scene_state_scene(state,scene);
     if (state&&scene&&(state->scene!=scene->id||state->count!=scene->entity_count)) state=NULL;
     if (!p->renderer) p->renderer=fl_scene_renderer_create(&(Fl_SceneRendererDesc){.gpu=fl_render_host_context(ca_viewport_instance(viewport)),.fonts=p->fonts,
         .jobs=p->jobs,.bus=p->bus,.invalidate=p->invalidate,.invalidate_data=p->invalidate_data});
-    if (p->renderer&&scene) fl_scene_renderer_prepare(p->renderer,project,scene,state,1,false);
+    if (p->renderer&&scene) fl_scene_renderer_prepare(p->renderer,project,scene,state,g,1,false);
     uint32_t w=ca_viewport_width(viewport),h=ca_viewport_height(viewport);
     VkCommandBuffer cmd=ca_viewport_cmd(viewport);
     VkRenderingAttachmentInfo attachment={.sType=VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,

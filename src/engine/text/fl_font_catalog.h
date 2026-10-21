@@ -39,3 +39,7 @@ const Fl_FontFace *fl_font_match_faces(const Fl_FontFace *faces, size_t count, u
 int fl_font_family_compare(const char *a, const char *b);
 /* Report whether path's first face is a scalable font FreeType can read. */
 bool fl_font_file_valid(const char *path);
+
+/* Copy selected faces and their actual font bytes into an independent immutable catalog.
+   Reject unreadable faces or more than 256 MiB total source bytes; no source path survives the capture. */
+Fl_FontCatalog *fl_font_catalog_snapshot(const Fl_FontFace *const *faces, size_t count);

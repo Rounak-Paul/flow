@@ -1,6 +1,7 @@
 #include "fl_process.h"
 #include "fl_fs.h"
 #include "fl_paths.h"
+#include "core/fl_thread.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -14,7 +15,7 @@
 #define PATH_SEPARATOR ':'
 #endif
 
-const char *fl_ffmpeg_path(void)
+static const char *find_ffmpeg(void)
 {
     static char found[FL_PATH_MAX];
     static bool searched;
@@ -36,6 +37,12 @@ const char *fl_ffmpeg_path(void)
     static const char *const common[] = {"/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"};
     for (size_t i = 0; i < sizeof(common) / sizeof(*common); ++i) if (fl_fs_exists(common[i])) {strcpy(found, common[i]); return found;}
     return NULL;
+}
+
+const char *fl_ffmpeg_path(void)
+{
+    static Fl_Mutex lock=FL_MUTEX_INITIALIZER;
+    fl_mutex_lock(&lock); const char *path=find_ffmpeg(); fl_mutex_unlock(&lock); return path;
 }
 
 bool fl_command_append(char *command, size_t capacity, const char *arg)

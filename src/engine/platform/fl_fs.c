@@ -387,3 +387,51 @@ bool fl_fs_absolute(const char *path, char *out, size_t cap)
     free(absolute); return ok;
 #endif
 }
+
+bool fl_fs_mkdir_exclusive(const char *path)
+{
+    if (!path || !path[0]) return false;
+#ifdef _WIN32
+    wchar_t *wide=widen(path); bool ok=wide && CreateDirectoryW(wide,NULL); free(wide); return ok;
+#else
+    return mkdir(path,0700)==0;
+#endif
+}
+
+typedef struct Fl_RemoveTree {const char *path; unsigned depth; bool ok;} Fl_RemoveTree;
+static bool remove_tree(const char *path, unsigned depth);
+/* Delete one enumerated child; recursive entry checks links again rather than trusting followed metadata. */
+static bool remove_tree_entry(const char *name, bool directory, void *data)
+{
+    (void)directory; Fl_RemoveTree *tree=data;
+    size_t size=strlen(tree->path)+strlen(name)+2; char *child=malloc(size);
+    tree->ok=child && fl_fs_join(child,size,tree->path,name) && remove_tree(child,tree->depth+1);
+    free(child); return tree->ok;
+}
+/* Bounded traversal that unlinks links instead of descending into their targets. */
+static bool remove_tree(const char *path, unsigned depth)
+{
+    if (depth>64) return false;
+#ifdef _WIN32
+    wchar_t *wide=widen(path); if (!wide) return false;
+    DWORD attributes=GetFileAttributesW(wide);
+    if (attributes==INVALID_FILE_ATTRIBUTES) {DWORD error=GetLastError(); free(wide); return error==ERROR_FILE_NOT_FOUND || error==ERROR_PATH_NOT_FOUND;}
+    bool directory=(attributes&FILE_ATTRIBUTE_DIRECTORY)!=0;
+    if (!directory || (attributes&FILE_ATTRIBUTE_REPARSE_POINT)) {
+        bool ok=directory ? RemoveDirectoryW(wide)!=0 : DeleteFileW(wide)!=0; free(wide); return ok;
+    }
+    Fl_RemoveTree tree={path,depth,true}; bool ok=fl_fs_list_dir(path,remove_tree_entry,&tree) && tree.ok && RemoveDirectoryW(wide);
+    free(wide); return ok;
+#else
+    struct stat status;
+    if (lstat(path,&status)) return errno==ENOENT;
+    if (!S_ISDIR(status.st_mode)) return unlink(path)==0;
+    Fl_RemoveTree tree={path,depth,true};
+    return fl_fs_list_dir(path,remove_tree_entry,&tree) && tree.ok && rmdir(path)==0;
+#endif
+}
+
+bool fl_fs_remove_tree(const char *path)
+{
+    return path && path[0] && strcmp(path,"/") && strcmp(path,".") && strcmp(path,"..") && remove_tree(path,0);
+}

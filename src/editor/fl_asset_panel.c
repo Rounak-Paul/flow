@@ -1,3 +1,5 @@
+#include "project/fl_prototype_authoring.h"
+#include "project/fl_source_asset.h"
 #include "fl_asset_panel.h"
 #include "ui/fl_button.h"
 #include "fl_asset_thumbnails.h"
@@ -291,12 +293,43 @@ static void delete_asset(Fl_AssetPanel *p, Fl_Id asset)
     } else status(p, "The asset could not be removed.");
 }
 
+/* Place reusable content through the same authoring operation used by MCP. */
+static void add_prototype(Fl_AssetPanel *p, Fl_Id asset, Fl_Id parent, double x, double y)
+{
+    Fl_Id entity=0,scene=fl_scene_edit_scene(p->edit);
+    if (fl_prototype_instantiate(fl_scene_edit_project(p->edit),scene,parent,asset,x,y,&entity)) fl_scene_edit_select(p->edit,scene,entity,false);
+    else status(p,"Could not place the prototype.");
+}
+
+/* Capture the selected authored subtree as a project asset; keep the original editable hierarchy. */
+static void capture_prototype(Ca_Button *button, void *data)
+{
+    (void)button; Fl_AssetPanel *p=data; Fl_Project *project=fl_scene_edit_project(p->edit);
+    Fl_Id scene_id=fl_scene_edit_scene(p->edit); const Fl_Scene *scene=fl_project_scene(project,scene_id);
+    const Fl_Entity *root=fl_scene_entity(scene,fl_scene_edit_primary(p->edit));
+    char name[FL_SOURCE_NAME_MAX+1]; Fl_Id asset=0;
+    if (!root || fl_scene_edit_count(p->edit)!=1) {status(p,"Select one hierarchy to create a prototype."); return;}
+    if (!fl_source_asset_unique_name(project,FL_ASSET_PROTOTYPE,root->name,name) || !fl_prototype_capture(project,scene_id,root->id,name,&asset)) {
+        status(p,"Could not create the prototype."); return;
+    }
+    p->selected=asset; status(p,"Prototype created."); invalidate(p);
+}
+
 /* Context actions operate on the clicked row's asset. */
 static void row_menu(int index, void *data)
 {
     Fl_AssetRow row = *(Fl_AssetRow *)data;
     const Fl_Asset *record = fl_project_asset(fl_scene_edit_project(row.panel->edit), row.asset);
     if (!record) return;
+    if (record->kind==FL_ASSET_PROTOTYPE) {
+        if (index==0) add_prototype(row.panel,row.asset,0,0,0);
+        else if (index==1) {
+            Fl_Project *project=fl_scene_edit_project(row.panel->edit); char path[FL_PATH_MAX];
+            if (!fl_project_save(project) || !fl_project_asset_path(project,record,path,sizeof(path)) || !fl_open_path(path)) status(row.panel,"Could not open prototype source.");
+        } else if (index==2) rename_asset(row.panel,row.asset);
+        else if (index==3) delete_asset(row.panel,row.asset);
+        return;
+    }
     bool placeable = visual(record->kind) || record->kind == FL_ASSET_AUDIO || record->path!=NULL;
     int action = placeable ? index : index + 1;
     if (action==0 && record->path!=NULL) {
@@ -316,7 +349,10 @@ static void row_clicked(Ca_Button *button, void *data)
     row->panel->selected = row->asset;
     invalidate(row->panel);
     const Fl_Asset *record = fl_project_asset(fl_scene_edit_project(row->panel->edit), row->asset);
-    if (!ca_button_get_click_pos(button, &x, &y) && record && visual(record->kind)) add_to_scene(row->panel, row->asset);
+    if (!ca_button_get_click_pos(button,&x,&y) && record) {
+        if (record->kind==FL_ASSET_PROTOTYPE) add_prototype(row->panel,row->asset,0,0,0);
+        else if (visual(record->kind)) add_to_scene(row->panel,row->asset);
+    }
 }
 
 /* Finish dragging an image row onto the scene hierarchy or artboard. */
@@ -328,11 +364,13 @@ static void row_drag_end(const Ca_DragEvent *event, void *data)
     const Fl_Asset *record = fl_project_asset(fl_scene_edit_project(p->edit), row->asset);
     float x, y;
     Fl_SceneDropTarget target;
-    if (!record || (!visual(record->kind) && record->kind != FL_ASSET_AUDIO)) return;
+    if (!record || (!visual(record->kind) && record->kind != FL_ASSET_AUDIO && record->kind!=FL_ASSET_PROTOTYPE)) return;
     if (!ca_window_mouse_release_position(event->window, 0, &x, &y) && !ca_window_cursor_screen_position(event->window, &x, &y)) return;
     if (record->kind == FL_ASSET_AUDIO) fl_timeline_panel_drop_asset(p->timeline, row->asset, x, y);
-    else if (fl_scene_panel_drop_target(p->scene, x, y, &target))
-        fl_scene_edit_insert_media(p->edit, row->asset, target.parent, target.x, target.y, target.at_point);
+    else if (fl_scene_panel_drop_target(p->scene,x,y,&target)) {
+        if (record->kind==FL_ASSET_PROTOTYPE) add_prototype(p,row->asset,target.parent,target.x,target.y);
+        else fl_scene_edit_insert_media(p->edit,row->asset,target.parent,target.x,target.y,target.at_point);
+    }
 }
 
 /* Place images dropped over the scene once their import finishes; refresh status for every result. */
@@ -474,9 +512,9 @@ static void emit_tile(Fl_AssetPanel *p, const Fl_Asset *a)
     }
     ca_div_end();
     ca_tooltip(&(Ca_TooltipDesc){.text = tip});
-    static const char *image_items[] = {"Add to scene", "Rename", "Delete"}, *audio_items[] = {"Add to timeline", "Rename", "Delete"}, *script_items[]={"Open source","Rename","Delete"};
-    ca_context_menu(&(Ca_CtxMenuDesc){.items = image ? image_items : a->kind == FL_ASSET_AUDIO ? audio_items : a->path ? script_items : image_items + 1,
-        .item_count = placeable || a->path ? 3 : 2, .on_select = row_menu, .select_data = row});
+    static const char *image_items[] = {"Add to scene", "Rename", "Delete"}, *audio_items[] = {"Add to timeline", "Rename", "Delete"}, *script_items[]={"Open source","Rename","Delete"}, *prototype_items[]={"Add to scene","Open source","Rename","Delete"};
+    ca_context_menu(&(Ca_CtxMenuDesc){.items = a->kind==FL_ASSET_PROTOTYPE ? prototype_items : image ? image_items : a->kind == FL_ASSET_AUDIO ? audio_items : a->path ? script_items : image_items + 1,
+        .item_count = a->kind==FL_ASSET_PROTOTYPE ? 4 : placeable || a->path ? 3 : 2, .on_select = row_menu, .select_data = row});
 }
 
 
@@ -502,6 +540,8 @@ void fl_asset_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
     fl_button(&(Fl_ButtonDesc){.text = CA_ICON_NF_FA_PLUS, .id = "asset-import", .on_click = browse_clicked, .click_data = p,
         .kind = FL_BUTTON_ICON,
         .tooltip = "Import files"});
+    fl_button(&(Fl_ButtonDesc){.text=CA_ICON_NF_FA_CUBES,.id="prototype-capture",.on_click=capture_prototype,.click_data=p,
+        .kind=FL_BUTTON_ICON,.disabled=fl_scene_edit_count(p->edit)!=1,.tooltip="Create prototype from selection"});
     ca_div_end();
     static const struct { int kind; const char *icon, *tip; } kinds[KIND_CHIPS] = {
         {0, CA_ICON_NF_FA_TABLE_CELLS, "All"}, {FL_ASSET_IMAGE, CA_ICON_NF_FA_IMAGE, "Images"},

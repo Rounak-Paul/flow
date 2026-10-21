@@ -1,8 +1,8 @@
 #include "fl_agent_internal.h"
+#include "time/fl_composition.h"
 #include "doc/fl_json.h"
 #include "core/fl_log.h"
 #include "media/fl_png.h"
-#include "media/fl_video_cache.h"
 #include "platform/fl_fs.h"
 #include "project/fl_asset_import.h"
 #include <math.h>
@@ -235,9 +235,12 @@ static cJSON *tool_evaluate_scene(Fl_Agent *a, const cJSON *args, cJSON **error)
         *error = fl_fail_json(&fail); return NULL;
     }
     Fl_SceneState state = {0};
-    if (!fl_scene_state_update(&state, s, tick)) {fl_fail(&fail, "internal", "out of memory"); *error = fl_fail_json(&fail); return NULL;}
+    if (!fl_scene_state_update(&state, s, tick)) {fl_fail(&fail,"evaluation_failed","%s",state.error[0] ? state.error : "Cannot evaluate scene"); fl_scene_state_clear(&state); *error=fl_fail_json(&fail); return NULL;}
+    s=fl_scene_state_scene(&state,s);
     cJSON *o = cJSON_CreateObject(), *list = o ? cJSON_AddArrayToObject(o, "entities") : NULL;
     if (o) {cJSON_AddItemToObject(o, "scene", agent_id_json(s->id)); cJSON_AddNumberToObject(o, "time", agent_ticks_to_seconds(tick));}
+    if (o && state.error[0]) cJSON_AddStringToObject(o,"diagnostic",state.error);
+    if (o) cJSON_AddNumberToObject(o,"unresolved_overrides",(double)fl_composition_unresolved(state.composition));
     for (size_t i = 0; list && i < s->entity_count; ++i) {
         const Fl_Entity *e = &s->entities[i];
         const Fl_EntityState *v = &state.entities[i];
@@ -246,6 +249,12 @@ static cJSON *tool_evaluate_scene(Fl_Agent *a, const cJSON *args, cJSON **error)
         if (!item) break;
         cJSON_AddItemToObject(item, "id", agent_id_json(e->id));
         cJSON_AddStringToObject(item, "name", e->name);
+        const Fl_Origin *origin=fl_composition_origin(state.composition,i);
+        if (origin && origin->generated) {
+            cJSON *provenance=cJSON_AddObjectToObject(item,"origin"), *path=cJSON_AddArrayToObject(provenance,"path");
+            cJSON_AddItemToObject(provenance,"owner",agent_id_json(origin->owner)); cJSON_AddItemToObject(provenance,"component",agent_id_json(origin->component)); cJSON_AddItemToObject(provenance,"entity",agent_id_json(origin->entity));
+            for (size_t j=0;j<origin->depth;++j) cJSON_AddItemToArray(path,agent_id_json(origin->path[j]));
+        }
         cJSON_AddNumberToObject(item, "x", v->transform.x); cJSON_AddNumberToObject(item, "y", v->transform.y);
         cJSON_AddNumberToObject(item, "width", v->transform.width); cJSON_AddNumberToObject(item, "height", v->transform.height);
         cJSON_AddNumberToObject(item, "rotation", v->transform.rotation * 180.0 / 3.14159265358979323846);
@@ -267,7 +276,7 @@ static cJSON *tool_evaluate_scene(Fl_Agent *a, const cJSON *args, cJSON **error)
             cJSON *crop = cJSON_AddArrayToObject(item, "crop");
             for (size_t c = 0; crop && c < 4; ++c) cJSON_AddItemToArray(crop,cJSON_CreateNumber(v->crop[c]));
         }
-        const char *script_error = fl_script_runtime_error(state.scripts, i);
+        const char *script_error = fl_scene_state_entity_error(&state,i);
         if (script_error && script_error[0]) cJSON_AddStringToObject(item, "script_error", script_error);
         cJSON_AddItemToArray(list, item);
     }
@@ -325,10 +334,8 @@ static cJSON *tool_import_asset(Fl_Agent *a, const cJSON *args, cJSON **error)
         fl_fail(&fail,"rejected","The project refused the asset"); *error=fl_fail_json(&fail); return NULL;
     }
     const Fl_Asset *asset=fl_project_asset(p,id); bool added=status==FL_IMPORT_ADDED;
-    bool frames = asset->kind != FL_ASSET_VIDEO || fl_video_cache_prepare(p, asset);
     cJSON *o = agent_asset_json(asset, fl_project_asset_uses(p, asset->id));
     if (o) cJSON_AddBoolToObject(o, "already_in_project", !added);
-    if (o && asset->kind == FL_ASSET_VIDEO) cJSON_AddBoolToObject(o, "frames_ready", frames);
     return o;
 }
 
@@ -447,7 +454,7 @@ static const ToolDef TOOLS[] = {
      true, tool_evaluate_scene},
     {"apply_ops", "Apply a batch of document operations atomically (all succeed or none do) as one undoable changeset. "
      "Operations: scene.add/remove/rename/move/set, entity.create/set/remove/reparent/reorder, key.set/remove, track.remove, beat.add/update/remove/move/split, "
-     "clip.add/update/remove, asset.source/rename/remove, script.create/update/remove/attach/detach. Name created objects with \"as\":\"$name\" and reuse \"$name\" as an id later in the batch. "
+     "clip.add/update/remove, prototype.capture/instantiate/overrides, asset.source/rename/remove, script.create/update/remove/attach/detach. Name created objects with \"as\":\"$name\" and reuse \"$name\" as an id later in the batch. "
      "Pass expect:{\"<scene id>\": revision} to refuse the batch if a scene changed since you read it. Full field lists are in get_reference.",
      "{\"type\":\"object\",\"properties\":{\"ops\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"object\",\"properties\":{\"op\":{\"type\":\"string\"},\"as\":{\"type\":\"string\"}},\"required\":[\"op\"]}},"
      "\"label\":{\"type\":\"string\",\"description\":\"Short name shown for undo\"},\"expect\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"integer\"}},\"dry_run\":{\"type\":\"boolean\"}},\"required\":[\"ops\"],\"additionalProperties\":false}",

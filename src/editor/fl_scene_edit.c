@@ -1,3 +1,4 @@
+#include "time/fl_composition.h"
 #include "fl_scene_edit.h"
 #include "time/fl_evaluation.h"
 #include <math.h>
@@ -168,7 +169,7 @@ const Fl_SceneState *fl_scene_edit_state(Fl_SceneEdit *edit)
             const Fl_Entity *entity=&scene->entities[i];
             for (size_t j=0;j<entity->component_count;++j) {
                 Fl_Script script;
-                if (fl_script_decode(&entity->components[j],&script) && script.enabled) {edit->scene_scripted=true; break;}
+                if (entity->components[j].type==FL_COMPONENT_PROTOTYPE || (fl_script_decode(&entity->components[j],&script) && script.enabled)) {edit->scene_scripted=true; break;}
             }
         }
     }
@@ -353,4 +354,15 @@ bool fl_scene_edit_insert_media(Fl_SceneEdit *edit, Fl_Id asset, Fl_Id parent, d
     bool created=record->kind==FL_ASSET_VIDEO ? fl_widget_create_video(edit->project,edit->scene,parent,asset,x,y,w,h,&id)
                                                : fl_widget_create_image(edit->project,edit->scene,parent,asset,x,y,w,h,&id);
     return created&&fl_scene_edit_select(edit,edit->scene,id,false);
+}
+
+Fl_Id fl_scene_edit_pick(Fl_SceneEdit *edit, double x, double y, double tolerance)
+{
+    const Fl_SceneGeometry *geometry=fl_scene_edit_geometry(edit);
+    const Fl_SceneState *state=fl_scene_edit_state(edit);
+    const Fl_Scene *scene=fl_scene_state_scene(state,edit ? fl_project_scene(edit->project,edit->scene) : NULL);
+    Fl_Id id=fl_scene_geometry_pick(geometry,scene,x,y,tolerance);
+    const Fl_Entity *entity=fl_scene_entity(scene,id);
+    const Fl_Origin *origin=entity && state ? fl_composition_origin(state->composition,(size_t)(entity-scene->entities)) : NULL;
+    return origin && origin->generated ? origin->owner : id;
 }

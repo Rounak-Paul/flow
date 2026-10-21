@@ -22,7 +22,7 @@ static bool unique_ids(Fl_Id *ids, size_t count, Fl_Id next)
 }
 
 /* Validate local namespaces before building lookups; reject disconnected roots, missing parents and cycles. */
-static bool local_valid(Fl_Json *c, Fl_Prototype *p)
+bool fl_prototype_local_valid(Fl_Json *c, Fl_Prototype *p)
 {
     Fl_Scene *s=&p->scope;
     size_t count=fl_timeline_id_count(s), components=0;
@@ -82,7 +82,7 @@ bool fl_prototype_read(Fl_Json *c, const char *source, size_t size, Fl_Prototype
         fl_json_uint(c,fl_json_member(c,root,"next_id",0),&value.next_id) &&
         fl_json_uint(c,fl_json_member(c,root,"next_component_id",0),&value.next_component_id) &&
         fl_json_uint(c,fl_json_member(c,root,"duration",0),&value.scope.duration) &&
-        value.scope.duration && value.scope.duration<=INT64_MAX && fl_document_content_read(c,root,&value.scope) && local_valid(c,&value);
+        value.next_id<=INT64_MAX && value.next_component_id<=INT64_MAX && value.scope.duration && value.scope.duration<=INT64_MAX && fl_document_content_read(c,root,&value.scope) && fl_prototype_local_valid(c,&value);
     cJSON_Delete(root);
     if (!ok) {fl_prototype_clear(&value); return fl_json_fail(c,"Invalid Flow prototype document");}
     *out=value; return true;
@@ -97,21 +97,24 @@ cJSON *fl_prototype_write(Fl_Json *c, const Fl_Prototype *p)
     return root;
 }
 
-bool fl_prototype_validate(Fl_Json *c, Fl_Prototype *p, const Fl_Project *project)
+/* Resolve a direct or override-provided resource against the final project catalog. */
+static bool reference_valid(Fl_Id id, Fl_AssetKind kind, void *data)
+{
+    const Fl_Asset *asset=fl_project_asset(data,id); return asset && (!kind || asset->kind==kind);
+}
+
+bool fl_prototype_validate(Fl_Json *c, Fl_Prototype *p, const Fl_Project *project, const atomic_bool *cancel)
 {
     p->scope.project=project;
     for (size_t i=0;i<p->scope.entity_count;++i) {
         const Fl_Entity *e=&p->scope.entities[i];
         for (size_t j=0;j<e->component_count;++j) {
-            Fl_Id id; Fl_AssetKind kind;
-            if (!fl_component_asset_reference(&e->components[j],&id,&kind)) continue;
-            const Fl_Asset *asset=fl_project_asset(project,id);
-            if (!asset || asset->kind!=kind) return fl_json_fail(c,"Missing or incompatible prototype resource");
+            if (!fl_component_visit_assets(&e->components[j],reference_valid,(void *)project)) return fl_json_fail(c,"Missing or incompatible prototype resource");
         }
     }
     if (!fl_timeline_valid(project,&p->scope,p->next_id)) return fl_json_fail(c,"Invalid prototype media timeline");
     char error[256]={0};
-    return fl_script_validate_scene(&p->scope,error,sizeof(error)) || fl_json_fail(c,error);
+    return fl_script_validate_scene(&p->scope,cancel,error,sizeof(error)) || fl_json_fail(c,error);
 }
 
 void fl_prototype_clear(Fl_Prototype *p)

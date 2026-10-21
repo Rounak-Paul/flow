@@ -125,3 +125,8 @@ bool fl_fs_make_private(const char *path);
 
 /* Resolve an existing path to an absolute UTF-8 path, writing at most cap bytes. */
 bool fl_fs_absolute(const char *path, char *out, size_t cap);
+
+/* Create one exclusively owned directory; false when it already exists. Parent must exist. */
+bool fl_fs_mkdir_exclusive(const char *path);
+/* Remove an owned scratch tree without following symbolic links/reparse points; depth is bounded to 64. */
+bool fl_fs_remove_tree(const char *path);

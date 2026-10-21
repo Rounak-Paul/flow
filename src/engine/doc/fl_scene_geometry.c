@@ -37,6 +37,7 @@ void fl_scene_geometry_clear(Fl_SceneGeometry *g)
 bool fl_scene_geometry_update(Fl_SceneGeometry *g, const Fl_Scene *s, const Fl_SceneState *state)
 {
     if (!g) return false;
+    s=fl_scene_state_scene(state,s);
     if (!s) { fl_scene_geometry_clear(g); return true; }
     if (state && (!state->valid || state->scene != s->id || state->revision != s->revision || state->count != s->entity_count)) state = NULL;
     Fl_Tick tick = state ? state->tick : 0;
@@ -91,7 +92,7 @@ bool fl_scene_geometry_update(Fl_SceneGeometry *g, const Fl_Scene *s, const Fl_S
 
 Fl_Id fl_scene_geometry_pick(const Fl_SceneGeometry *g, const Fl_Scene *s, double x, double y, double tolerance)
 {
-    if (!g || !s || g->scene != s->id || g->revision != s->revision || !isfinite(x) || !isfinite(y)) return 0;
+    if (!g || !s || g->count!=s->entity_count || g->scene != s->id || g->revision != s->revision || !isfinite(x) || !isfinite(y)) return 0;
     for (size_t i = g->count; i; ) {
         size_t index = g->order[--i]; const Fl_ResolvedEntity *v = &g->entities[index];
         if (!v->visible || !v->invertible || v->kind == FL_WIDGET_GROUP) continue;

@@ -1,3 +1,4 @@
+#include "components/fl_prototype_instance.h"
 #include "fl_document.h"
 #include "components/fl_script.h"
 #include "components/fl_style.h"
@@ -18,7 +19,7 @@ static const Field image[] = {{"asset",0,UNSIGNED},{0}};
 static const Field opacity[] = {{"value",0,NUMBER},{0}};
 static const Field style[] = {{"radius",0,NUMBER},{"gradient_angle",8,NUMBER},{"shadow_blur",16,NUMBER},{"shadow_x",24,NUMBER},{"shadow_y",32,NUMBER},{"gradient_to",40,COLOR},{"shadow_color",44,COLOR},{"gradient",48,FLAG},{"align",49,BYTE},{"crop_x",50,NUMBER},{"crop_y",58,NUMBER},{"crop_width",66,NUMBER},{"crop_height",74,NUMBER},{"clip",82,FLAG},{"blur",83,NUMBER},{0}};
 static const Field video[] = {{"asset",0,UNSIGNED},{"start",8,SIGNED},{"offset",16,SIGNED},{"rate",24,NUMBER},{"loop",32,FLAG},{0}};
-static const Schema schemas[] = {{0}, {"transform",56,transform},{"rectangle",4,rectangle},{"text",0,NULL},{"appearance",24,appearance},{"geometry",1,geometry},{"typography",0,NULL},{"image",8,image},{"opacity",8,opacity},{"animation",0,NULL},{"script",0,NULL},{"style",91,style},{"video",33,video}};
+static const Schema schemas[] = {{0}, {"transform",56,transform},{"rectangle",4,rectangle},{"text",0,NULL},{"appearance",24,appearance},{"geometry",1,geometry},{"typography",0,NULL},{"image",8,image},{"opacity",8,opacity},{"animation",0,NULL},{"script",0,NULL},{"style",91,style},{"video",33,video},{"prototype",0,NULL}};
 static const char *const ease_names[] = {"linear","in","out","in_out","hold"};
 
 /* Read/write a canonical little-endian word without alignment assumptions. */
@@ -111,13 +112,18 @@ cJSON *fl_document_component_write(Fl_Json *c, const Fl_Component *component)
     fl_json_add(c,o,"id",fl_json_u64(component->id));
     fl_json_add(c,o,"type",s ? cJSON_CreateString(s->name) : fl_json_u64(component->type));
     fl_json_add(c,o,"version",fl_json_u64(component->version));
-    if (component->type==FL_COMPONENT_SCRIPT) {
+    if (component->type==FL_COMPONENT_PROTOTYPE) {
+        Fl_PrototypeInstance instance;
+        if (!fl_prototype_instance_decode(component,&instance)) fl_json_fail(c,"Invalid prototype instance");
+        else {fl_json_add(c,o,"asset",fl_json_u64(instance.asset)); fl_json_add(c,o,"time",fl_document_time_write(c,&instance.time)); fl_json_add(c,o,"overrides",fl_json_parse(c,instance.overrides,instance.overrides_size));}
+    } else if (component->type==FL_COMPONENT_SCRIPT) {
         Fl_Script script;
         if (!fl_script_decode(component,&script)) fl_json_fail(c,"Invalid Script component");
         else {
             fl_json_add(c,o,"asset",fl_json_u64(script.script)); fl_json_add(c,o,"enabled",cJSON_CreateBool(script.enabled));
             fl_json_add(c,o,"time",fl_document_time_write(c,&script.time));
             fl_json_add(c,o,"parameters",fl_json_parse(c,script.parameters,script.parameters_size));
+            fl_json_add(c,o,"bindings",fl_json_parse(c,script.bindings,script.bindings_size));
         }
     } else if (component->type==FL_COMPONENT_ANIMATION) fl_json_add(c,o,"tracks",animation_write(c,(const Fl_Animation *)component->data));
     else if (component->type==FL_COMPONENT_TEXT) {
@@ -160,21 +166,35 @@ bool fl_document_component_read(Fl_Json *c, const cJSON *o, Fl_Id entity, Fl_Com
     if (!fl_json_uint(c,fl_json_member(c,o,"id",0),&out->id)) return false;
     if (!fl_json_uint(c,fl_json_member(c,o,"version",0),&out->version)) return false;
     char fields[512]="id type version";
-    if (out->type==FL_COMPONENT_SCRIPT) strcat(fields," asset enabled time parameters");
+    if (out->type==FL_COMPONENT_PROTOTYPE) strcat(fields," asset time overrides");
+    else if (out->type==FL_COMPONENT_SCRIPT) strcat(fields," asset enabled time parameters bindings");
     else if (out->type==FL_COMPONENT_ANIMATION) strcat(fields," tracks");
     else if (out->type==FL_COMPONENT_TEXT) strcat(fields," text");
     else if (out->type==FL_COMPONENT_TYPOGRAPHY) strcat(fields," family weight italic");
     else if (s && s->fields) for (const Field *f=s->fields;f->name;++f) {strcat(fields," "); strcat(fields,f->name);}
     else strcat(fields," bytes");
     if (!fl_json_object(c,o,fields)) return false;
+    if (out->type==FL_COMPONENT_PROTOTYPE) {
+        Fl_PrototypeInstance instance={0}; const cJSON *overrides=fl_json_member(c,o,"overrides",cJSON_Array);
+        if (!overrides || !fl_json_uint(c,fl_json_member(c,o,"asset",0),&instance.asset) || !fl_document_time_read(c,fl_json_member(c,o,"time",cJSON_Object),&instance.time)) return false;
+        char *text=cJSON_PrintUnformatted(overrides); if (!text) return fl_json_fail(c,"Cannot allocate prototype overrides");
+        instance.overrides=text; instance.overrides_size=strlen(text); Fl_Id id=out->id;
+        bool ok=out->version==FL_PROTOTYPE_INSTANCE_VERSION && fl_prototype_instance_encode(&instance,out); free(text); out->id=id;
+        return ok || fl_json_fail(c,"Invalid prototype instance schema");
+    }
     if (out->type==FL_COMPONENT_SCRIPT) {
         Fl_Script script={0}; const cJSON *enabled=fl_json_member(c,o,"enabled",0), *parameters=fl_json_member(c,o,"parameters",cJSON_Object);
         if (!cJSON_IsBool(enabled) || !parameters || !fl_json_uint(c,fl_json_member(c,o,"asset",0),&script.script) ||
             !fl_document_time_read(c,fl_json_member(c,o,"time",cJSON_Object),&script.time)) return fl_json_fail(c,"Invalid Script configuration");
+        const cJSON *bindings=fl_json_member(c,o,"bindings",cJSON_Object);
+        if (!bindings || !fl_script_bindings_valid(c,bindings)) return false;
         script.enabled=cJSON_IsTrue(enabled);
         char *text=cJSON_PrintUnformatted(parameters); if (!text) return fl_json_fail(c,"Cannot encode parameters");
+        char *binding_text=cJSON_PrintUnformatted(bindings);
+        if (!binding_text) {cJSON_free(text); return fl_json_fail(c,"Cannot encode bindings");}
+        script.bindings=binding_text; script.bindings_size=strlen(binding_text);
         script.parameters=text; script.parameters_size=strlen(text); Fl_Id id=out->id; uint64_t version=out->version;
-        bool ok=version==FL_SCRIPT_VERSION && fl_script_encode(&script,out); cJSON_free(text); out->id=id;
+        bool ok=version==FL_SCRIPT_VERSION && fl_script_encode(&script,out); cJSON_free(text); cJSON_free(binding_text); out->id=id;
         return ok || fl_json_fail(c,"Invalid Script schema or parameter budget");
     }
     if (out->type==FL_COMPONENT_ANIMATION) return animation_read(c,fl_json_member(c,o,"tracks",cJSON_Array),entity,out) && fl_widget_component_valid(out);

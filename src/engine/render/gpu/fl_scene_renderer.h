@@ -35,9 +35,10 @@ void fl_scene_renderer_destroy(Fl_SceneRenderer *renderer);
  * complete; without it missing pictures show a placeholder until invalidate fires.
  *
  * state  Evaluated state at the drawn time, or NULL for base values.
+ * geometry  Matching resolved hierarchy; inherited visibility gates media requests.
  */
 void fl_scene_renderer_prepare(Fl_SceneRenderer *renderer, const Fl_Project *project, const Fl_Scene *scene,
-                               const Fl_SceneState *state, double text_scale, bool wait);
+                               const Fl_SceneState *state, const Fl_SceneGeometry *geometry, double text_scale, bool wait);
 /* Bind the primitive pipeline for a colour format and the whole target as viewport/scissor. False when unavailable. */
 bool fl_scene_renderer_begin(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, VkFormat format, uint32_t width, uint32_t height);
 /* Fill target (scene units) with the backdrop colour; frame is the visible world rectangle the target maps into. */
@@ -94,3 +95,10 @@ bool fl_scene_renderer_render(Fl_SceneRenderer *renderer, const Fl_Project *proj
 
 /* Borrow the latest offscreen render failure diagnostic; empty after a successful render. */
 const char *fl_scene_renderer_error(const Fl_SceneRenderer *renderer);
+
+/* Create an independent export renderer with actual font bytes frozen for the selected evaluated hierarchies.
+   Borrows only the source renderer's GPU driver and job system; owns its captured font service. */
+Fl_SceneRenderer *fl_scene_renderer_snapshot(Fl_SceneRenderer *source, const Fl_Project *project,
+                                           const Fl_Id *scenes, size_t count, char *error, size_t capacity);
+/* Borrow the renderer's job system for independently owned export preparation work. */
+Fl_JobSystem *fl_scene_renderer_jobs(const Fl_SceneRenderer *renderer);

@@ -5,6 +5,9 @@
 #include "media/fl_thumbnail.h"
 #include "project/fl_asset_import.h"
 #include "project/fl_history.h"
+#include "project/fl_resource_snapshot.h"
+#include "schema/fl_widgets.h"
+#include "components/fl_script.h"
 #include "platform/fl_fs.h"
 #include "platform/fl_paths.h"
 #include <stdlib.h>
@@ -249,6 +252,68 @@ static void test_importer(const char *root)
     fl_project_destroy(p); fl_jobs_destroy(jobs); fl_event_bus_destroy(bus);
 }
 
+/* Wait for immutable capture publication with a bounded test deadline. */
+static Fl_ResourceStatus await_capture(Fl_ResourceSnapshot *snapshot, Fl_EventBus *bus)
+{
+    uint64_t deadline=fl_clock_monotonic_ns()+UINT64_C(10000000000);
+    while (fl_resource_snapshot_status(snapshot)==FL_RESOURCES_PENDING && fl_clock_monotonic_ns()<deadline)
+        fl_event_bus_dispatch(bus);
+    return fl_resource_snapshot_status(snapshot);
+}
+
+/* Captured bytes survive live removal/reopen; corrupt sources fail and cancellation releases leases. */
+static void test_resource_snapshot(const char *root)
+{
+    char dir[FL_PATH_MAX],source[FL_PATH_MAX],original[FL_PATH_MAX],pinned[FL_PATH_MAX],capture_root[FL_PATH_MAX],error[256];
+    CHECK(fl_fs_join(dir,sizeof(dir),root,"capture"));
+    Fl_EventBus *bus=fl_event_bus_create(&(Fl_EventBusDesc){0});
+    Fl_JobSystem *jobs=fl_jobs_create(&(Fl_JobSystemDesc){.worker_count=1,.bus=bus});
+    Fl_Project *project=fl_project_create(dir,"Capture",bus);
+    CHECK(bus && jobs && project); if (!bus || !jobs || !project) return;
+    CHECK(write_file(root,"capture.png",PNG,sizeof(PNG),source));
+    Fl_StoredAsset stored={0}; Fl_Id asset=0,entity=0,scene=fl_project_scene_at(project,0)->id;
+    CHECK(fl_asset_store_file(dir,source,&stored)==FL_IMPORT_ADDED);
+    CHECK(fl_asset_record(project,&stored,"Picture",&asset)==FL_IMPORT_ADDED);
+    CHECK(fl_widget_create_image(project,scene,0,asset,0,0,3,2,&entity));
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_REMOVE,.scene=scene,.entity=entity},NULL));
+    char generator[1024]; snprintf(generator,sizeof(generator),"return {build=function(ctx)return {version=1,root=1,next_id=2,next_component_id=3,duration=120000,beats={},clips={},entities={{id=1,parent=0,name='Generated image',visible=true,components={{id=1,type='transform',version=1,x=0,y=0,width=3,height=2,rotation=0,scale_x=1,scale_y=1},{id=2,type='image',version=1,asset='%llu'}}}}} end}",(unsigned long long)asset);
+    Fl_Id module=0;
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET,.source_kind=FL_ASSET_LUA,.name="Image generator",.source=generator,.source_size=strlen(generator)},&module));
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_ADD,.scene=scene,.name="Generator"},&entity));
+    Fl_Component behavior={0}; CHECK(fl_script_encode(&(Fl_Script){.script=module,.enabled=true},&behavior));
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_COMPONENT_SET,.scene=scene,.entity=entity,.component=behavior},NULL)); fl_component_clear(&behavior);
+    CHECK(!fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_REMOVE,.asset=asset},NULL));
+    CHECK(fl_project_asset_path(project,fl_project_asset(project,asset),original,sizeof(original)));
+    Fl_ResourceSnapshot *snapshot=fl_resource_snapshot_create(project,jobs,&scene,1,error,sizeof(error));
+    CHECK(snapshot && fl_resource_snapshot_leased(dir,stored.hash));
+    CHECK(await_capture(snapshot,bus)==FL_RESOURCES_READY);
+    Fl_Project *view=fl_resource_snapshot_project(snapshot);
+    CHECK(view && fl_project_asset_path(view,fl_project_asset(view,asset),pinned,sizeof(pinned)));
+    snprintf(capture_root,sizeof(capture_root),"%s",fl_project_directory(view));
+    CHECK(strcmp(pinned,original) && fl_fs_file_size(pinned)==(int64_t)sizeof(PNG));
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_REMOVE,.scene=scene,.entity=entity},NULL));
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_REMOVE,.asset=asset},NULL));
+    fl_history_clear(fl_project_history(project)); CHECK(fl_project_save(project) && fl_fs_exists(original));
+    fl_project_destroy(project); project=fl_project_open(dir,bus); CHECK(project && fl_fs_exists(original));
+    CHECK(fl_fs_file_size(pinned)==(int64_t)sizeof(PNG));
+    fl_resource_snapshot_destroy(snapshot);
+    CHECK(!fl_fs_exists(capture_root) && !fl_resource_snapshot_leased(dir,stored.hash));
+    fl_project_destroy(project); project=fl_project_open(dir,bus); CHECK(project && !fl_fs_exists(original));
+    CHECK(fl_asset_store_file(dir,source,&stored)==FL_IMPORT_ADDED);
+    CHECK(fl_asset_record(project,&stored,"Picture",&asset)==FL_IMPORT_ADDED);
+    CHECK(fl_widget_create_image(project,scene,0,asset,0,0,3,2,&entity));
+    CHECK(fl_project_asset_path(project,fl_project_asset(project,asset),original,sizeof(original)));
+    CHECK(fl_fs_write_atomic(original,"broken",6));
+    snapshot=fl_resource_snapshot_create(project,jobs,&scene,1,error,sizeof(error));
+    CHECK(snapshot && await_capture(snapshot,bus)==FL_RESOURCES_FAILED);
+    CHECK(fl_resource_snapshot_error(snapshot)[0]); fl_resource_snapshot_destroy(snapshot);
+    CHECK(fl_fs_write_atomic(original,PNG,sizeof(PNG)));
+    snapshot=fl_resource_snapshot_create(project,jobs,&scene,1,error,sizeof(error)); CHECK(snapshot);
+    fl_resource_snapshot_destroy(snapshot); CHECK(!fl_resource_snapshot_leased(dir,stored.hash));
+    Fl_Id missing=UINT64_MAX; CHECK(!fl_resource_snapshot_create(project,jobs,&missing,1,error,sizeof(error)));
+    fl_event_bus_dispatch(bus); fl_project_destroy(project); CHECK(fl_jobs_destroy(jobs)); CHECK(fl_event_bus_destroy(bus));
+}
+
 int main(int argc, char **argv)
 {
     CHECK(argc == 2); if (argc != 2) return 1;
@@ -260,5 +325,6 @@ int main(int argc, char **argv)
     test_project_assets(argv[1]);
     test_importer(argv[1]);
     test_thumbnails(argv[1]);
+    test_resource_snapshot(argv[1]);
     return FLOW_TEST_RESULT("fl_assets_tests");
 }

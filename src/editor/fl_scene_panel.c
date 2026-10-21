@@ -298,7 +298,7 @@ static void stage_start(const Ca_DragEvent *event,void *data)
     if (mode==FL_GESTURE_MOVE) {
         if (!fl_scene_preview_point(p->preview,p->viewport,event->start_x,event->start_y,false,&x,&y)) return;
         const Fl_Scene *s=fl_project_scene(p->project,fl_scene_edit_scene(p->edit));
-        Fl_Id hit=fl_scene_geometry_pick(fl_scene_edit_geometry(p->edit),s,x,y,5);
+        Fl_Id hit=fl_scene_edit_pick(p->edit,x,y,5);
         bool additive=(ca_window_mouse_mods(event->window)&CA_MOD_SHIFT)!=0;
         if (additive||!fl_scene_edit_contains(p->edit,hit)) fl_scene_edit_select(p->edit,s->id,hit,additive);
         if (!hit||!fl_scene_edit_contains(p->edit,hit)) return;

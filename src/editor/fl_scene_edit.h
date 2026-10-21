@@ -49,3 +49,6 @@ bool fl_scene_edit_insert(Fl_SceneEdit *edit, Fl_WidgetKind kind, Fl_Id parent, 
 /* Create an image or video entity of asset fitted inside the scene at a parent-local point (its centre when
    centred, else its top-left corner) and select it. */
 bool fl_scene_edit_insert_media(Fl_SceneEdit *edit, Fl_Id asset, Fl_Id parent, double x, double y, bool centred);
+
+/* Hit-test evaluated content and resolve generated children to their persistent instance owner. */
+Fl_Id fl_scene_edit_pick(Fl_SceneEdit *edit, double x, double y, double tolerance);

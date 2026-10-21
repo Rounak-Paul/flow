@@ -1,3 +1,6 @@
+#include "fl_resource_snapshot.h"
+#include "time/fl_composition.h"
+#include "components/fl_prototype_instance.h"
 #include <stdatomic.h>
 #include "fl_project.h"
 #include "fl_scene_storage.h"
@@ -45,7 +48,7 @@ typedef struct Fl_ProjectFile {
 struct Fl_Project {
     Fl_History *history;
     Fl_Project *edit_backup;
-    bool editing, interactive, edit_dirty, edit_validate;
+    bool editing, interactive, edit_dirty;
     uint64_t edit_generation;
     Fl_ProjectChange *changes;
     size_t change_count, change_capacity;
@@ -204,6 +207,21 @@ const Fl_Asset *fl_project_asset_by_hash(const Fl_Project *p, const unsigned cha
     if (p && hash) for (size_t i = 0; i < p->asset_count; ++i) if (!memcmp(p->assets[i].hash, hash, 32)) return &p->assets[i];
     return NULL;
 }
+typedef struct AssetUses {Fl_Id asset; size_t count;} AssetUses;
+/* Count references without resolving or reparsing the reusable source catalog. */
+static bool count_asset_use(Fl_Id asset, Fl_AssetKind kind, void *data)
+{
+    (void)kind; AssetUses *uses=data;
+    if (asset==uses->asset) {if (uses->count==SIZE_MAX) return false; ++uses->count;}
+    return true;
+}
+/* Validate all semantic resource references, including prototype override inputs. */
+static bool asset_reference_valid(Fl_Id id, Fl_AssetKind kind, void *data)
+{
+    const Fl_Asset *asset=fl_project_asset(data,id);
+    return asset && (!kind || asset->kind==kind);
+}
+
 size_t fl_project_asset_uses(const Fl_Project *p, Fl_Id asset)
 {
     size_t uses = 0;
@@ -212,8 +230,9 @@ size_t fl_project_asset_uses(const Fl_Project *p, Fl_Id asset)
         for (size_t j = 0; j < p->scenes[i].entity_count; ++j) {
             const Fl_Entity *e = &p->scenes[i].entities[j];
             for (size_t k = 0; k < e->component_count; ++k) {
-                Fl_Id id;
-                if (fl_component_asset_reference(&e->components[k], &id, NULL) && id == asset) ++uses;
+                AssetUses count={asset,uses};
+                if (!fl_component_visit_assets(&e->components[k],count_asset_use,&count)) return SIZE_MAX;
+                uses=count.count;
             }
         }
     for (size_t i=0;p && asset && i<p->asset_count;++i)
@@ -230,10 +249,7 @@ static bool references_valid(const Fl_Project *p, const Fl_Scene *s, const Fl_Co
 {
     (void)s;
     for (size_t i = 0; components && i < count; ++i) {
-        Fl_Id id; Fl_AssetKind kind;
-        if (!fl_component_asset_reference(&components[i], &id, &kind)) continue;
-        const Fl_Asset *asset = fl_project_asset(p, id);
-        if (!asset || asset->kind != kind) return false;
+        if (!fl_component_visit_assets(&components[i],asset_reference_valid,(void *)p)) return false;
     }
     return true;
 }
@@ -369,7 +385,7 @@ static bool apply_source_asset(Fl_Project *p, const Fl_Op *op, Fl_Id *created)
     if (!format) return false;
     const Fl_Asset *existing=fl_project_asset(p,op->asset);
     if (op->asset && (!existing || existing->kind!=op->source_kind)) return false;
-    for (size_t i=0;op->asset && i<p->count;++i) if (fl_scene_script_uses(&p->scenes[i],op->asset) && p->scenes[i].revision>=UINT64_MAX-1) return false;
+    for (size_t i=0;i<p->count;++i) if (p->scenes[i].revision>=UINT64_MAX-1) return false;
     if (!op->name && !op->source) return false;
     const Fl_Asset *named=op->name ? fl_project_asset_named(p,op->source_kind,op->name) : NULL;
     if (op->name && (!fl_source_asset_name_valid(op->name) || (named && named->id!=op->asset))) return false;
@@ -393,7 +409,7 @@ static bool apply_source_asset(Fl_Project *p, const Fl_Op *op, Fl_Id *created)
         free((void *)a->references); a->references=info.references; a->reference_count=info.reference_count;
         Fl_Sha256 hash; fl_sha256_init(&hash); fl_sha256_update(&hash,source,op->source_size); fl_sha256_final(&hash,a->hash);
     }
-    for (size_t i=0;i<p->count;++i) if (fl_scene_script_uses(&p->scenes[i],a->id)) ++p->scenes[i].revision;
+    for (size_t i=0;i<p->count;++i) ++p->scenes[i].revision;
     return true;
 }
 
@@ -770,6 +786,13 @@ Fl_Project *fl_project_read_view(const Fl_Project *project)
     return view;
 }
 
+bool fl_project_read_view_rebase(Fl_Project *view, const char *directory)
+{
+    if (!view || !view->read_only || !directory || view->owner!=fl_thread_current_id()) return false;
+    char *copy=copy_string(directory); if (!copy) return false;
+    free(view->directory); view->directory=copy; return true;
+}
+
 bool fl_project_is_read_view(const Fl_Project *project) {return project && project->read_only;}
 uint64_t fl_project_identity(const Fl_Project *project) {return project ? project->identity : 0;}
 
@@ -781,7 +804,7 @@ bool fl_project_edit_begin(Fl_Project *p, const char *label, bool interactive)
     if (!p || p->read_only || p->publishing || p->editing || p->owner!=fl_thread_current_id() || !fl_history_begin(p->history,p,label)) return false;
     p->edit_backup=clone_document(p);
     if (!p->edit_backup) {fl_history_discard(p->history); return false;}
-    p->diagnostic[0]=0; p->edit_validate=false; p->editing=true; p->interactive=interactive; p->edit_generation=p->generation; p->edit_dirty=p->dirty; p->change_count=0; return true;
+    p->diagnostic[0]=0; p->editing=true; p->interactive=interactive; p->edit_generation=p->generation; p->edit_dirty=p->dirty; p->change_count=0; return true;
 }
 
 bool fl_project_edit_cancel(Fl_Project *p)
@@ -823,12 +846,44 @@ bool fl_project_edit_cancel(Fl_Project *p)
     p->change_count=0; fl_project_destroy(backup); return true;
 }
 
+/* Resolve a sorted catalog identity in logarithmic time for dependency traversal. */
+static size_t asset_position(const Fl_Project *p, Fl_Id id)
+{
+    size_t lo=0,hi=p->asset_count;
+    while (lo<hi) {size_t mid=lo+(hi-lo)/2; if (p->assets[mid].id<id) lo=mid+1; else hi=mid;}
+    return lo<p->asset_count && p->assets[lo].id==id ? lo : SIZE_MAX;
+}
+
+/* Reject resource cycles even for unused reusable assets; traversal is bounded and nonrecursive. */
+static bool validate_asset_graph(Fl_Project *p)
+{
+    size_t n=p->asset_count;
+    unsigned char *state=n ? calloc(n,1) : NULL;
+    size_t *stack=n ? malloc(n*sizeof(*stack)) : NULL, *edges=n ? calloc(n,sizeof(*edges)) : NULL;
+    if (n && (!state || !stack || !edges)) {free(state); free(stack); free(edges); return false;}
+    bool valid=true;
+    for (size_t i=0;valid && i<n;++i) if (!state[i]) {
+        size_t depth=1; stack[0]=i; state[i]=1;
+        while (valid && depth) {
+            size_t index=stack[depth-1]; const Fl_Asset *asset=&p->assets[index];
+            if (edges[index]==asset->reference_count) {state[index]=2; --depth; continue;}
+            size_t next=asset_position(p,asset->references[edges[index]++]);
+            if (next==SIZE_MAX) {snprintf(p->diagnostic,sizeof(p->diagnostic),"%s: missing resource dependency",asset->name); valid=false;}
+            else if (asset->kind==FL_ASSET_LUA && p->assets[next].kind!=FL_ASSET_LUA) {snprintf(p->diagnostic,sizeof(p->diagnostic),"%s: imports require Lua assets",asset->name); valid=false;}
+            else if (state[next]==1) {snprintf(p->diagnostic,sizeof(p->diagnostic),"%s: recursive resource dependency",asset->name); valid=false;}
+            else if (!state[next]) {state[next]=1; stack[depth++]=next;}
+        }
+    }
+    free(state); free(stack); free(edges); return valid;
+}
+
 /* Resolve reusable document dependencies against the final asset catalog, including behavior interfaces. */
 static bool validate_prototypes(Fl_Project *project)
 {
+    if (!validate_asset_graph(project)) return false;
     for (size_t i=0;i<project->asset_count;++i) if (project->assets[i].kind==FL_ASSET_PROTOTYPE) {
         const Fl_Asset *asset=&project->assets[i]; Fl_Prototype prototype={0}; Fl_Json context={0};
-        bool valid=fl_prototype_read(&context,asset->source,(size_t)asset->size,&prototype) && fl_prototype_validate(&context,&prototype,project);
+        bool valid=fl_prototype_read(&context,asset->source,(size_t)asset->size,&prototype) && fl_prototype_validate(&context,&prototype,project,NULL);
         fl_prototype_clear(&prototype);
         if (!valid) {snprintf(project->diagnostic,sizeof(project->diagnostic),"%s: %.160s",asset->name,context.error); return false;}
     }
@@ -838,20 +893,24 @@ static bool validate_prototypes(Fl_Project *project)
 bool fl_project_edit_validate(Fl_Project *project)
 {
     if (!project || !project->editing || project->publishing || project->owner!=fl_thread_current_id()) return false;
-    if (!project->edit_validate) return true;
     if (!validate_prototypes(project)) return false;
+    for (size_t i=0;i<project->count;++i) if (fl_composition_required(&project->scenes[i])) {
+        Fl_Composition *composition=fl_composition_create(&project->scenes[i],NULL,project->diagnostic,sizeof(project->diagnostic));
+        if (!composition) return false;
+        fl_composition_destroy(composition);
+    }
     for (size_t i=0;i<project->count;++i)
-        if (!fl_script_validate_scene(&project->scenes[i],project->diagnostic,sizeof(project->diagnostic))) return false;
+        if (!fl_script_validate_scene(&project->scenes[i],NULL,project->diagnostic,sizeof(project->diagnostic))) return false;
     return true;
 }
 
-/* Executable declarations require atomic publication; interactive transform previews do not recompile modules. */
+/* Executable declarations cannot publish interactive intermediate states; every final changeset validates compiled inputs. */
 static bool changes_behavior(const Fl_Op *operation)
 {
     if (operation->kind==FL_OP_ASSET_SOURCE_SET && operation->source) return true;
-    if (operation->kind==FL_OP_COMPONENT_SET && operation->component.type==FL_COMPONENT_SCRIPT) return true;
+    if (operation->kind==FL_OP_COMPONENT_SET && (operation->component.type==FL_COMPONENT_SCRIPT || operation->component.type==FL_COMPONENT_PROTOTYPE)) return true;
     if ((operation->kind==FL_OP_ENTITY_ADD || operation->kind==FL_OP_ENTITY_CONFIGURE) && operation->components && operation->component_count<=64)
-        for (size_t i=0;i<operation->component_count;++i) if (operation->components[i].type==FL_COMPONENT_SCRIPT) return true;
+        for (size_t i=0;i<operation->component_count;++i) if ((operation->components[i].type==FL_COMPONENT_SCRIPT || operation->components[i].type==FL_COMPONENT_PROTOTYPE)) return true;
     return false;
 }
 
@@ -884,7 +943,6 @@ bool fl_project_apply(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
     bool behavior=changes_behavior(op);
     if (p->interactive && behavior) {snprintf(p->diagnostic,sizeof(p->diagnostic),"Behavior declarations require an atomic changeset"); return false;}
     bool ok=apply_operation(p,op,out_id);
-    if (ok && behavior) p->edit_validate=true;
     if (single) {
         if (ok) ok=fl_project_edit_commit(p);
         else fl_project_edit_cancel(p);
@@ -1059,7 +1117,7 @@ bool fl_project_save(Fl_Project *p)
     size_t retained=0;
     for (size_t i=0;i<p->retired_asset_count;++i) {
         Fl_RetiredAsset r=p->retired_assets[i]; char path[FL_PATH_MAX];
-        if (fl_project_asset_by_hash(p,r.hash) || fl_history_has_asset(p->history,r.hash)) p->retired_assets[retained++]=r;
+        if (fl_project_asset_by_hash(p,r.hash) || fl_history_has_asset(p->history,r.hash) || fl_resource_snapshot_leased(p->directory,r.hash)) p->retired_assets[retained++]=r;
         else if (fl_asset_store_path(p->directory,r.hash,r.extension,path,sizeof(path))) fl_fs_remove(path);
     }
     p->retired_asset_count=retained;
@@ -1392,7 +1450,7 @@ static bool sweep_entry(const char *name, bool directory, void *data)
     bool orphan = !abandoned && parse_store_name(name, hash, &extension);
     if (orphan) {
         const Fl_Asset *a = fl_project_asset_by_hash(sweep->project, hash);
-        orphan = !a || strcmp(a->extension, extension);
+        orphan = (!a || strcmp(a->extension, extension)) && !fl_resource_snapshot_leased(fl_project_directory(sweep->project),hash);
     }
     char path[FL_PATH_MAX];
     if ((abandoned || orphan) && fl_fs_join(path, sizeof(path), sweep->folder, name)) fl_fs_remove(path);
@@ -1537,9 +1595,14 @@ static bool read_project(Fl_Project *p)
     }
     for (size_t n=0;ok && n<p->count;++n) {
         char diagnostic[192];
-        if (!fl_script_validate_scene(&p->scenes[n],diagnostic,sizeof(diagnostic))) ok=fl_json_fail(&c,diagnostic);
+        if (!fl_script_validate_scene(&p->scenes[n],NULL,diagnostic,sizeof(diagnostic))) ok=fl_json_fail(&c,diagnostic);
     }
     if (ok && !validate_prototypes(p)) ok=fl_json_fail(&c,p->diagnostic);
+    for (size_t n=0;ok && n<p->count;++n) if (fl_composition_required(&p->scenes[n])) {
+        Fl_Composition *composition=fl_composition_create(&p->scenes[n],NULL,p->diagnostic,sizeof(p->diagnostic));
+        if (!composition) ok=fl_json_fail(&c,p->diagnostic);
+        fl_composition_destroy(composition);
+    }
     ok=ok && files_unchanged(p);
     cJSON_Delete(root); free(text);
     if (!ok) snprintf(p->diagnostic,sizeof(p->diagnostic),"%s",c.error[0] ? c.error : "Invalid document references, identities or hierarchy");

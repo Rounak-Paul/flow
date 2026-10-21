@@ -188,10 +188,20 @@ static void test_service(const char *root)
         CHECK(fl_fonts_family_count(fonts) == 1 && !strcmp(fl_fonts_family(fonts, 0, &source), "Inter") && source == FL_FONT_SOURCE_PROJECT);
         const Fl_FontFace *faces;
         CHECK(fl_fonts_faces(fonts, "Inter", &faces) == 1 && faces[0].path);
+        Fl_Fonts *snapshot=fl_fonts_snapshot(fonts,&inter,1); CHECK(snapshot);
+        char source_path[FL_PATH_MAX]; CHECK(fl_project_asset_path(p,fl_project_asset(p,id),source_path,sizeof(source_path)));
         CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ASSET_REMOVE, .asset = id}, NULL));
         CHECK(changes == 3 && fl_fonts_match(fonts, &inter).source == FL_FONT_SOURCE_BUNDLED);
         fl_fonts_set_project(fonts, NULL);
         fl_project_destroy(p);
+        CHECK(fl_fs_remove(source_path));
+        if (snapshot) {
+            Fl_FontMatch frozen=fl_fonts_match(snapshot,&inter);
+            CHECK(frozen.face && frozen.face->data && frozen.face->size && !frozen.face->path && frozen.source==FL_FONT_SOURCE_PROJECT);
+            Fl_FontCatalog *independent=frozen.face ? fl_font_catalog_from_memory(frozen.face->data,frozen.face->size) : NULL;
+            CHECK(independent && fl_font_catalog_match(independent,"Inter",400,false));
+            fl_font_catalog_destroy(independent); fl_fonts_destroy(snapshot);
+        }
     }
 #else
     (void)root;

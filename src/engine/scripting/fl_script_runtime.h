@@ -33,4 +33,14 @@ const cJSON *fl_script_runtime_parameter_schema(const Fl_ScriptRuntime *runtime,
 
 /* Compile attached enabled modules and validate exposed parameters without initializing, stepping or sampling.
    Unbound clocks remain diagnosed runtime bindings; invalid executable declarations fail publication. */
-bool fl_script_validate_scene(const Fl_Scene *scene, char *error, size_t error_size);
+bool fl_script_validate_scene(const Fl_Scene *scene, const atomic_bool *cancel, char *error, size_t error_size);
+
+/* Run an optional build(ctx) once for a document compilation. On success, output owns a typed Flow prototype
+   JSON descriptor, or NULL when the enabled attachment has no build capability. No simulation state is advanced. */
+bool fl_script_runtime_build(Fl_ScriptRuntime *runtime, const Fl_Scene *scene, size_t entity, Fl_Id component,
+                              const atomic_bool *cancel, cJSON **output, char *error, size_t capacity);
+
+/* Inspect bounded source-level imports={alias=LuaAssetId}; references are owned by the caller on success.
+   Does not resolve assets or execute callbacks. Top-level declarations use the runtime sandbox and budgets. */
+bool fl_script_dependencies(const char *source, size_t size, Fl_Id **references, size_t *count,
+                             char *error, size_t capacity);

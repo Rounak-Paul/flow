@@ -254,7 +254,7 @@ static char *parameter_drafts(Fl_Inspector *p, const Fl_Script *script)
         if (!fl_json_add(&context,values,field->name,value)) {cJSON_Delete(values); return NULL;}
     }
     const Fl_SceneState *state=fl_scene_edit_state(p->edit);
-    const cJSON *schema=state ? fl_script_runtime_parameter_schema(state->scripts,p->script_component) : NULL;
+    const cJSON *schema=state ? fl_script_runtime_parameter_schema(fl_scene_state_scripts(state),p->script_component) : NULL;
     if (schema && !fl_parameters_resolve(&context,schema,values,NULL)) {status(p,context.error); cJSON_Delete(values); return NULL;}
     char *text=context.error[0] ? NULL : cJSON_PrintUnformatted(values); cJSON_Delete(values); return text;
 }
@@ -331,7 +331,7 @@ static void apply(Ca_Button *button,void *data)
         Fl_Script configuration={.script=p->script,.enabled=p->script_enabled};
         if (attachment) {
             fl_script_decode(attachment,&configuration);
-            if (configuration.script!=p->script) {configuration.parameters=NULL; configuration.parameters_size=0;}
+            if (configuration.script!=p->script) {configuration.parameters=NULL; configuration.parameters_size=0; configuration.bindings=NULL; configuration.bindings_size=0;}
             configuration.script=p->script; configuration.enabled=p->script_enabled;
         }
         configuration.time=p->script_time;
@@ -407,7 +407,7 @@ static int compare_parameters(const void *a, const void *b)
 static bool load_parameters(Fl_Inspector *p, const Fl_SceneState *state, const Fl_Script *script)
 {
     clear_parameters(p);
-    const cJSON *schema=state ? fl_script_runtime_parameter_schema(state->scripts,p->script_component) : NULL;
+    const cJSON *schema=state ? fl_script_runtime_parameter_schema(fl_scene_state_scripts(state),p->script_component) : NULL;
     if (!schema) return true;
     size_t count=0; const cJSON *ordered[64];
     for (const cJSON *item=schema->child;item && count<64;item=item->next) ordered[count++]=item;
@@ -440,7 +440,7 @@ static bool load(Fl_Inspector *p,const Fl_Scene *scene,const Fl_Entity *entity)
     Fl_Script attached;
     bool scripted=false;
     for (size_t i=0;i<entity->component_count;++i) if (fl_script_decode(&entity->components[i],&attached) && attached.enabled) scripted=true;
-    bool evaluated=!scripted&&state&&state->scene==scene->id&&state->count==scene->entity_count;
+    bool evaluated=!scripted&&state&&state->scene==scene->id&&state->count>=scene->entity_count;
     const Fl_EntityState *now=evaluated ? &state->entities[entity-scene->entities] : NULL;
     Fl_Transform transform={.scale_x=1,.scale_y=1};
     if (now) transform=now->transform;
@@ -794,7 +794,7 @@ static void script_section(Fl_Inspector *p, const Fl_Scene *scene)
     ca_checkbox(&(Ca_CheckboxDesc){.text="Enabled",.checked=p->script_enabled,.on_change=script_enabled,.change_data=p,.id="inspector-script-enabled"});
     const Fl_SceneState *state=fl_scene_edit_state(p->edit);
     const Fl_Entity *entity=fl_scene_entity(scene,p->entity);
-    const char *error=state&&entity ? fl_script_runtime_component_error(state->scripts,p->script_component) : "";
+    const char *error=state&&entity ? fl_script_runtime_component_error(fl_scene_state_scripts(state),p->script_component) : "";
     if (*error) ca_text(&(Ca_TextDesc){.text=error,.style=FL_CLASS_WARNING,.wrap=true});
     fl_button(&(Fl_ButtonDesc){.text="Edit script",.id="inspector-script-edit",.on_click=script_edit,.click_data=p,.disabled=p->dirty});
 }

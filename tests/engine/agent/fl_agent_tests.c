@@ -568,6 +568,26 @@ static void test_asset_sources(Fl_Agent *agent)
     result=call(agent,"apply_ops","{\"ops\":[{\"op\":\"asset.source\",\"kind\":\"flproto\",\"name\":\"Malformed\",\"source\":\"{}\"}]}",&error);
     CHECK(!result && error && error_code(error,"rejected")); cJSON_Delete(error); error=NULL;
     CHECK(fl_project_asset(g_project,id));
+    char placement[2048];
+    snprintf(placement,sizeof(placement),
+        "{\"ops\":[{\"op\":\"scene.add\",\"name\":\"Prototype test\",\"as\":\"$scene\"},"
+        "{\"op\":\"prototype.instantiate\",\"scene\":\"$scene\",\"asset\":\"%llu\",\"x\":25,\"y\":40,\"as\":\"$instance\"},"
+        "{\"op\":\"prototype.overrides\",\"entity\":\"$instance\",\"value\":[{\"op\":\"component.patch\",\"path\":[],\"entity\":1,\"component\":1,\"value\":{\"width\":75}}]},"
+        "{\"op\":\"prototype.capture\",\"entity\":\"$instance\",\"name\":\"Captured instance\",\"as\":\"$captured\"}]}",
+        (unsigned long long)id);
+    result=call(agent,"apply_ops",placement,&error); CHECK(result && !error);
+    const cJSON *results=result ? cJSON_GetObjectItemCaseSensitive(result,"results") : NULL;
+    uint64_t test_scene=0; Fl_Json ids={0};
+    CHECK(results && fl_json_uint(&ids,cJSON_GetObjectItemCaseSensitive(results->child,"id"),&test_scene));
+    cJSON_Delete(result);
+    char cleanup[256];
+    const Fl_Asset *captured=fl_project_asset_named(g_project,FL_ASSET_PROTOTYPE,"Captured instance");
+    CHECK(captured);
+    if (captured) {
+        snprintf(cleanup,sizeof(cleanup),"{\"ops\":[{\"op\":\"scene.remove\",\"scene\":\"%llu\"},{\"op\":\"asset.remove\",\"asset\":\"%llu\"}]}",
+            (unsigned long long)test_scene,(unsigned long long)captured->id);
+        result=call(agent,"apply_ops",cleanup,&error); CHECK(result && !error); cJSON_Delete(result);
+    }
     char removal[160]; snprintf(removal,sizeof(removal),"{\"ops\":[{\"op\":\"asset.remove\",\"asset\":\"%llu\"}]}",(unsigned long long)id);
     result=call(agent,"apply_ops",removal,&error); CHECK(result && !error && !fl_project_asset(g_project,id)); cJSON_Delete(result);
     result=call(agent,"undo","{}",&error); CHECK(result && !error && fl_project_asset(g_project,id)); cJSON_Delete(result);

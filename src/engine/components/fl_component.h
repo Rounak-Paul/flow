@@ -11,7 +11,7 @@ typedef struct Fl_Entity Fl_Entity;
 enum { FL_COMPONENT_TRANSFORM = 1, FL_COMPONENT_RECTANGLE = 2, FL_COMPONENT_TEXT = 3,
        FL_COMPONENT_APPEARANCE = 4, FL_COMPONENT_GEOMETRY = 5, FL_COMPONENT_TYPOGRAPHY = 6,
        FL_COMPONENT_IMAGE = 7, FL_COMPONENT_OPACITY = 8,
-       FL_COMPONENT_ANIMATION = 9, FL_COMPONENT_SCRIPT = 10, FL_COMPONENT_STYLE = 11, FL_COMPONENT_VIDEO = 12 };
+       FL_COMPONENT_ANIMATION = 9, FL_COMPONENT_SCRIPT = 10, FL_COMPONENT_STYLE = 11, FL_COMPONENT_VIDEO = 12, FL_COMPONENT_PROTOTYPE = 13 };
 /* Canonical byte payloads, except Animation which owns typed track storage through its codec. */
 typedef struct Fl_Component { uint64_t type, version; size_t size; const unsigned char *data; Fl_Id id; } Fl_Component;
 

@@ -141,3 +141,6 @@ void fl_job_wait(Fl_JobSystem *jobs, Fl_JobHandle job);
  */
 void fl_job_parallel_for(Fl_JobSystem *jobs, size_t count, size_t min_batch,
                          Fl_JobRangeFn fn, void *data, Fl_JobPriority priority);
+
+/* Borrow the event bus receiving this system's job completion notifications, or NULL. */
+Fl_EventBus *fl_jobs_event_bus(const Fl_JobSystem *jobs);

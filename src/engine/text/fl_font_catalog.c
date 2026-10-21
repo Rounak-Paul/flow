@@ -1,5 +1,6 @@
 #include "fl_font_catalog.h"
 #include "fl_freetype.h"
+#include "platform/fl_fs.h"
 #include "platform/fl_font_paths.h"
 #include FT_MULTIPLE_MASTERS_H
 #include FT_SFNT_NAMES_H
@@ -17,6 +18,8 @@ struct Fl_FontCatalog {
     size_t count, capacity;
     Fl_FamilyRange *families;
     size_t family_count;
+    unsigned char **buffers;
+    size_t buffer_count;
 };
 typedef struct Fl_PathList { char **paths; size_t count, capacity; } Fl_PathList;
 
@@ -231,6 +234,47 @@ Fl_FontCatalog *fl_font_catalog_from_files(const char *const *paths, size_t coun
     return seal(c);
 }
 
+Fl_FontCatalog *fl_font_catalog_snapshot(const Fl_FontFace *const *faces, size_t count)
+{
+    if ((count && !faces) || count>SIZE_MAX/sizeof(Fl_FontFace)) return NULL;
+    Fl_FontCatalog *c=calloc(1,sizeof(*c)); if (!c) return NULL;
+    const Fl_FontFace **sources=count ? calloc(count,sizeof(*sources)) : NULL;
+    c->buffers=count ? calloc(count,sizeof(*c->buffers)) : NULL;
+    size_t *sizes=count ? calloc(count,sizeof(*sizes)) : NULL;
+    FT_Library library=NULL;
+    bool ok=(!count || (sources && c->buffers && sizes)) && FT_Init_FreeType(&library)==0;
+    size_t total=0;
+    for (size_t i=0;ok && i<count;++i) {
+        const Fl_FontFace *face=faces[i]; if (!face) {ok=false; break;}
+        bool duplicate=false;
+        for (size_t j=0;j<i;++j) if (faces[j]==face) {duplicate=true; break;}
+        if (duplicate) continue;
+        size_t source=c->buffer_count;
+        for (size_t j=0;j<c->buffer_count;++j) {
+            const Fl_FontFace *previous=sources[j];
+            bool same=face->path && previous->path ? !strcmp(face->path,previous->path) : !face->path && !previous->path && face->data==previous->data && face->size==previous->size;
+            if (same) {source=j; break;}
+        }
+        if (source==c->buffer_count) {
+            size_t size=0; unsigned char *bytes=NULL;
+            if (face->path) bytes=(unsigned char *)fl_fs_read_file(face->path,64u*1024u*1024u,&size);
+            else if (face->data && face->size && face->size<=64u*1024u*1024u) {size=face->size; bytes=malloc(size); if (bytes) memcpy(bytes,face->data,size);}
+            if (!bytes || size>256u*1024u*1024u-total) {free(bytes); ok=false; break;}
+            total+=size; sources[source]=face; sizes[source]=size; c->buffers[source]=bytes; ++c->buffer_count;
+        }
+        FT_Face check=NULL;
+        if (fl_freetype_open(library,NULL,c->buffers[source],sizes[source],face->index,&check)) {ok=false; break;}
+        FT_Done_Face(check);
+        Fl_FontFace copy={0};
+        ok=make_face(face->family,face->style,NULL,c->buffers[source],sizes[source],face->index,face->weight,face->italic,&copy);
+        if (ok && !append_face(c,copy)) {free((void *)copy.family); free((void *)copy.style); ok=false;}
+    }
+    if (library) FT_Done_FreeType(library);
+    free(sources); free(sizes);
+    if (!ok) {fl_font_catalog_destroy(c); return NULL;}
+    return seal(c);
+}
+
 Fl_FontCatalog *fl_font_catalog_from_memory(const unsigned char *data, size_t size)
 {
     if (!data || !size) return NULL;
@@ -272,7 +316,8 @@ void fl_font_catalog_destroy(Fl_FontCatalog *c)
     for (size_t i = 0; i < c->count; ++i) {
         free((void *)c->faces[i].family); free((void *)c->faces[i].style); free((void *)c->faces[i].path);
     }
-    free(c->faces); free(c->families); free(c);
+    for (size_t i=0;i<c->buffer_count;++i) free(c->buffers[i]);
+    free(c->buffers); free(c->faces); free(c->families); free(c);
 }
 
 size_t fl_font_catalog_face_count(const Fl_FontCatalog *c) { return c ? c->count : 0; }

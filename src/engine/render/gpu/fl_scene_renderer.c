@@ -1,10 +1,11 @@
+#include "time/fl_composition.h"
 #include "fl_scene_renderer.h"
 #include "fl_gpu_image.h"
 #include "core/fl_log.h"
 #include "components/fl_style.h"
 #include "components/fl_video_clip.h"
 #include "media/fl_media.h"
-#include "media/fl_video_cache.h"
+#include "media/fl_video_decode.h"
 #include "platform/fl_paths.h"
 #include "text/fl_text_raster.h"
 #include <math.h>
@@ -32,13 +33,26 @@ typedef struct Fl_CachedText {
     int align;
     Fl_GpuImage *image;
 } Fl_CachedText;
-/* Current frame of one video entity, uploaded as a picture. Replaced images wait in the graveyard until the GPU is done. */
+/* Workers own copied source paths and one bounded decoded frame; no project pointers cross threads. */
+typedef struct Fl_VideoDecode {
+    char path[FL_PATH_MAX];
+    double seconds;
+    unsigned char *pixels;
+    uint32_t width,height;
+    atomic_bool cancel;
+} Fl_VideoDecode;
 typedef struct Fl_VideoFrame {
     Fl_Id entity;
-    char path[FL_PATH_MAX];
+    uint64_t project;
+    unsigned char hash[32];
+    double seconds;
     Fl_GpuImage *image;
-    bool used;
+    Fl_VideoDecode *decode;
+    Fl_JobHandle job;
+    bool used,valid,failed;
 } Fl_VideoFrame;
+#define VIDEO_SLOTS 16u
+#define VIDEO_MAX_SIDE 1920u
 typedef struct Fl_Retired { Fl_GpuImage *image; unsigned age; } Fl_Retired;
 #define GRAVEYARD_FRAMES 4u
 /* Decode request owned by its image entry until the worker finishes. */
@@ -62,6 +76,7 @@ typedef struct Fl_Pipeline { VkFormat format; VkPipeline pipeline; } Fl_Pipeline
 struct Fl_SceneRenderer {
     Fl_GpuContext gpu;
     Fl_Fonts *fonts;
+    bool owns_fonts;
     Fl_JobSystem *jobs;
     Fl_EventBus *bus;
     void (*invalidate)(void *user_data);
@@ -86,6 +101,7 @@ struct Fl_SceneRenderer {
     uint32_t layer_width, layer_height;
     Fl_VideoFrame *videos;
     size_t video_count, video_capacity;
+    bool video_error;
     Fl_Retired *graveyard;
     size_t graveyard_count, graveyard_capacity;
     Fl_CachedImage *pictures;
@@ -375,6 +391,9 @@ static bool job_done(const Fl_Event *event, void *data)
         else {entry->state = IMAGE_DECODED; if (p->invalidate) p->invalidate(p->invalidate_data);}
         break;
     }
+    for (size_t i=0;i<p->video_count;++i) if (p->videos[i].decode && p->videos[i].job.index==done->job.index && p->videos[i].job.generation==done->job.generation) {
+        if (p->invalidate) p->invalidate(p->invalidate_data); break;
+    }
     return false;
 }
 
@@ -401,44 +420,95 @@ static void age_graveyard(Fl_SceneRenderer *p)
     p->graveyard_count = kept;
 }
 
-/* Upload the frame each video entity shows at tick, reusing the previous upload while the frame is unchanged. */
-static void prepare_videos(Fl_SceneRenderer *p, const Fl_Project *project, const Fl_Scene *scene, const Fl_SceneState *state, Fl_Tick tick)
+/* Decode one requested timestamp; the request remains owned until its job fence. */
+static void decode_video(void *data)
 {
-    for (size_t i = 0; i < p->video_count; ++i) p->videos[i].used = false;
-    for (size_t i = 0; i < scene->entity_count; ++i) {
-        const Fl_Entity *e = &scene->entities[i];
-        Fl_VideoClip clip;
-        const Fl_Asset *asset;
-        char path[FL_PATH_MAX];
-        if (!e->visible || (state && state->entities[i].opacity <= 0)) continue;
-        if (!fl_video_clip_decode(fl_entity_component(e, FL_COMPONENT_VIDEO), &clip) || !(asset = fl_project_asset(project, clip.asset)) ||
-            !fl_video_cache_frame(project, asset, fl_video_clip_source_seconds(&clip, tick, asset->duration), path, sizeof(path))) continue;
-        Fl_VideoFrame *slot = NULL;
-        for (size_t j = 0; j < p->video_count && !slot; ++j) if (p->videos[j].entity == e->id) slot = &p->videos[j];
-        if (slot && slot->image && !strcmp(slot->path, path)) {slot->used = true; continue;}
-        uint32_t w, h;
-        unsigned char *pixels = fl_image_decode(path, 4096, &w, &h);
-        Fl_GpuImage *image = pixels ? fl_gpu_image_create(p->images, FL_GPU_IMAGE_SRGBA, pixels, w, h) : NULL;
-        fl_image_free(pixels);
-        if (!image) {FL_LOG_ERROR(LOG_TAG, "could not load video frame %s", path); continue;}
-        if (!slot) {
-            if (p->video_count == p->video_capacity) {
-                size_t capacity = p->video_capacity ? p->video_capacity * 2 : 4;
-                Fl_VideoFrame *grown = realloc(p->videos, capacity * sizeof(*grown));
-                if (!grown) {fl_gpu_image_destroy(image); continue;}
-                p->videos = grown; p->video_capacity = capacity;
-            }
-            slot = &p->videos[p->video_count++]; *slot = (Fl_VideoFrame){.entity = e->id};
+    Fl_VideoDecode *decode=data;
+    decode->pixels=fl_video_decode(decode->path,decode->seconds,VIDEO_MAX_SIDE,&decode->width,&decode->height,&decode->cancel);
+}
+
+/* Release worker storage only after completion. GPU storage is retired separately. */
+static void release_video_decode(Fl_VideoFrame *slot)
+{
+    if (!slot->decode) return;
+    free(slot->decode->pixels); free(slot->decode); slot->decode=NULL; slot->job=(Fl_JobHandle){0};
+}
+
+/* Preview keeps the last uploaded frame while a worker decodes; exact rendering fences only requested timestamps. */
+static void prepare_videos(Fl_SceneRenderer *p, const Fl_Project *project, const Fl_Scene *scene, const Fl_SceneState *state, const Fl_SceneGeometry *geometry, Fl_Tick tick, bool wait)
+{
+    p->video_error=false;
+    size_t retained=0;
+    for (size_t i=0;i<p->video_count;++i) {
+        Fl_VideoFrame *slot=&p->videos[i]; const Fl_Entity *entity=fl_scene_entity(scene,slot->entity);
+        size_t index=entity ? (size_t)(entity-scene->entities) : SIZE_MAX;
+        bool used=entity && geometry->entities[index].visible && geometry->entities[index].opacity>0 &&
+            geometry->entities[index].invertible && fl_entity_component(entity,FL_COMPONENT_VIDEO);
+        if (!used && slot->decode) {
+            atomic_store_explicit(&slot->decode->cancel,true,memory_order_relaxed);
+            if (wait) fl_job_wait(p->jobs,slot->job);
         }
-        retire_image(p, slot->image);
-        slot->image = image; slot->used = true; snprintf(slot->path, sizeof(slot->path), "%s", path);
+        if (used || (slot->decode && !fl_job_is_done(p->jobs,slot->job))) {slot->used=false; p->videos[retained++]=*slot;}
+        else {release_video_decode(slot); retire_image(p,slot->image);}
     }
-    size_t kept = 0;
-    for (size_t i = 0; i < p->video_count; ++i) {
-        if (p->videos[i].used) p->videos[kept++] = p->videos[i];
-        else retire_image(p, p->videos[i].image);
+    p->video_count=retained;
+    for (size_t i=0;i<scene->entity_count;++i) {
+        const Fl_Entity *entity=&scene->entities[i]; Fl_VideoClip clip;
+        if (!geometry->entities[i].visible || geometry->entities[i].opacity<=0 || !geometry->entities[i].invertible || !fl_video_clip_decode(fl_entity_component(entity,FL_COMPONENT_VIDEO),&clip)) continue;
+        const Fl_Asset *asset=fl_project_asset(project,clip.asset); if (!asset) {p->video_error=true; continue;}
+        double seconds=fl_video_clip_source_seconds(&clip,state ? state->entities[i].local_tick : tick,asset->duration);
+        Fl_VideoFrame *slot=NULL;
+        for (size_t j=0;j<p->video_count;++j) if (p->videos[j].entity==entity->id) {slot=&p->videos[j]; break;}
+        if (!slot) {
+            if (p->video_count==VIDEO_SLOTS) {p->video_error=true; continue;}
+            if (p->video_count==p->video_capacity) {
+                size_t capacity=p->video_capacity ? p->video_capacity*2 : 4;
+                Fl_VideoFrame *grown=realloc(p->videos,capacity*sizeof(*grown));
+                if (!grown) {p->video_error=true; continue;}
+                p->videos=grown; p->video_capacity=capacity;
+            }
+            slot=&p->videos[p->video_count++]; *slot=(Fl_VideoFrame){.entity=entity->id};
+        }
+        slot->used=true;
+        bool same=slot->project==fl_project_identity(project) && !memcmp(slot->hash,asset->hash,32) && slot->seconds==seconds;
+        if (slot->decode && !same) atomic_store_explicit(&slot->decode->cancel,true,memory_order_relaxed);
+        if (slot->decode && wait) fl_job_wait(p->jobs,slot->job);
+        if (slot->decode && fl_job_is_done(p->jobs,slot->job)) {
+            if (same && !atomic_load_explicit(&slot->decode->cancel,memory_order_relaxed)) {
+                Fl_VideoDecode *decode=slot->decode;
+                Fl_GpuImage *image=decode->pixels ? fl_gpu_image_create(p->images,FL_GPU_IMAGE_SRGBA,decode->pixels,decode->width,decode->height) : NULL;
+                retire_image(p,slot->image); slot->image=image; slot->valid=true; slot->failed=image==NULL;
+            }
+            release_video_decode(slot);
+        }
+        if (slot->decode) continue;
+        if (!same || !slot->valid) {
+            if (slot->project!=fl_project_identity(project) || memcmp(slot->hash,asset->hash,32)) {retire_image(p,slot->image); slot->image=NULL;}
+            slot->project=fl_project_identity(project); memcpy(slot->hash,asset->hash,32); slot->seconds=seconds; slot->valid=false; slot->failed=false;
+            slot->decode=calloc(1,sizeof(*slot->decode));
+            if (slot->decode) {
+                atomic_init(&slot->decode->cancel,false); slot->decode->seconds=seconds;
+                if (fl_project_asset_path(project,asset,slot->decode->path,sizeof(slot->decode->path)))
+                    slot->job=fl_job_submit(p->jobs,&(Fl_JobDesc){.fn=decode_video,.data=slot->decode,.priority=FL_JOB_PRIORITY_HIGH,.notify=p->bus!=NULL});
+            }
+            if (!slot->decode || !slot->job.generation) {release_video_decode(slot); slot->failed=true; slot->valid=true;}
+            else if (wait) {
+                fl_job_wait(p->jobs,slot->job); Fl_VideoDecode *decode=slot->decode;
+                Fl_GpuImage *image=decode->pixels ? fl_gpu_image_create(p->images,FL_GPU_IMAGE_SRGBA,decode->pixels,decode->width,decode->height) : NULL;
+                retire_image(p,slot->image); slot->image=image; slot->valid=true; slot->failed=image==NULL; release_video_decode(slot);
+            }
+        }
+        if (slot->failed) p->video_error=true;
     }
-    p->video_count = kept;
+    size_t kept=0;
+    for (size_t i=0;i<p->video_count;++i) {
+        Fl_VideoFrame *slot=&p->videos[i];
+        if (!slot->used && slot->decode) atomic_store_explicit(&slot->decode->cancel,true,memory_order_relaxed);
+        if (slot->used || (slot->decode && !fl_job_is_done(p->jobs,slot->job))) p->videos[kept++]=*slot;
+        else {release_video_decode(slot); retire_image(p,slot->image);}
+    }
+    p->video_count=kept;
+    if (wait && p->video_error) snprintf(p->error,sizeof(p->error),"Cannot decode requested video timestamp or video budget exceeded (maximum %u visible video entities)",VIDEO_SLOTS);
 }
 
 static VkDescriptorSet video_descriptor(const Fl_SceneRenderer *p, Fl_Id entity)
@@ -447,9 +517,13 @@ static VkDescriptorSet video_descriptor(const Fl_SceneRenderer *p, Fl_Id entity)
     return VK_NULL_HANDLE;
 }
 
-void fl_scene_renderer_prepare(Fl_SceneRenderer *p, const Fl_Project *project, const Fl_Scene *scene, const Fl_SceneState *state, double text_scale, bool wait)
+void fl_scene_renderer_prepare(Fl_SceneRenderer *p, const Fl_Project *project, const Fl_Scene *scene, const Fl_SceneState *state, const Fl_SceneGeometry *geometry, double text_scale, bool wait)
 {
     if (!p || !project || !scene) return;
+    scene=fl_scene_state_scene(state,scene);
+    if (!geometry || geometry->count!=scene->entity_count || geometry->scene!=scene->id || geometry->revision!=scene->revision) {
+        p->video_error=true; snprintf(p->error,sizeof(p->error),"Cannot prepare media without matching resolved geometry"); return;
+    }
     uint64_t identity=fl_project_identity(project);
     if (p->project_identity!=identity) {p->text_scene=0; p->picture_scene=0;}
     p->project_identity=identity;
@@ -457,7 +531,7 @@ void fl_scene_renderer_prepare(Fl_SceneRenderer *p, const Fl_Project *project, c
     prepare_pictures(p, project, scene);
     stage_pictures(p, project, scene, wait);
     age_graveyard(p);
-    prepare_videos(p, project, scene, state, state ? state->tick : 0);
+    prepare_videos(p, project, scene, state,geometry,state ? state->tick : 0,wait);
 }
 
 /* Pipeline for format, built on first use; VK_NULL_HANDLE when it cannot be created. */
@@ -696,6 +770,7 @@ static void close_layer(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_Rende
 void fl_scene_renderer_entities(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_RenderTarget *target, const Fl_SceneFrame *frame,
                                 const Fl_Scene *scene, const Fl_SceneState *state, const Fl_SceneGeometry *g)
 {
+    scene=fl_scene_state_scene(state,scene);
     size_t *parent = g->count ? malloc(g->count * sizeof(*parent)) : NULL;
     for (size_t i = 0; parent && i < g->count; ++i) {
         const Fl_Entity *above = fl_scene_entity(scene, scene->entities[i].parent);
@@ -757,6 +832,8 @@ void fl_scene_renderer_destroy(Fl_SceneRenderer *p)
     if (p->bus) fl_event_unsubscribe_owner(p->bus, p);
     for (unsigned i=0;i<2;++i) fl_scene_state_clear(&p->render_states[i]);
     for (size_t i = 0; i < p->picture_count; ++i) if (p->pictures[i].state == IMAGE_DECODING) fl_job_wait(p->jobs, p->pictures[i].job);
+    for (size_t i=0;i<p->video_count;++i) if (p->videos[i].decode) atomic_store_explicit(&p->videos[i].decode->cancel,true,memory_order_relaxed);
+    for (size_t i=0;i<p->video_count;++i) if (p->videos[i].decode) {fl_job_wait(p->jobs,p->videos[i].job); release_video_decode(&p->videos[i]);}
     vkDeviceWaitIdle(p->device);
     for (size_t i = 0; i < p->picture_count; ++i) release_picture(&p->pictures[i]);
     for (size_t i = 0; i < p->text_count; ++i) {fl_gpu_image_destroy(p->texts[i].image); free(p->texts[i].text);}
@@ -769,7 +846,40 @@ void fl_scene_renderer_destroy(Fl_SceneRenderer *p)
     free(p->videos); free(p->graveyard); free(p->pictures); free(p->texts);
     for (size_t i = 0; i < p->pipeline_count; ++i) vkDestroyPipeline(p->device, p->pipelines[i].pipeline, NULL);
     if (p->layout) vkDestroyPipelineLayout(p->device, p->layout, NULL);
-    fl_gpu_images_destroy(p->images); fl_text_rasterizer_destroy(p->rasterizer); free(p);
+    fl_gpu_images_destroy(p->images); fl_text_rasterizer_destroy(p->rasterizer);
+    if (p->owns_fonts) fl_fonts_destroy(p->fonts);
+    free(p);
+}
+
+Fl_SceneRenderer *fl_scene_renderer_snapshot(Fl_SceneRenderer *source, const Fl_Project *project,
+                                           const Fl_Id *scenes, size_t count, char *error, size_t capacity)
+{
+    if (error && capacity) error[0]=0;
+    if (!source || !project || (count && !scenes)) return NULL;
+    Fl_Typography *requests=NULL; size_t request_count=0,allocated=0; bool ok=true;
+    for (size_t i=0;ok && i<count;++i) {
+        const Fl_Scene *scene=fl_project_scene(project,scenes[i]);
+        Fl_Composition *composition=scene && fl_composition_required(scene) ? fl_composition_create(scene,NULL,error,capacity) : NULL;
+        if (!scene || (fl_composition_required(scene) && !composition)) {ok=false; break;}
+        const Fl_Scene *flat=composition ? fl_composition_scene(composition) : scene;
+        for (size_t j=0;j<flat->entity_count;++j) {
+            const Fl_Entity *entity=&flat->entities[j];
+            if (!fl_entity_component(entity,FL_COMPONENT_TEXT)) continue;
+            if (request_count==allocated) {
+                size_t next=allocated ? allocated*2 : 16;
+                Fl_Typography *grown=next>=allocated && next<=SIZE_MAX/sizeof(*grown) ? realloc(requests,next*sizeof(*grown)) : NULL;
+                if (!grown) {ok=false; break;}
+                requests=grown; allocated=next;
+            }
+            requests[request_count++]=fl_widget_typography(entity);
+        }
+        fl_composition_destroy(composition);
+    }
+    Fl_Fonts *fonts=ok ? fl_fonts_snapshot(source->fonts,requests,request_count) : NULL; free(requests);
+    if (!fonts) {if (error && capacity && !error[0]) snprintf(error,capacity,"Cannot capture immutable export fonts"); return NULL;}
+    Fl_SceneRenderer *renderer=fl_scene_renderer_create(&(Fl_SceneRendererDesc){.gpu=source->gpu,.jobs=source->jobs,.fonts=fonts});
+    if (!renderer) {fl_fonts_destroy(fonts); if (error && capacity) snprintf(error,capacity,"Cannot allocate export renderer"); return NULL;}
+    renderer->owns_fonts=true; return renderer;
 }
 
 /* Offscreen target: a colour image and a host-readable buffer for the result. */
@@ -814,8 +924,11 @@ bool fl_scene_renderer_render(Fl_SceneRenderer *p, const Fl_Project *project, co
     Fl_SceneGeometry geometry = {0};
     Fl_SceneFrame frame = fl_scene_frame(scene);
     bool ok = fl_scene_state_update(state, scene, tick);
+    if (!ok && state->error[0]) snprintf(p->error,sizeof(p->error),"%s",state->error);
+    if (ok && state->error[0]) {snprintf(p->error,sizeof(p->error),"%s",state->error); ok=false;}
+    scene=fl_scene_state_scene(state,scene);
     for (size_t i=0; ok && i<scene->entity_count; ++i) {
-        const char *diagnostic=fl_script_runtime_error(state->scripts,i);
+        const char *diagnostic=fl_scene_state_entity_error(state,i);
         if (diagnostic[0]) {snprintf(p->error,sizeof(p->error),"%s",diagnostic); ok=false;}
     }
     ok=ok && fl_scene_geometry_update(&geometry,scene,state);
@@ -823,14 +936,14 @@ bool fl_scene_renderer_render(Fl_SceneRenderer *p, const Fl_Project *project, co
     Offscreen o = {0};
     const VkFormat format = VK_FORMAT_R8G8B8A8_SRGB;
     if (ok) {
-        fl_scene_renderer_prepare(p, project, scene, state, (double)w / frame.width, true);
+        fl_scene_renderer_prepare(p, project, scene, state,&geometry,(double)w / frame.width, true);
         VkImageCreateInfo image = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = format, .extent = {w, h, 1},
             .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
             .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
         VmaAllocationCreateInfo device_memory = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
         VkBufferCreateInfo buffer = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = (VkDeviceSize)w * h * 4, .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
         VmaAllocationCreateInfo host = {.usage = VMA_MEMORY_USAGE_AUTO, .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
-        ok = vmaCreateImage(allocator, &image, &device_memory, &o.image, &o.image_memory, NULL) == VK_SUCCESS &&
+        ok = !p->video_error && vmaCreateImage(allocator, &image, &device_memory, &o.image, &o.image_memory, NULL) == VK_SUCCESS &&
              vmaCreateBuffer(allocator, &buffer, &host, &o.buffer, &o.buffer_memory, &o.buffer_info) == VK_SUCCESS;
         VkImageViewCreateInfo view = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = o.image, .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = format,
             .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
@@ -880,3 +993,5 @@ const char *fl_scene_renderer_error(const Fl_SceneRenderer *renderer)
 {
     return renderer ? renderer->error : "Renderer is unavailable";
 }
+
+Fl_JobSystem *fl_scene_renderer_jobs(const Fl_SceneRenderer *renderer) {return renderer ? renderer->jobs : NULL;}

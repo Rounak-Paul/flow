@@ -1,3 +1,4 @@
+#include "components/fl_prototype_instance.h"
 #include "fl_widgets.h"
 #include "doc/fl_json.h"
 #include "components/fl_animation.h"
@@ -141,6 +142,7 @@ bool fl_widget_component_valid(const Fl_Component *c)
     switch (c->type) {
     case FL_COMPONENT_ANIMATION: return c->size == sizeof(Fl_Animation) && fl_animation_valid((const Fl_Animation *)c->data);
     case FL_COMPONENT_SCRIPT: return fl_script_component_valid(c);
+    case FL_COMPONENT_PROTOTYPE: return fl_prototype_instance_valid(c);
     case FL_COMPONENT_TRANSFORM: { Fl_Transform t; return fl_transform_decode(c, &t); }
     case FL_COMPONENT_RECTANGLE: return c->size == 4;
     case FL_COMPONENT_TEXT: return !c->size || fl_json_utf8_valid((const char *)c->data,c->size);
@@ -211,6 +213,8 @@ bool fl_widget_create_video(Fl_Project *p, Fl_Id scene, Fl_Id parent, Fl_Id asse
 
 bool fl_component_asset_reference(const Fl_Component *c, Fl_Id *asset, Fl_AssetKind *kind)
 {
+    Fl_PrototypeInstance instance;
+    if (fl_prototype_instance_decode(c,&instance)) {if (asset) *asset=instance.asset; if (kind) *kind=FL_ASSET_PROTOTYPE; return true;}
     Fl_Script script;
     if (fl_script_decode(c,&script)) {if (asset) *asset=script.script; if (kind) *kind=FL_ASSET_LUA; return true;}
 

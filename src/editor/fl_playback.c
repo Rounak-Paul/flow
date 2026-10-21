@@ -1,6 +1,8 @@
 #include "fl_playback.h"
 #include "core/fl_clock.h"
 #include "media/fl_audio_mixer.h"
+#include "time/fl_audio_plan.h"
+#include "core/fl_log.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -34,19 +36,15 @@ static void start_clock(Fl_Playback *p)
     p->started_ns = fl_clock_monotonic_ns();
     p->mixing = false;
     fl_audio_mixer_stop(p->mixer);
-    if (!scene || !scene->clip_count) return;
-    Fl_MixerClip *clips = calloc(scene->clip_count, sizeof(*clips));
-    size_t count = 0;
-    for (size_t i = 0; clips && i < scene->clip_count; ++i) {
-        const Fl_AudioClip *c = &scene->clips[i];
-        const Fl_Asset *asset = fl_project_asset(project, c->asset);
-        Fl_MixerClip *m = &clips[count];
-        if (!asset || !fl_project_asset_path(project, asset, m->path, sizeof(m->path))) continue;
-        if (!fl_anchor_sample(scene, &c->start, &m->start)) continue;
-        m->source_offset = (Fl_Tick)c->source_offset; m->duration = (Fl_Tick)c->duration; m->gain = c->gain;
-        m->fade_in = (Fl_Tick)c->fade_in; m->fade_out = (Fl_Tick)c->fade_out;
-        ++count;
+    if (!scene) return;
+    Fl_AudioPlan plan={0};
+    if (!fl_audio_plan_compile(scene,&plan)) {FL_LOG_ERROR("playback","%s",plan.error); fl_audio_plan_clear(&plan); return;}
+    Fl_MixerClip *clips=plan.count ? calloc(plan.count,sizeof(*clips)) : NULL;
+    size_t count=0;
+    for (size_t i=0;clips && i<plan.count;++i) {
+        if (fl_audio_segment_clip(project,&plan.segments[i],0,&clips[count])) ++count;
     }
+    fl_audio_plan_clear(&plan);
     p->mixing = count && fl_audio_mixer_start(p->mixer, clips, count, p->from);
     free(clips);
 }
@@ -80,6 +78,7 @@ static bool project_changed(const Fl_Event *event, void *data)
     if (!p->playing || change->project != fl_scene_edit_project(p->edit)) return false;
     switch (change->kind) {
     case FL_OP_BEAT_ADD: case FL_OP_BEAT_REMOVE: case FL_OP_BEAT_UPDATE: case FL_OP_BEAT_MOVE: case FL_OP_BEAT_SPLIT:
+    case FL_OP_ASSET_SOURCE_SET: case FL_OP_COMPONENT_SET: case FL_OP_COMPONENT_REMOVE: case FL_OP_ENTITY_REMOVE: case FL_OP_ENTITY_CONFIGURE:
     case FL_OP_CLIP_ADD: case FL_OP_CLIP_UPDATE: case FL_OP_CLIP_REMOVE: case FL_OP_SCENE_REMOVE: case FL_OP_SCENE_SETTINGS: case FL_OP_RESTORE:
         start_clock(p); break;
     default: break;

@@ -246,9 +246,9 @@ static void users_text(const Fl_Project *project, Fl_Id script, char *out, size_
 static const char *runtime_error(Fl_ScriptPanel *p, const Fl_Scene *scene, Fl_Id script)
 {
     const Fl_SceneState *state = fl_scene_edit_state(p->edit);
-    for (size_t i = 0; scene && state && state->scripts && state->scene == scene->id && i < scene->entity_count; ++i) {
+    for (size_t i = 0; scene && state && fl_scene_state_scripts(state) && state->scene == scene->id && i < scene->entity_count; ++i) {
         if (!fl_entity_script_component(&scene->entities[i],script)) continue;
-        const char *error = fl_script_runtime_error(state->scripts, i);
+        const char *error = fl_script_runtime_error(fl_scene_state_scripts(state), i);
         if (error && error[0]) return error;
     }
     return "";

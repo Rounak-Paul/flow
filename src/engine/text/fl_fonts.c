@@ -198,3 +198,28 @@ size_t fl_fonts_faces(const Fl_Fonts *f, const char *family, const Fl_FontFace *
     }
     return 0;
 }
+
+Fl_Fonts *fl_fonts_snapshot(const Fl_Fonts *fonts, const Fl_Typography *requests, size_t count)
+{
+    if (!fonts || (count && !requests) || count>=SIZE_MAX/sizeof(Fl_FontFace *)) return NULL;
+    Fl_Fonts *snapshot=calloc(1,sizeof(*snapshot));
+    const Fl_FontFace **faces=calloc(count+1,sizeof(*faces));
+    if (!snapshot || !faces) {free(snapshot); free(faces); return NULL;}
+    bool ok=true;
+    for (int source=0;ok && source<SOURCE_COUNT;++source) {
+        size_t selected=0;
+        for (size_t i=0;i<count;++i) {
+            Fl_FontMatch match=fl_fonts_match(fonts,&requests[i]);
+            if (match.face && match.source==(Fl_FontSource)source) faces[selected++]=match.face;
+        }
+        if (source==FL_FONT_SOURCE_BUNDLED) {
+            Fl_FontMatch fallback=fl_fonts_match(fonts,NULL);
+            if (fallback.face) faces[selected++]=fallback.face;
+        }
+        snapshot->catalogs[source]=fl_font_catalog_snapshot(faces,selected);
+        ok=snapshot->catalogs[source]!=NULL;
+    }
+    free(faces);
+    if (!ok) {fl_fonts_destroy(snapshot); return NULL;}
+    snapshot->generation=1; rebuild_families(snapshot); return snapshot;
+}
