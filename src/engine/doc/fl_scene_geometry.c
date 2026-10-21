@@ -101,16 +101,26 @@ bool fl_scene_geometry_update(Fl_SceneGeometry *g, const Fl_Scene *s, const Fl_S
     fl_scene_geometry_clear(g); *g = next; return true;
 }
 
-Fl_Id fl_scene_geometry_pick(const Fl_SceneGeometry *g, const Fl_Scene *s, double x, double y, double tolerance)
+static bool intersect_local(const Fl_ResolvedEntity *v, Fl_Vec3 origin, Fl_Vec3 direction, bool forward_only, double *lx, double *ly)
 {
-    if (!g || !s || g->count!=s->entity_count || g->scene != s->id || g->revision != s->revision || !isfinite(x) || !isfinite(y)) return 0;
+    Fl_Vec3 local = fl_mat4_point(v->inverse_model, origin);
+    Fl_Vec3 dir = fl_mat4_vector(v->inverse_model, direction);
+    *lx = local.x; *ly = local.y;
+    if (fabs(dir.z) <= 1e-8) return !forward_only;
+    double t = -local.z / dir.z;
+    if (forward_only && t < 0) return false;
+    *lx = local.x + dir.x * t; *ly = local.y + dir.y * t;
+    return true;
+}
+
+static Fl_Id pick_along(const Fl_SceneGeometry *g, const Fl_Scene *s, Fl_Vec3 origin, Fl_Vec3 direction, bool forward_only, double tolerance)
+{
+    if (!g || !s || g->count!=s->entity_count || g->scene != s->id || g->revision != s->revision) return 0;
     for (size_t i = g->count; i; ) {
         size_t index = g->order[--i]; const Fl_ResolvedEntity *v = &g->entities[index];
         if (!v->visible || !v->invertible || (v->kind == FL_WIDGET_GROUP && !v->mesh)) continue;
-        Fl_Vec3 local = fl_mat4_point(v->inverse_model, (Fl_Vec3){x, y, 0});
-        Fl_Vec3 direction = fl_mat4_vector(v->inverse_model, (Fl_Vec3){0, 0, 1});
-        double lx = local.x, ly = local.y;
-        if (fabs(direction.z) > 1e-8) { double t = -local.z / direction.z; lx = local.x + direction.x * t; ly = local.y + direction.y * t; }
+        double lx, ly;
+        if (!intersect_local(v, origin, direction, forward_only, &lx, &ly)) continue;
         double w = v->bounds.width, h = v->bounds.height;
         if (v->mesh) {
             if (lx < -0.5 || ly < -0.5 || lx > 0.5 || ly > 0.5) continue;
@@ -130,4 +140,16 @@ Fl_Id fl_scene_geometry_pick(const Fl_SceneGeometry *g, const Fl_Scene *s, doubl
         return s->entities[index].id;
     }
     return 0;
+}
+
+Fl_Id fl_scene_geometry_pick(const Fl_SceneGeometry *g, const Fl_Scene *s, double x, double y, double tolerance)
+{
+    if (!isfinite(x) || !isfinite(y)) return 0;
+    return pick_along(g, s, (Fl_Vec3){x, y, 0}, (Fl_Vec3){0, 0, 1}, false, tolerance);
+}
+
+Fl_Id fl_scene_geometry_pick_ray(const Fl_SceneGeometry *g, const Fl_Scene *s, Fl_Vec3 origin, Fl_Vec3 direction)
+{
+    if (!isfinite(origin.x) || !isfinite(origin.y) || !isfinite(origin.z) || !isfinite(direction.x) || !isfinite(direction.y) || !isfinite(direction.z)) return 0;
+    return pick_along(g, s, origin, direction, true, 0);
 }

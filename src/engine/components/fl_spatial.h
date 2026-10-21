@@ -62,6 +62,8 @@ Fl_Mat4 fl_camera_frame(double frame_x, double frame_y, double frame_width, doub
 /* Active camera, or the scene frame when none is visible. right/up are billboard axes. bloom is the camera post strength. */
 void fl_scene_camera(const Fl_Scene *scene, const Fl_SceneState *state, double frame_x, double frame_y,
                      double frame_width, double frame_height, Fl_Mat4 *view_proj, Fl_Vec3 *right, Fl_Vec3 *up, double *bloom);
+/* The first visible camera entity. False when the view is the scene frame. */
+bool fl_scene_view_camera(const Fl_Scene *scene, const Fl_SceneState *state, Fl_Pose *pose, Fl_Camera *camera, double *bloom);
 
 /* Deterministic emission. out receives at most capacity alive particles in emitter-local space. */
 size_t fl_particles_sample(const Fl_Particles *system, double seconds, Fl_Particle *out, size_t capacity);

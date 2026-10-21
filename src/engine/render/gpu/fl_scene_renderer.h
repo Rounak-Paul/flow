@@ -89,6 +89,13 @@ void fl_scene_renderer_primitive(Fl_SceneRenderer *renderer, VkCommandBuffer cmd
 void fl_scene_renderer_styled(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, const Fl_SceneFrame *frame, Fl_Affine matrix,
                               double width, double height, Fl_WidgetKind kind, Fl_Appearance appearance, VkDescriptorSet mask,
                               const Fl_PrimitiveStyle *style);
+/* Draw a flat primitive through its full hierarchy matrix, so z and out-of-plane rotation survive. style may be NULL. */
+void fl_scene_renderer_model(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, const Fl_SceneFrame *frame, Fl_Mat4 model,
+                             double width, double height, Fl_WidgetKind kind, Fl_Appearance appearance, VkDescriptorSet mask,
+                             const Fl_PrimitiveStyle *style);
+/* Draw one world-space grid quad on z = 0. extent is the quad size; origin is its minimum corner. */
+void fl_scene_renderer_grid_plane(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, double origin_x, double origin_y,
+                                  double extent, double spacing, const unsigned char minor[4], const unsigned char major[4]);
 /* Issue a pre-built 28-float push block with mask, for full-target passes such as the editor grid. */
 void fl_scene_renderer_push(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, const float push[28], VkDescriptorSet mask);
 /* Descriptor of the solid white texel used by untextured primitives. */

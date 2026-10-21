@@ -200,7 +200,8 @@ static bool create_pipeline(Fl_SceneRenderer *p, VkFormat format, int kind)
         "layout(push_constant) uniform P { vec4 a; vec4 b; vec4 fill; vec4 stroke; vec4 params; vec4 fill2; vec4 extra; } p;"
         "layout(location=0) out vec2 uv;vec2 v[6]=vec2[](vec2(0,0),vec2(1,0),vec2(1,1),vec2(0,0),vec2(1,1),vec2(0,1));"
         "void main(){uv=v[gl_VertexIndex];float kind=p.params.w;"
-        "if(kind==15.||kind==17.||kind==18.||kind==19.||kind==20.) gl_Position=vec4(uv*2.-1.,0.,1.);"
+        "if(kind==15.&&p.extra.w>0.5) gl_Position=u.mvp*vec4(uv*vec2(p.a.w,p.b.w),0.,1.);"
+        "else if(kind==15.||kind==17.||kind==18.||kind==19.||kind==20.) gl_Position=vec4(uv*2.-1.,0.,1.);"
         "else gl_Position=u.mvp*vec4(uv*p.params.xy,0.,1.);}";
     static const char fs_head[] = "#version 450\nlayout(push_constant) uniform P { vec4 a; vec4 b; vec4 fill; vec4 stroke; vec4 params; vec4 fill2; vec4 extra; } p;"
         "layout(set=0,binding=0) uniform sampler2D mask;layout(location=0) in vec2 uv;layout(location=0) out vec4 color;"
@@ -646,11 +647,16 @@ void fl_scene_renderer_set_view(Fl_SceneRenderer *p, Fl_Mat4 view_proj, Fl_Vec3 
     p->view_proj = view_proj; p->cam_right = right; p->cam_up = up; p->bloom = bloom;
 }
 
+static void use_model(Fl_SceneRenderer *p, Fl_Mat4 model)
+{
+    fl_mat4_float(fl_mat4_mul(p->view_proj, model), p->draw_mvp);
+}
+
 static void use_affine(Fl_SceneRenderer *p, Fl_Affine matrix)
 {
     Fl_Mat4 model = fl_mat4_identity();
     model.m[0] = matrix.v[0]; model.m[1] = matrix.v[3]; model.m[4] = matrix.v[1]; model.m[5] = matrix.v[4]; model.m[12] = matrix.v[2]; model.m[13] = matrix.v[5];
-    fl_mat4_float(fl_mat4_mul(p->view_proj, model), p->draw_mvp);
+    use_model(p, model);
 }
 
 void fl_scene_renderer_push(Fl_SceneRenderer *p, VkCommandBuffer cmd, const float push[28], VkDescriptorSet mask)
@@ -696,6 +702,30 @@ void fl_scene_renderer_styled(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl
     fl_scene_renderer_push(p, cmd, push, mask);
 }
 
+void fl_scene_renderer_model(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_SceneFrame *frame, Fl_Mat4 model,
+                             double width, double height, Fl_WidgetKind kind, Fl_Appearance appearance, VkDescriptorSet mask,
+                             const Fl_PrimitiveStyle *style)
+{
+    float push[28];
+    push_block(push, frame, fl_affine_from_mat4(model), width, height, kind, appearance, style);
+    for (size_t i = 0; i < 28; ++i) if (!isfinite(push[i])) return;
+    use_model(p, model);
+    fl_scene_renderer_push(p, cmd, push, mask);
+}
+
+void fl_scene_renderer_grid_plane(Fl_SceneRenderer *p, VkCommandBuffer cmd, double origin_x, double origin_y, double extent,
+                                  double spacing, const unsigned char minor[4], const unsigned char major[4])
+{
+    if (!p || !minor || !major || !(extent > 0) || !(spacing > 0)) return;
+    float push[28] = {0, 0, 0, (float)extent, 0, 0, 0, (float)extent,
+        fl_scene_renderer_linear(minor[0]), fl_scene_renderer_linear(minor[1]), fl_scene_renderer_linear(minor[2]), minor[3] / 255.f,
+        fl_scene_renderer_linear(major[0]), fl_scene_renderer_linear(major[1]), fl_scene_renderer_linear(major[2]), major[3] / 255.f,
+        (float)origin_x, (float)origin_y, (float)spacing, FL_RENDER_KIND_GRID, 0, 0, 0, 0, 0, 0, 0, 1};
+    for (size_t i = 0; i < 28; ++i) if (!isfinite(push[i])) return;
+    use_model(p, fl_mat4_translation(origin_x, origin_y, 0));
+    fl_scene_renderer_push(p, cmd, push, fl_scene_renderer_white(p));
+}
+
 void fl_scene_renderer_primitive(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_SceneFrame *frame, Fl_Affine matrix,
                                  double width, double height, Fl_WidgetKind kind, Fl_Appearance appearance, VkDescriptorSet mask)
 {
@@ -703,12 +733,12 @@ void fl_scene_renderer_primitive(Fl_SceneRenderer *p, VkCommandBuffer cmd, const
 }
 
 /* Soft drop shadow of a (rounded) box: a larger quad whose alpha falls off with the distance to the box. */
-static void draw_shadow(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_SceneFrame *frame, Fl_Affine matrix, double width, double height,
+static void draw_shadow(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_SceneFrame *frame, Fl_Mat4 model, double width, double height,
                         double radius, const Fl_Style *style, double opacity)
 {
     double margin = style->shadow_blur + 2, shift_x = style->shadow_x - margin, shift_y = style->shadow_y - margin;
-    matrix.v[2] += matrix.v[0] * shift_x + matrix.v[1] * shift_y;
-    matrix.v[5] += matrix.v[3] * shift_x + matrix.v[4] * shift_y;
+    model = fl_mat4_mul(model, fl_mat4_translation(shift_x, shift_y, 0));
+    Fl_Affine matrix = fl_affine_from_mat4(model);
     Fl_Appearance color = {.stroke_width = style->shadow_blur};
     memcpy(color.fill, style->shadow_color, 4);
     color.fill[3] = (unsigned char)lround(color.fill[3] * opacity);
@@ -716,7 +746,7 @@ static void draw_shadow(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_Scene
     push_block(push, frame, matrix, width + 2 * margin, height + 2 * margin, (Fl_WidgetKind)16, color, NULL);
     push[24] = (float)fmin(radius, fmin(width, height) * .5); push[27] = (float)margin;
     for (size_t i = 0; i < 28; ++i) if (!isfinite(push[i])) return;
-    use_affine(p, matrix);
+    use_model(p, model);
     fl_scene_renderer_push(p, cmd, push, fl_scene_renderer_white(p));
 }
 
@@ -749,7 +779,7 @@ static void draw_entity(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_Scene
     memcpy(shape.crop, state ? state->entities[index].crop : style.crop, sizeof(shape.crop));
     bool boxed = v->kind == FL_WIDGET_RECTANGLE || v->kind == FL_WIDGET_ELLIPSE || v->kind == FL_WIDGET_IMAGE || v->kind == FL_WIDGET_VIDEO;
     if (part != PART_BODY && boxed && style.shadow_blur > 0 && style.shadow_color[3])
-        draw_shadow(p, cmd, frame, v->world, v->bounds.width, v->bounds.height, v->kind == FL_WIDGET_ELLIPSE ? 1e9 : style.radius, &style, v->opacity);
+        draw_shadow(p, cmd, frame, v->model, v->bounds.width, v->bounds.height, v->kind == FL_WIDGET_ELLIPSE ? 1e9 : style.radius, &style, v->opacity);
     if (part == PART_SHADOW) return;
     VkDescriptorSet mask = white;
     if (v->kind == FL_WIDGET_TEXT) {
@@ -758,11 +788,11 @@ static void draw_entity(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_Scene
             if (p->texts[j].entity == e->id) mask = fl_gpu_image_descriptor(p->texts[j].image);
     } else if (v->kind == FL_WIDGET_IMAGE || v->kind == FL_WIDGET_VIDEO) {
         mask = v->kind == FL_WIDGET_IMAGE ? picture_descriptor(p, e) : video_descriptor(p, e->id);
-        if (mask) fl_scene_renderer_styled(p, cmd, frame, v->world, v->bounds.width, v->bounds.height, (Fl_WidgetKind)KIND_IMAGE, picture, mask, &shape);
-        else fl_scene_renderer_styled(p, cmd, frame, v->world, v->bounds.width, v->bounds.height, FL_WIDGET_RECTANGLE, placeholder, white, &shape);
+        if (mask) fl_scene_renderer_model(p, cmd, frame, v->model, v->bounds.width, v->bounds.height, (Fl_WidgetKind)KIND_IMAGE, picture, mask, &shape);
+        else fl_scene_renderer_model(p, cmd, frame, v->model, v->bounds.width, v->bounds.height, FL_WIDGET_RECTANGLE, placeholder, white, &shape);
         return;
     }
-    if (mask) fl_scene_renderer_styled(p, cmd, frame, v->world, v->bounds.width, v->bounds.height, v->kind, look, mask, boxed || fl_widget_is_polygon(v->kind) ? &shape : NULL);
+    if (mask) fl_scene_renderer_model(p, cmd, frame, v->model, v->bounds.width, v->bounds.height, v->kind, look, mask, boxed || fl_widget_is_polygon(v->kind) ? &shape : NULL);
 }
 
 /* Full-access barrier with a layout change; layers are small in number, so simplicity beats precise stages. */

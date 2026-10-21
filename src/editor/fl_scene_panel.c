@@ -158,7 +158,7 @@ static void build_aspect_selector(Fl_ScenePanel *p, const Fl_Scene *scene)
     }
     ca_div_begin(&(Ca_DivDesc){.style = FL_CLASS_TOOLBAR_SPACER}); ca_div_end();
     fl_button(&(Fl_ButtonDesc){.text=CA_ICON_NF_MD_FIT_TO_PAGE_OUTLINE,.id="scene-fit-canvas",
-        .on_click=reset_canvas,.click_data=p, .kind = FL_BUTTON_ICON, .tooltip = "Center target frame. Pan with right-drag or scroll."});
+        .on_click=reset_canvas,.click_data=p, .kind = FL_BUTTON_ICON, .tooltip = "Center the view. Right-drag pans. Scroll zooms a camera."});
     fl_button(&(Fl_ButtonDesc){.text=CA_ICON_NF_MD_MAGNET,.id="scene-toggle-snap",
         .on_click=toggle_snap,.click_data=p, .kind = FL_BUTTON_ICON, .active = fl_scene_edit_snap(p->edit), .tooltip = fl_scene_edit_snap(p->edit) ? "Grid snapping on (64 units)" : "Grid snapping off"});
     ca_text(&(Ca_TextDesc){.text = "Target", .style = FL_CLASS_LABEL});
@@ -288,21 +288,23 @@ static void stage_start(const Ca_DragEvent *event,void *data)
     if (p->viewport && event->button==1) {
         p->panning=true; p->pan_dx=p->pan_dy=0; return;
     }
-    if (!p->viewport||!fl_scene_preview_point(p->preview,p->viewport,event->start_x,event->start_y,true,&x,&y)) return;
+    if (!p->viewport) return;
+    bool placed=fl_scene_preview_point(p->preview,p->viewport,event->start_x,event->start_y,true,&x,&y);
     double zero_x,zero_y,unit_x,unit_y;
-    if (!fl_scene_preview_point(p->preview,p->viewport,0,0,true,&zero_x,&zero_y)||
-        !fl_scene_preview_point(p->preview,p->viewport,1,1,true,&unit_x,&unit_y)) return;
-    p->drag_offset_x=zero_x;p->drag_offset_y=zero_y;
-    p->drag_scale_x=unit_x-zero_x;p->drag_scale_y=unit_y-zero_y;
-    Fl_EditGesture mode=fl_scene_preview_handle(p->preview,p->viewport,x,y);
+    if (fl_scene_preview_point(p->preview,p->viewport,0,0,true,&zero_x,&zero_y)&&
+        fl_scene_preview_point(p->preview,p->viewport,1,1,true,&unit_x,&unit_y)) {
+        p->drag_offset_x=zero_x;p->drag_offset_y=zero_y;
+        p->drag_scale_x=unit_x-zero_x;p->drag_scale_y=unit_y-zero_y;
+    }
+    Fl_EditGesture mode=fl_scene_preview_handle(p->preview,p->viewport,event->start_x,event->start_y);
     if (mode==FL_GESTURE_MOVE) {
-        if (!fl_scene_preview_point(p->preview,p->viewport,event->start_x,event->start_y,false,&x,&y)) return;
         const Fl_Scene *s=fl_project_scene(p->project,fl_scene_edit_scene(p->edit));
-        Fl_Id hit=fl_scene_edit_pick(p->edit,x,y,5);
+        Fl_Id hit=fl_scene_preview_pick(p->preview,p->viewport,event->start_x,event->start_y);
         bool additive=(ca_window_mouse_mods(event->window)&CA_MOD_SHIFT)!=0;
         if (additive||!fl_scene_edit_contains(p->edit,hit)) fl_scene_edit_select(p->edit,s->id,hit,additive);
         if (!hit||!fl_scene_edit_contains(p->edit,hit)) return;
     }
+    if (!placed) return;
     p->gesturing=fl_scene_edit_begin(p->edit,mode,x,y);
 }
 /* Continue a captured gesture even beyond the artboard's bounds. */
@@ -313,8 +315,11 @@ static void stage_move(const Ca_DragEvent *event,void *data)
         if (p->viewport) fl_scene_preview_pan(p->preview,p->viewport,event->dx-p->pan_dx,event->dy-p->pan_dy);
         p->pan_dx=event->dx; p->pan_dy=event->dy; return;
     }
-    if (p->gesturing) fl_scene_edit_update(p->edit,event->x*p->drag_scale_x+p->drag_offset_x,
-        event->y*p->drag_scale_y+p->drag_offset_y);
+    if (p->gesturing) {
+        double sx,sy;
+        if (p->viewport&&fl_scene_preview_point(p->preview,p->viewport,event->x,event->y,true,&sx,&sy))
+            fl_scene_edit_update(p->edit,sx,sy);
+    }
 }
 /* Finish pointer editing; project persistence observes the resulting operations. */
 static void stage_end(const Ca_DragEvent *event,void *data)
@@ -324,11 +329,17 @@ static void stage_end(const Ca_DragEvent *event,void *data)
     if (!p->gesturing) return;
     stage_move(event,p);fl_scene_edit_end(p->edit,false);p->gesturing=false;
 }
-/* Scroll and trackpad deltas pan the editor camera; object drags keep their captured mapping. */
+/* Scroll pans a flat scene. A perspective camera trucks sideways and dollies on the vertical delta. */
 static void stage_scroll(double dx, double dy, void *data)
 {
     Fl_ScenePanel *p=data;
-    if (p->viewport&&!p->gesturing&&!p->panning) fl_scene_preview_pan(p->preview,p->viewport,dx*32,dy*32);
+    if (!p->viewport||p->gesturing||p->panning) return;
+    if (fl_scene_preview_camera_view(p->preview)) {
+        if (dx) fl_scene_preview_pan(p->preview,p->viewport,dx*32,0);
+        if (dy) fl_scene_preview_zoom(p->preview,p->viewport,dy*32);
+        return;
+    }
+    fl_scene_preview_pan(p->preview,p->viewport,dx*32,dy*32);
 }
 
 /* Escape rolls back only the active viewport gesture. */

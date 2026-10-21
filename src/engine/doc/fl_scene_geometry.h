@@ -40,3 +40,6 @@ void fl_scene_geometry_clear(Fl_SceneGeometry *geometry);
 /* Pick the topmost visible primitive at scene x/y; tolerance is measured in scene pixels. */
 Fl_Id fl_scene_geometry_pick(const Fl_SceneGeometry *geometry, const Fl_Scene *scene,
                              double x, double y, double tolerance);
+/* Pick along a world ray. Direction need not be a unit vector. */
+Fl_Id fl_scene_geometry_pick_ray(const Fl_SceneGeometry *geometry, const Fl_Scene *scene,
+                                 Fl_Vec3 origin, Fl_Vec3 direction);

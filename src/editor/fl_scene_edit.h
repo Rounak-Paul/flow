@@ -52,6 +52,8 @@ bool fl_scene_edit_insert_media(Fl_SceneEdit *edit, Fl_Id asset, Fl_Id parent, d
 
 /* Hit-test evaluated content and resolve generated children to their persistent instance owner. */
 Fl_Id fl_scene_edit_pick(Fl_SceneEdit *edit, double x, double y, double tolerance);
+/* Hit-test along a world ray through the same content. */
+Fl_Id fl_scene_edit_pick_ray(Fl_SceneEdit *edit, Fl_Vec3 origin, Fl_Vec3 direction);
 
 /* Borrow the editor's notification-enabled worker pool for document tools. */
 Fl_JobSystem *fl_scene_edit_jobs(const Fl_SceneEdit *edit);

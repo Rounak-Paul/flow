@@ -400,15 +400,29 @@ bool fl_scene_edit_insert_media(Fl_SceneEdit *edit, Fl_Id asset, Fl_Id parent, d
     return created&&fl_scene_edit_select(edit,edit->scene,id,false);
 }
 
+static Fl_Id pick_owner(Fl_SceneEdit *edit, Fl_Id id)
+{
+    const Fl_SceneState *state=fl_scene_edit_state(edit);
+    const Fl_Scene *scene=fl_scene_state_scene(state,edit ? fl_project_scene(edit->project,edit->scene) : NULL);
+    const Fl_Entity *entity=fl_scene_entity(scene,id);
+    const Fl_Origin *origin=entity && state ? fl_composition_origin(state->composition,(size_t)(entity-scene->entities)) : NULL;
+    (void)origin; return id;
+}
+
 Fl_Id fl_scene_edit_pick(Fl_SceneEdit *edit, double x, double y, double tolerance)
 {
     const Fl_SceneGeometry *geometry=fl_scene_edit_geometry(edit);
     const Fl_SceneState *state=fl_scene_edit_state(edit);
     const Fl_Scene *scene=fl_scene_state_scene(state,edit ? fl_project_scene(edit->project,edit->scene) : NULL);
-    Fl_Id id=fl_scene_geometry_pick(geometry,scene,x,y,tolerance);
-    const Fl_Entity *entity=fl_scene_entity(scene,id);
-    const Fl_Origin *origin=entity && state ? fl_composition_origin(state->composition,(size_t)(entity-scene->entities)) : NULL;
-    (void)origin; return id;
+    return pick_owner(edit, fl_scene_geometry_pick(geometry,scene,x,y,tolerance));
+}
+
+Fl_Id fl_scene_edit_pick_ray(Fl_SceneEdit *edit, Fl_Vec3 origin, Fl_Vec3 direction)
+{
+    const Fl_SceneGeometry *geometry=fl_scene_edit_geometry(edit);
+    const Fl_SceneState *state=fl_scene_edit_state(edit);
+    const Fl_Scene *scene=fl_scene_state_scene(state,edit ? fl_project_scene(edit->project,edit->scene) : NULL);
+    return pick_owner(edit, fl_scene_geometry_pick_ray(geometry,scene,origin,direction));
 }
 
 Fl_JobSystem *fl_scene_edit_jobs(const Fl_SceneEdit *edit) {return edit ? edit->jobs : NULL;}
