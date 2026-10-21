@@ -96,7 +96,7 @@ bool fl_document_content_read(Fl_Json *c, const cJSON *o, Fl_Scene *s)
             if (!fl_document_component_read(c,component,e->id,&components[j])) return false;
             for (size_t k=0;k<j;++k) if (components[k].id==components[j].id || (components[k].type==components[j].type && components[j].type!=FL_COMPONENT_SCRIPT)) return fl_json_fail(c,"Duplicate component type");
         }
-        if (!fl_entity_component(e,FL_COMPONENT_TRANSFORM)) return fl_json_fail(c,"Transform is required");
+        if (!fl_entity_component(e,FL_COMPONENT_POSE)) return fl_json_fail(c,"Pose is required");
     }
     Fl_Beat *beats=records(c,o,"beats",sizeof(*beats),&s->beat_count); s->beats=beats;
     if (c->error[0]) return false;

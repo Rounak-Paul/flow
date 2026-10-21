@@ -61,7 +61,7 @@ int main(int argc, char **argv)
     Fl_Id scene=fl_project_scene_at(project,0)->id,root=0,child=0,lua=0,asset=0;
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_ADD,.scene=scene,.name="Root"},&root));
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_ADD,.scene=scene,.parent=root,.name="Child"},&child));
-    const char *behavior="return {sample=function(ctx) ctx.entity.transform.x=12 end}";
+    const char *behavior="return {sample=function(ctx) ctx.entity.pose.x=12 end}";
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET,.source_kind=FL_ASSET_LUA,.name="Motion",.source=behavior,.source_size=strlen(behavior)},&lua));
     Fl_Component component={0}; CHECK(fl_script_encode(&(Fl_Script){.script=lua,.enabled=true},&component));
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_COMPONENT_SET,.scene=scene,.entity=root,.component=component},NULL));

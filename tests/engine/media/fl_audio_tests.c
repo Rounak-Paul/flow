@@ -94,8 +94,8 @@ static void test_prototype_audio(Fl_Project *project, Fl_Id asset, const char *d
 {
     Fl_Id scene=fl_project_scene_at(project,0)->id;
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_SCENE_SETTINGS,.scene=scene,.width=100,.height=100,.duration=2*FL_TICKS_PER_SECOND},NULL));
-    unsigned char bytes[56]; fl_transform_encode(&(Fl_Transform){.width=10,.height=10,.scale_x=1,.scale_y=1},bytes);
-    Fl_Component transform={.id=1,.type=FL_COMPONENT_TRANSFORM,.version=1,.data=bytes,.size=56};
+    unsigned char bytes[FL_POSE_BYTES]; fl_pose_encode(&(Fl_Pose){.sx=1,.sy=1,.sz=1},bytes);
+    Fl_Component transform={.id=1,.type=FL_COMPONENT_POSE,.version=1,.data=bytes,.size=FL_POSE_BYTES};
     Fl_Entity root={.id=1,.name="Sound",.visible=true,.components=&transform,.component_count=1};
     Fl_AudioClip clip={.id=2,.asset=asset,.start={.offset=FL_TICKS_PER_SECOND/10},.duration=FL_TICKS_PER_SECOND/5,.gain=0.5,.fade_in=FL_TICKS_PER_SECOND/20,.fade_out=FL_TICKS_PER_SECOND/20};
     Fl_Prototype prototype={.root=1,.next_id=3,.next_component_id=2,.scope={.duration=FL_TICKS_PER_SECOND,.entities=&root,.entity_count=1,.clips=&clip,.clip_count=1}};

@@ -51,8 +51,8 @@ static void behavior_changesets(const char *root)
     Fl_Project *project=fl_project_create(directory,"Behavior changesets",NULL); CHECK(project); if (!project) return;
     Fl_Id scene=fl_project_scene_at(project,0)->id, entity=0, asset=0, instance=0;
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_ADD,.scene=scene,.name="Object"},&entity));
-    const char *first="return {parameters={speed={type='number',default=1}},sample=function(ctx) ctx.entity.transform.x=ctx.params.speed end}";
-    const char *second="return {parameters={distance={type='number',default=1}},sample=function(ctx) ctx.entity.transform.x=ctx.params.distance end}";
+    const char *first="return {parameters={speed={type='number',default=1}},sample=function(ctx) ctx.entity.pose.x=ctx.params.speed end}";
+    const char *second="return {parameters={distance={type='number',default=1}},sample=function(ctx) ctx.entity.pose.x=ctx.params.distance end}";
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET, .source_kind=FL_ASSET_LUA,.name="Motion",.source=first,.source_size=strlen(first)},&asset));
     Fl_Script script={.script=asset,.enabled=true,.parameters="{\"speed\":2}",.parameters_size=11};
     Fl_Component component={0}; CHECK(fl_script_encode(&script,&component));
@@ -67,7 +67,7 @@ static void behavior_changesets(const char *root)
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_COMPONENT_SET,.scene=scene,.entity=entity,.component=component},NULL));
     CHECK(fl_project_edit_validate(project) && fl_project_edit_commit(project)); fl_component_clear(&component);
     Fl_SceneState state={0}; CHECK(fl_scene_state_update(&state,fl_project_scene(project,scene),0));
-    CHECK(state.entities[0].transform.x==3);
+    CHECK(state.entities[0].pose.x==3);
     script.parameters="{\"distance\":\"fast\"}"; script.parameters_size=19;
     CHECK(fl_script_encode(&script,&component)); component.id=instance;
     CHECK(!fl_project_apply(project,&(Fl_Op){.kind=FL_OP_COMPONENT_SET,.scene=scene,.entity=entity,.component=component},NULL));
@@ -79,7 +79,7 @@ static void behavior_changesets(const char *root)
     project=fl_project_open(directory,NULL); CHECK(project);
     if (project) {
         CHECK(fl_project_identity(project)!=identity && fl_scene_state_update(&state,fl_project_scene(project,scene),0));
-        CHECK(state.entities[0].transform.x==3); fl_scene_state_clear(&state); fl_project_destroy(project);
+        CHECK(state.entities[0].pose.x==3); fl_scene_state_clear(&state); fl_project_destroy(project);
     }
 }
 
@@ -95,7 +95,7 @@ int main(int argc, char **argv)
     CHECK(fl_event_subscribe(bus,&(Fl_SubscribeDesc){.type=fl_event_type_find(bus,FL_EVENT_PROJECT_CHANGED),.fn=changed,.user_data=&notifications,.owner=&notifications}).generation);
     const Fl_Scene *scene=fl_project_scene_at(project,0); Fl_Id scene_id=scene->id, entity=0, asset=0;
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_ADD,.scene=scene_id,.name="Title"},&entity));
-    const char *source="return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.transform.x=10*t end }";
+    const char *source="return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.pose.x=10*t end }";
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET, .source_kind=FL_ASSET_LUA,.name="Entrance",.source=source,.source_size=strlen(source)},&asset));
     Fl_Component component={0}; CHECK(fl_script_encode(&(Fl_Script){.script=asset,.enabled=true},&component));
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_COMPONENT_SET,.scene=scene_id,.entity=entity,.component=component},NULL)); fl_component_clear(&component);
@@ -106,7 +106,7 @@ int main(int argc, char **argv)
     cJSON *root=load(scene_path); CHECK(!cJSON_GetObjectItemCaseSensitive(root,"scripts"));
     cJSON *entities=cJSON_GetObjectItemCaseSensitive(root,"entities");
     cJSON *components=cJSON_GetObjectItemCaseSensitive(entities->child,"components");
-    CHECK(!strcmp(cJSON_GetObjectItemCaseSensitive(components->child,"type")->valuestring,"transform"));
+    CHECK(!strcmp(cJSON_GetObjectItemCaseSensitive(components->child,"type")->valuestring,"pose"));
     CHECK(cJSON_ReplaceItemInObjectCaseSensitive(root,"name",cJSON_CreateString("Externally edited")));
     Fl_Json context={0}; CHECK(fl_json_save(&context,scene_path,root)); cJSON_Delete(root);
     size_t before=notifications; uint64_t generation=fl_project_generation(project);
@@ -119,11 +119,11 @@ int main(int argc, char **argv)
     CHECK(!strcmp(fl_project_scene(project,scene_id)->name,"Externally edited"));
     CHECK(fl_fs_write_atomic(scene_path,valid,valid_size)); free(valid);
     CHECK(fl_project_reload(project)==FL_RELOAD_UNCHANGED);
-    const char *updated="return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.transform.x=200*t end }";
+    const char *updated="return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.pose.x=200*t end }";
     CHECK(fl_fs_write_atomic(script_path,updated,strlen(updated)));
     CHECK(fl_project_reload(project)==FL_RELOAD_APPLIED);
     CHECK(!strcmp(fl_project_asset(project,asset)->source,updated));
-    Fl_SceneState state={0}; CHECK(fl_scene_state_update(&state,fl_project_scene(project,scene_id),FL_TICKS_PER_SECOND)); CHECK(state.entities[0].transform.x==200);
+    Fl_SceneState state={0}; CHECK(fl_scene_state_update(&state,fl_project_scene(project,scene_id),FL_TICKS_PER_SECOND)); CHECK(state.entities[0].pose.x==200);
     const char *invalid_module="return {sample=123}";
     generation=fl_project_generation(project);
     CHECK(fl_fs_write_atomic(script_path,invalid_module,strlen(invalid_module)));

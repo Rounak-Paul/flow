@@ -67,7 +67,7 @@ bool fl_component_read(Fl_Component *c, Fl_Binary *b)
 
 bool fl_entity_remove_component(Fl_Entity *e, uint64_t type)
 {
-    if (!e || type == FL_COMPONENT_TRANSFORM) return false;
+    if (!e || type == FL_COMPONENT_POSE) return false;
     Fl_Component *c = (Fl_Component *)fl_entity_component(e, type);
     if (!c) return false;
     size_t index = (size_t)(c - e->components);
@@ -79,7 +79,7 @@ bool fl_entity_remove_component(Fl_Entity *e, uint64_t type)
 
 const char *fl_component_name(uint64_t type)
 {
-    static const char *names[] = {NULL, "Transform", "Rectangle", "Text", "Appearance", "Geometry", "Typography", "Image", "Opacity", "Animation", "Lua Script", "Style", "Video", "Flow Prototype", "Owned Composition", "Sampled Animation", "Simulation Events"};
+    static const char *names[] = {NULL, "Pose", "Rectangle", "Text", "Appearance", "Geometry", "Typography", "Image", "Opacity", "Animation", "Lua Script", "Style", "Video", "Flow Prototype", "Owned Composition", "Sampled Animation", "Simulation Events", "Bounds", "Camera", "Mesh", "Material", "Light", "Particles", "Post"};
     return type < sizeof(names) / sizeof(*names) ? names[type] : NULL;
 }
 
@@ -99,7 +99,7 @@ const Fl_Component *fl_entity_component_instance(const Fl_Entity *entity, Fl_Id 
 bool fl_entity_remove_component_instance(Fl_Entity *entity, Fl_Id id)
 {
     Fl_Component *c=(Fl_Component *)fl_entity_component_instance(entity,id);
-    if (!c || c->type==FL_COMPONENT_TRANSFORM) return false;
+    if (!c || c->type==FL_COMPONENT_POSE) return false;
     size_t index=(size_t)(c-entity->components); fl_component_clear(c);
     memmove(c,c+1,(entity->component_count-index-1)*sizeof(*c)); --entity->component_count; return true;
 }

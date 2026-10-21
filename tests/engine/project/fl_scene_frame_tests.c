@@ -27,8 +27,9 @@ int main(int argc, char **argv)
         .width = 1920, .height = 1080, .duration = scene->duration}, NULL));
     Fl_Id entity;
     CHECK(fl_widget_create(project, id, 0, FL_WIDGET_RECTANGLE, 123, 456, &entity));
-    Fl_Transform before;
-    CHECK(fl_transform_decode(fl_entity_component(fl_scene_entity(scene, entity), FL_COMPONENT_TRANSFORM), &before));
+    Fl_Pose before; Fl_Bounds before_box;
+    CHECK(fl_pose_decode(fl_entity_component(fl_scene_entity(scene, entity), FL_COMPONENT_POSE), &before));
+    before_box = fl_entity_bounds(fl_scene_entity(scene, entity));
     const uint64_t ratios[][2] = {{0, 0}, {16, 9}, {9, 16}, {1, 1}, {4, 3}, {3, 4}, {21, 9}, {1, 65536}, {65536, 1}};
     for (size_t i = 0; i < sizeof(ratios) / sizeof(*ratios); ++i) {
         CHECK(fl_project_apply(project, &(Fl_Op){.kind = FL_OP_SCENE_ASPECT, .scene = id,
@@ -52,9 +53,10 @@ int main(int argc, char **argv)
     CHECK(!fl_project_apply(project, &(Fl_Op){.kind = FL_OP_SCENE_ASPECT, .scene = id,
         .aspect_width = 65537, .aspect_height = 1}, NULL));
     CHECK(scene->revision == revision && scene->width == 1920 && scene->height == 1080);
-    Fl_Transform after;
-    CHECK(fl_transform_decode(fl_entity_component(fl_scene_entity(scene, entity), FL_COMPONENT_TRANSFORM), &after));
-    CHECK(before.x == after.x && before.y == after.y && before.width == after.width && before.height == after.height);
+    Fl_Pose after; Fl_Bounds after_box;
+    CHECK(fl_pose_decode(fl_entity_component(fl_scene_entity(scene, entity), FL_COMPONENT_POSE), &after));
+    after_box = fl_entity_bounds(fl_scene_entity(scene, entity));
+    CHECK(before.x == after.x && before.y == after.y && before_box.width == after_box.width && before_box.height == after_box.height);
     CHECK(fl_project_apply(project, &(Fl_Op){.kind=FL_OP_SCENE_CAMERA,.scene=id,.camera_x=125,.camera_y=-75}, NULL));
     CHECK(!fl_project_apply(project, &(Fl_Op){.kind=FL_OP_SCENE_CAMERA,.scene=id,.camera_x=NAN}, NULL));
     CHECK(!fl_project_apply(project, &(Fl_Op){.kind=FL_OP_SCENE_CAMERA,.scene=id,.camera_y=INFINITY}, NULL));

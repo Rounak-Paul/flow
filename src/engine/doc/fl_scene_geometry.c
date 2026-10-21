@@ -1,13 +1,17 @@
 #include "fl_scene_geometry.h"
+#include "components/fl_spatial.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
 Fl_Affine fl_affine_identity(void) { return (Fl_Affine){{1,0,0,0,1,0}}; }
-Fl_Affine fl_affine_transform(const Fl_Transform *t)
+Fl_Affine fl_affine_from_mat4(Fl_Mat4 m)
 {
-    double c = cos(t->rotation), s = sin(t->rotation);
-    return (Fl_Affine){{c*t->scale_x,-s*t->scale_y,t->x,s*t->scale_x,c*t->scale_y,t->y}};
+    return (Fl_Affine){{m.m[0], m.m[4], m.m[12], m.m[1], m.m[5], m.m[13]}};
+}
+Fl_Affine fl_affine_pose(const Fl_Pose *pose)
+{
+    return fl_affine_from_mat4(fl_pose_model(pose));
 }
 Fl_Affine fl_affine_compose(Fl_Affine parent, Fl_Affine local)
 {
@@ -61,13 +65,20 @@ bool fl_scene_geometry_update(Fl_SceneGeometry *g, const Fl_Scene *s, const Fl_S
             size_t index = work[--depth]; e = &s->entities[index];
             const Fl_Entity *parent = fl_scene_entity(s, e->parent);
             Fl_ResolvedEntity *v = &next.entities[index];
-            v->local = (Fl_Transform){.scale_x = 1, .scale_y = 1};
+            v->pose = fl_pose_identity();
             double opacity = 1;
-            if (state) { v->local = state->entities[index].transform; opacity = state->entities[index].opacity; }
-            else { fl_transform_decode(fl_entity_component(e, FL_COMPONENT_TRANSFORM), &v->local); opacity = fl_widget_opacity(e); }
+            if (state) { v->pose = state->entities[index].pose; v->bounds = state->entities[index].bounds; v->mesh = state->entities[index].has_mesh; opacity = state->entities[index].opacity; }
+            else {
+                fl_pose_decode(fl_entity_component(e, FL_COMPONENT_POSE), &v->pose);
+                v->bounds = fl_entity_bounds(e);
+                v->mesh = fl_entity_component(e, FL_COMPONENT_MESH) != NULL;
+                opacity = fl_widget_opacity(e);
+            }
             v->opacity = opacity * (parent ? next.entities[parent-s->entities].opacity : 1);
-            v->world = fl_affine_compose(parent ? next.entities[parent-s->entities].world : fl_affine_identity(), fl_affine_transform(&v->local));
-            v->invertible = fl_affine_inverse(v->world, &v->inverse);
+            Fl_Mat4 local = v->mesh ? fl_mesh_model(&v->pose, &v->bounds) : fl_pose_model(&v->pose);
+            v->model = fl_mat4_mul(parent ? next.entities[parent-s->entities].model : fl_mat4_identity(), local);
+            v->world = fl_affine_from_mat4(v->model);
+            v->invertible = fl_affine_inverse(v->world, &v->inverse) && fl_mat4_inverse(v->model, &v->inverse_model);
             v->visible = e->visible && (!parent || next.entities[parent-s->entities].visible);
             const Fl_WidgetDef *def = fl_widget_for_entity(e); v->kind = def ? def->kind : FL_WIDGET_GROUP;
             resolved[index] = 1;
@@ -95,9 +106,16 @@ Fl_Id fl_scene_geometry_pick(const Fl_SceneGeometry *g, const Fl_Scene *s, doubl
     if (!g || !s || g->count!=s->entity_count || g->scene != s->id || g->revision != s->revision || !isfinite(x) || !isfinite(y)) return 0;
     for (size_t i = g->count; i; ) {
         size_t index = g->order[--i]; const Fl_ResolvedEntity *v = &g->entities[index];
-        if (!v->visible || !v->invertible || v->kind == FL_WIDGET_GROUP) continue;
-        double lx, ly; fl_affine_point(v->inverse, x, y, &lx, &ly);
-        double w = v->local.width, h = v->local.height;
+        if (!v->visible || !v->invertible || (v->kind == FL_WIDGET_GROUP && !v->mesh)) continue;
+        Fl_Vec3 local = fl_mat4_point(v->inverse_model, (Fl_Vec3){x, y, 0});
+        Fl_Vec3 direction = fl_mat4_vector(v->inverse_model, (Fl_Vec3){0, 0, 1});
+        double lx = local.x, ly = local.y;
+        if (fabs(direction.z) > 1e-8) { double t = -local.z / direction.z; lx = local.x + direction.x * t; ly = local.y + direction.y * t; }
+        double w = v->bounds.width, h = v->bounds.height;
+        if (v->mesh) {
+            if (lx < -0.5 || ly < -0.5 || lx > 0.5 || ly > 0.5) continue;
+            return s->entities[index].id;
+        }
         if (w <= 0 || h <= 0) continue;
         if (v->kind == FL_WIDGET_ELLIPSE || fl_widget_is_polygon(v->kind)) {
             if (!fl_widget_shape_contains(v->kind, lx/w*2-1, ly/h*2-1)) continue;

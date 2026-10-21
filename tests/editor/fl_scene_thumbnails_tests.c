@@ -4,13 +4,15 @@
 /* Thumbnail pixels track the shared camera crop while the underlying entity remains unchanged. */
 int main(void)
 {
-    unsigned char transform[56];
-    Fl_Transform pose={900,500,320,180,0,1,1};
-    fl_transform_encode(&pose,transform);
+    unsigned char transform[FL_POSE_BYTES], bounds_bytes[FL_BOUNDS_BYTES];
+    Fl_Pose pose={.x=900,.y=500,.sx=1,.sy=1,.sz=1};
+    Fl_Bounds bounds={320,180,0};
+    fl_pose_encode(&pose,transform); fl_bounds_encode(&bounds,bounds_bytes);
     const unsigned char color[4]={240,40,80,255};
-    Fl_Component components[]={{.type=FL_COMPONENT_TRANSFORM, .version=1, .size=sizeof(transform), .data=transform},
+    Fl_Component components[]={{.type=FL_COMPONENT_POSE, .version=1, .size=sizeof(transform), .data=transform},
+        {.type=FL_COMPONENT_BOUNDS, .version=1, .size=sizeof(bounds_bytes), .data=bounds_bytes},
         {.type=FL_COMPONENT_RECTANGLE, .version=1, .size=sizeof(color), .data=color}};
-    Fl_Entity entity={.id=1,.name="Rectangle",.visible=true,.components=components,.component_count=2};
+    Fl_Entity entity={.id=1,.name="Rectangle",.visible=true,.components=components,.component_count=3};
     Fl_Scene scene={.id=1,.revision=1,.width=1920,.height=1080,.duration=600000,
         .aspect_width=9,.aspect_height=16,.entities=&entity,.entity_count=1};
     unsigned char *centered=rasterize(&scene);CHECK(centered);

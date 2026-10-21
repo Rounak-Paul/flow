@@ -21,7 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { NAME,X,Y,WIDTH,HEIGHT,ROTATION,SCALE_X,SCALE_Y,FILL,STROKE,STROKE_WIDTH,FONT_SIZE,CONTENT,FONT_FILTER,OPACITY,RADIUS,SHADOW_BLUR,SHADOW_X,SHADOW_Y,SHADOW_COLOR,GRADIENT_TO,GRADIENT_ANGLE,CROP_X,CROP_Y,CROP_W,CROP_H,
+enum { NAME,X,Y,Z,WIDTH,HEIGHT,DEPTH,ROTATION,RX,RY,SCALE_X,SCALE_Y,SCALE_Z,FILL,STROKE,STROKE_WIDTH,FONT_SIZE,CONTENT,FONT_FILTER,OPACITY,RADIUS,SHADOW_BLUR,SHADOW_X,SHADOW_Y,SHADOW_COLOR,GRADIENT_TO,GRADIENT_ANGLE,CROP_X,CROP_Y,CROP_W,CROP_H,
        VIDEO_START,VIDEO_OFFSET,VIDEO_RATE,BLUR,FIELD_COUNT };
 #define WEIGHT_OPTIONS 32
 typedef struct Fl_InspectorField { struct Fl_Inspector *owner; char *value; bool dirty; } Fl_InspectorField;
@@ -545,11 +545,12 @@ static void apply(Ca_Button *button,void *data)
     const Fl_Scene *scene=inspector_scene(p);
     const Fl_Entity *entity=fl_scene_entity(scene,p->entity);
     if (!entity||scene->revision!=p->revision) {status(p,"Scene changed. Revert to reload before applying.");return;}
-    double values[7];
-    for (size_t i=0;i<7;++i) if (!number(p->fields[X+i].value,&values[i])) {status(p,"Enter finite numbers for every transform field.");return;}
-    for (size_t i=0;i<7;++i) if (!p->fields[X+i].dirty) values[i]=p->loaded_numbers[X+i];
-    Fl_Transform transform={values[0],values[1],values[2],values[3],values[4]*3.14159265358979323846/180,values[5],values[6]};
-    if (transform.width<0||transform.height<0) {status(p,"Width and height must be non-negative.");return;}
+    double values[12];
+    for (size_t i=0;i<12;++i) if (!number(p->fields[X+i].value,&values[i])) {status(p,"Enter finite numbers for every transform field.");return;}
+    for (size_t i=0;i<12;++i) if (!p->fields[X+i].dirty) values[i]=p->loaded_numbers[X+i];
+    Fl_Pose pose={values[0],values[1],values[2],values[7]*3.14159265358979323846/180,values[8]*3.14159265358979323846/180,values[6]*3.14159265358979323846/180,values[9],values[10],values[11],0,0,0};
+    Fl_Bounds box={values[3],values[4],values[5]};
+    if (box.width<0||box.height<0||box.depth<0) {status(p,"Width, height and depth must be non-negative.");return;}
     const Fl_WidgetDef *def=fl_widget_for_entity(entity);Fl_Appearance appearance=fl_widget_appearance(entity);
     if ((def&&def->has_fill&&!color(p->fields[FILL].value,appearance.fill))||
         (def&&def->has_stroke&&(!color(p->fields[STROKE].value,appearance.stroke)||!number(p->fields[STROKE_WIDTH].value,&appearance.stroke_width)))||
@@ -560,10 +561,10 @@ static void apply(Ca_Button *button,void *data)
     double opacity;
     if (!number(p->fields[OPACITY].value,&opacity)||opacity<0||opacity>1) {status(p,"Opacity is between 0 and 1.");return;}
     if (!p->fields[OPACITY].dirty) opacity=p->loaded_numbers[OPACITY];
-    unsigned char bytes[56],style[24],typography[3+FL_TYPOGRAPHY_FAMILY_MAX],image[8],alpha[8];
-    fl_transform_encode(&transform,bytes);fl_appearance_encode(&appearance,style);fl_opacity_encode(opacity,alpha);
+    unsigned char bytes[FL_POSE_BYTES],bounds_bytes[FL_BOUNDS_BYTES],style[24],typography[3+FL_TYPOGRAPHY_FAMILY_MAX],image[8],alpha[8];
+    fl_pose_encode(&pose,bytes);fl_bounds_encode(&box,bounds_bytes);fl_appearance_encode(&appearance,style);fl_opacity_encode(opacity,alpha);
     unsigned char style_bytes[FL_STYLE_BYTES],clip_bytes[FL_VIDEO_CLIP_BYTES];
-    Fl_Component components[11]={{.type=FL_COMPONENT_TRANSFORM, .version=1, .size=56, .data=bytes},{.type=FL_COMPONENT_OPACITY, .version=1, .size=8, .data=alpha}};size_t count=2;
+    Fl_Component components[12]={{.type=FL_COMPONENT_POSE, .version=1, .size=FL_POSE_BYTES, .data=bytes},{.type=FL_COMPONENT_BOUNDS, .version=1, .size=FL_BOUNDS_BYTES, .data=bounds_bytes},{.type=FL_COMPONENT_OPACITY, .version=1, .size=8, .data=alpha}};size_t count=3;
     if (def&&def->kind!=FL_WIDGET_GROUP&&!def->has_image&&!def->has_video) components[count++]=(Fl_Component){.type = FL_COMPONENT_APPEARANCE, .version = 1, .size = 24, .data = style};
     if (def&&def->has_text) {
         size_t size=fl_typography_encode(&p->typography,typography);
@@ -742,13 +743,13 @@ static bool load(Fl_Inspector *p,const Fl_Scene *scene,const Fl_Entity *entity)
     const Fl_Scene *flat=state ? fl_scene_state_scene(state,scene) : NULL;
     Fl_Tick tick=p->scoped_entity && shown ? state->entities[shown-flat->entities].local_tick : fl_scene_edit_time(p->edit);
     if (local && fl_entity_state_sample(clock,(size_t)(local-clock->entities),tick,&native)) now=&native;
-    Fl_Transform transform={.scale_x=1,.scale_y=1};
-    if (now) transform=now->transform;
-    else fl_transform_decode(fl_entity_component(entity,FL_COMPONENT_TRANSFORM),&transform);
-    double values[7]={transform.x,transform.y,transform.width,transform.height,transform.rotation*180/3.14159265358979323846,transform.scale_x,transform.scale_y};
+    Fl_Pose pose=fl_pose_identity(); Fl_Bounds box={0};
+    if (now) {pose=now->pose; box=now->bounds;}
+    else {fl_pose_decode(fl_entity_component(entity,FL_COMPONENT_POSE),&pose); box=fl_entity_bounds(entity);}
+    double values[12]={pose.x,pose.y,pose.z,box.width,box.height,box.depth,pose.rz*180/3.14159265358979323846,pose.rx*180/3.14159265358979323846,pose.ry*180/3.14159265358979323846,pose.sx,pose.sy,pose.sz};
     if (!field_set(&p->fields[NAME],entity->name)) return false;
     char text[96];
-    for (size_t i=0;i<7;++i) {p->loaded_numbers[X+i]=values[i];snprintf(text,sizeof(text),"%.9g",values[i]);if (!field_set(&p->fields[X+i],text)) return false;}
+    for (size_t i=0;i<12;++i) {p->loaded_numbers[X+i]=values[i];snprintf(text,sizeof(text),"%.9g",values[i]);if (!field_set(&p->fields[X+i],text)) return false;}
     Fl_Appearance a=now ? now->appearance : fl_widget_appearance(entity);
     p->loaded_numbers[OPACITY]=now ? now->opacity : fl_widget_opacity(entity);
     snprintf(text,sizeof(text),"%.4g",p->loaded_numbers[OPACITY]);if (!field_set(&p->fields[OPACITY],text)) return false;
@@ -820,8 +821,8 @@ static bool load(Fl_Inspector *p,const Fl_Scene *scene,const Fl_Entity *entity)
 /* Emit one labelled retained draft field with its stable callback binding. */
 static void field(Fl_Inspector *p,int index,const char *label,bool numeric)
 {
-    static const int animated[FIELD_COUNT]={-1,FL_PROP_X,FL_PROP_Y,FL_PROP_WIDTH,FL_PROP_HEIGHT,FL_PROP_ROTATION,FL_PROP_SCALE_X,
-        FL_PROP_SCALE_Y,FL_PROP_FILL,FL_PROP_STROKE,FL_PROP_STROKE_WIDTH,FL_PROP_FONT_SIZE,-1,-1,FL_PROP_OPACITY,FL_PROP_RADIUS,FL_PROP_SHADOW_BLUR,FL_PROP_SHADOW_X,FL_PROP_SHADOW_Y,FL_PROP_SHADOW_COLOR,FL_PROP_GRADIENT_TO,FL_PROP_GRADIENT_ANGLE,
+    static const int animated[FIELD_COUNT]={-1,FL_PROP_X,FL_PROP_Y,FL_PROP_Z,FL_PROP_WIDTH,FL_PROP_HEIGHT,FL_PROP_DEPTH,FL_PROP_ROTATION,FL_PROP_RX,FL_PROP_RY,FL_PROP_SCALE_X,
+        FL_PROP_SCALE_Y,FL_PROP_SCALE_Z,FL_PROP_FILL,FL_PROP_STROKE,FL_PROP_STROKE_WIDTH,FL_PROP_FONT_SIZE,-1,-1,FL_PROP_OPACITY,FL_PROP_RADIUS,FL_PROP_SHADOW_BLUR,FL_PROP_SHADOW_X,FL_PROP_SHADOW_Y,FL_PROP_SHADOW_COLOR,FL_PROP_GRADIENT_TO,FL_PROP_GRADIENT_ANGLE,
         FL_PROP_CROP_X,FL_PROP_CROP_Y,FL_PROP_CROP_W,FL_PROP_CROP_H,-1,-1,-1,FL_PROP_BLUR};
     const Fl_Scene *scene=inspector_scene(p);
     bool keyed=animated[index]>=0&&fl_scene_track(scene,p->entity,(Fl_AnimProperty)animated[index]);
@@ -1158,8 +1159,8 @@ void fl_inspector_build(Ca_Dock *dock,Ca_Window *window,void *data)
     field(p,NAME,"Name",false);
     ca_checkbox(&(Ca_CheckboxDesc){.text="Visible",.checked=p->visible,.on_change=visibility_changed,.change_data=p});
     ca_text(&(Ca_TextDesc){.text="Transform",.style=FL_CLASS_HEADING});
-    const char *labels[]={"X","Y","Width","Height","Rotation °","Scale X","Scale Y"};
-    for (size_t i=0;i<7;++i) field(p,X+(int)i,labels[i],true);
+    const char *labels[]={"X","Y","Z","Width","Height","Depth","Rotation °","Rotate X °","Rotate Y °","Scale X","Scale Y","Scale Z"};
+    for (size_t i=0;i<12;++i) field(p,X+(int)i,labels[i],true);
     field(p,OPACITY,"Opacity",true);
     if (def&&(def->has_fill||def->has_stroke)) ca_text(&(Ca_TextDesc){.text="Appearance",.style=FL_CLASS_HEADING});
     if (def&&def->has_fill) field(p,FILL,"Fill",false);

@@ -1,4 +1,5 @@
 #include "fl_timeline_internal.h"
+#include "schema/fl_properties.h"
 #include "components/fl_animation.h"
 #include "components/fl_component.h"
 #include "components/fl_script.h"
@@ -264,7 +265,8 @@ static Fl_Track *add_track(Fl_Scene *s, Fl_Id entity, Fl_AnimProperty property)
     Fl_Animation *a = fl_animation_require(e);
     if (!a || a->track_count == FL_PROP_COUNT) return NULL;
     Fl_Track *t = &a->tracks[a->track_count++];
-    *t = (Fl_Track){.entity = entity, .property = property};
+    const Fl_PropertyDef *definition = fl_property_definition(property);
+    *t = (Fl_Track){.entity = entity, .component = definition ? definition->component_type : 0, .property = property};
     return t;
 }
 

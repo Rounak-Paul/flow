@@ -27,8 +27,8 @@ static void fixture(const char *dir, Fl_Id parent, bool duplicate)
     fl_json_add(&context,manifest,"next_id",fl_json_u64(9)); fl_json_add(&context,manifest,"next_component_id",fl_json_u64(3)); fl_json_add(&context,scenes,NULL,fl_json_u64(1));
     fl_json_add(&context,manifest,"scenes",scenes); fl_json_add(&context,manifest,"assets",cJSON_CreateArray());
     CHECK(fl_fs_join(path,sizeof(path),dir,"project.flow.json")); CHECK(fl_json_save(&context,path,manifest)); cJSON_Delete(manifest);
-    unsigned char transform[56]; fl_transform_encode(&(Fl_Transform){.width=320,.height=180,.scale_x=1,.scale_y=1},transform);
-    Fl_Component component={.type = FL_COMPONENT_TRANSFORM, .version = 1, .size = 56, .data = transform, .id=1};
+    unsigned char transform[FL_POSE_BYTES]; fl_pose_encode(&(Fl_Pose){.sx=1,.sy=1,.sz=1},transform);
+    Fl_Component component={.type = FL_COMPONENT_POSE, .version = 1, .size = FL_POSE_BYTES, .data = transform, .id=1};
     Fl_Component other_component=component; other_component.id=2;
     Fl_Entity entities[2]={{.id=2,.parent=parent,.name="First",.visible=true,.components=&component,.component_count=1},
                           {.id=duplicate ? 2 : 3,.parent=2,.name="Second",.visible=true,.components=&other_component,.component_count=1}};
@@ -64,12 +64,12 @@ int main(int argc, char **argv)
     CHECK(!fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ENTITY_ADD, .scene = first, .parent = 99999, .name = "Invalid"}, NULL));
     CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ENTITY_MOVE, .scene = first, .entity = child, .position = 0}, NULL));
     CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ENTITY_RENAME, .scene = first, .entity = root, .name = "Renamed"}, NULL));
-    Fl_Transform t = {12, 23, 450, 240, .5, 2, 3}, decoded;
-    unsigned char transform[56]; fl_transform_encode(&t, transform);
-    Fl_Component c = {.type = FL_COMPONENT_TRANSFORM, .version = 1, .size = sizeof(transform), .data = transform};
-    CHECK(fl_transform_decode(&c, &decoded)); CHECK(decoded.x == 12 && decoded.scale_y == 3);
+    Fl_Pose t = {.x=12, .y=23, .rz=.5, .sx=2, .sy=3, .sz=1}, decoded;
+    unsigned char transform[FL_POSE_BYTES]; fl_pose_encode(&t, transform);
+    Fl_Component c = {.type = FL_COMPONENT_POSE, .version = 1, .size = sizeof(transform), .data = transform};
+    CHECK(fl_pose_decode(&c, &decoded)); CHECK(decoded.x == 12 && decoded.sy == 3);
     CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_COMPONENT_SET, .scene = first, .entity = child, .component = c}, NULL));
-    t.x = NAN; fl_transform_encode(&t, transform);
+    t.x = NAN; fl_pose_encode(&t, transform);
     CHECK(!fl_project_apply(p, &(Fl_Op){.kind = FL_OP_COMPONENT_SET, .scene = first, .entity = child, .component = c}, NULL));
     unsigned char custom[] = {0, 255, 4, 128};
     CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_COMPONENT_SET, .scene = first, .entity = root,
@@ -83,8 +83,8 @@ int main(int argc, char **argv)
     const Fl_Scene *s = fl_project_scene(p, first); CHECK(s && s->width == 1280 && s->duration == 240000);
     const Fl_Entity *e = fl_scene_entity(s, root); CHECK(e && !e->visible && !strcmp(e->name, "Renamed"));
     const Fl_Component *unknown = fl_entity_component(e, 900); CHECK(unknown && unknown->data[0] == 0 && unknown->version == 7);
-    CHECK(fl_transform_decode(fl_entity_component(fl_scene_entity(s, child), FL_COMPONENT_TRANSFORM), &decoded));
-    CHECK(decoded.x == 12 && decoded.rotation == .5);
+    CHECK(fl_pose_decode(fl_entity_component(fl_scene_entity(s, child), FL_COMPONENT_POSE), &decoded));
+    CHECK(decoded.x == 12 && decoded.rz == .5);
     CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_COMPONENT_REMOVE, .scene = first, .entity = root, .component.type = 900}, NULL));
     CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ENTITY_REMOVE, .scene = first, .entity = root}, NULL));
     CHECK(fl_project_scene(p, first)->entity_count == 0);

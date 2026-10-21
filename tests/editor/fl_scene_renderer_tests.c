@@ -44,15 +44,15 @@ static Fl_Id make(Fl_Project *p, Fl_Id scene, Fl_WidgetKind kind, double x, doub
     Fl_Id id = 0;
     CHECK(fl_widget_create(p, scene, 0, kind, x, y, &id));
     const Fl_Entity *e = fl_scene_entity(fl_project_scene(p, scene), id);
-    Fl_Transform t; CHECK(fl_transform_decode(fl_entity_component(e, FL_COMPONENT_TRANSFORM), &t));
-    t.width = w; t.height = h;
+    Fl_Pose t; CHECK(fl_pose_decode(fl_entity_component(e, FL_COMPONENT_POSE), &t));
+    Fl_Bounds box = {w, h, 0};
     Fl_Appearance a = fl_widget_appearance(e);
     memcpy(a.fill, fill, 4); memcpy(a.stroke, fill, 4);
-    unsigned char transform[56], style[24];
-    fl_transform_encode(&t, transform); fl_appearance_encode(&a, style);
-    Fl_Component components[2] = {{.type=FL_COMPONENT_TRANSFORM, .version=1, .size=56, .data=transform}, {.type=FL_COMPONENT_APPEARANCE, .version=1, .size=24, .data=style}};
+    unsigned char transform[FL_POSE_BYTES], bounds_bytes[FL_BOUNDS_BYTES], style[24];
+    fl_pose_encode(&t, transform); fl_bounds_encode(&box, bounds_bytes); fl_appearance_encode(&a, style);
+    Fl_Component components[3] = {{.type=FL_COMPONENT_POSE, .version=1, .size=FL_POSE_BYTES, .data=transform}, {.type=FL_COMPONENT_BOUNDS, .version=1, .size=FL_BOUNDS_BYTES, .data=bounds_bytes}, {.type=FL_COMPONENT_APPEARANCE, .version=1, .size=24, .data=style}};
     CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ENTITY_CONFIGURE, .scene = scene, .entity = id, .name = e->name, .visible = true,
-        .components = components, .component_count = 2}, NULL));
+        .components = components, .component_count = 3}, NULL));
     return id;
 }
 
@@ -188,7 +188,7 @@ int main(int argc, char **argv)
     fl_frame_free(&frame);
 
     /* Lua scripts apply to the frame. */
-    const char *source = "return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.transform.x = 1500 end }";
+    const char *source = "return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.pose.x = 1500 end }";
     Fl_Component script = {0};
     Fl_Id script_id = 0;
     CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ASSET_SOURCE_SET, .source_kind=FL_ASSET_LUA, .scene = scene_id, .name = "Jump", .source = source, .source_size = strlen(source)}, &script_id));
@@ -267,19 +267,19 @@ int main(int argc, char **argv)
         double sizes[3][2] = {{400, 300}, {800, 600}, {200, 200}};
         for (int i = 0; i < 3; ++i) {
             const Fl_Entity *e = fl_scene_entity(fl_project_scene(p, effects_scene), ids[i]);
-            Fl_Transform t; CHECK(fl_transform_decode(fl_entity_component(e, FL_COMPONENT_TRANSFORM), &t));
-            t.width = sizes[i][0]; t.height = sizes[i][1];
-            unsigned char transform[56], style_bytes[FL_STYLE_BYTES], appearance[24];
-            fl_transform_encode(&t, transform);
+            Fl_Pose t; CHECK(fl_pose_decode(fl_entity_component(e, FL_COMPONENT_POSE), &t));
+            Fl_Bounds box = {sizes[i][0], sizes[i][1], 0};
+            unsigned char transform[FL_POSE_BYTES], bounds_bytes[FL_BOUNDS_BYTES], style_bytes[FL_STYLE_BYTES], appearance[24];
+            fl_pose_encode(&t, transform); fl_bounds_encode(&box, bounds_bytes);
             Fl_Appearance a = fl_widget_appearance(e);
             memcpy(a.fill, i == 1 ? red : white, 4); a.stroke_width = 0; fl_appearance_encode(&a, appearance);
             Fl_Style look = fl_style_default();
             if (i == 0) {look.clip = true; look.radius = 60;}
             if (i == 2) look.blur = 20;
             fl_style_encode(&look, style_bytes);
-            Fl_Component components[3] = {{.type=FL_COMPONENT_TRANSFORM, .version=1, .size=56, .data=transform}, {.type=FL_COMPONENT_STYLE, .version=1, .size=FL_STYLE_BYTES, .data=style_bytes}, {.type=FL_COMPONENT_APPEARANCE, .version=1, .size=24, .data=appearance}};
+            Fl_Component components[4] = {{.type=FL_COMPONENT_POSE, .version=1, .size=FL_POSE_BYTES, .data=transform}, {.type=FL_COMPONENT_BOUNDS, .version=1, .size=FL_BOUNDS_BYTES, .data=bounds_bytes}, {.type=FL_COMPONENT_STYLE, .version=1, .size=FL_STYLE_BYTES, .data=style_bytes}, {.type=FL_COMPONENT_APPEARANCE, .version=1, .size=24, .data=appearance}};
             CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ENTITY_CONFIGURE, .scene = effects_scene, .entity = ids[i], .name = e->name, .visible = true,
-                .components = components, .component_count = i == 0 ? 2 : 3}, NULL));
+                .components = components, .component_count = i == 0 ? 3 : 4}, NULL));
         }
     }
     scene = fl_project_scene(p, effects_scene);
@@ -360,7 +360,7 @@ int main(int argc, char **argv)
     CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_SCENE_ADD,.name="Simulation"},&simulated_scene));
     CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_SCENE_SETTINGS,.scene=simulated_scene,.width=100,.height=100,.duration=5*FL_TICKS_PER_SECOND},NULL));
     Fl_Id simulated_entity=make(p,simulated_scene,FL_WIDGET_RECTANGLE,0,0,20,20,red);
-    const char *simulation_source="return {step_hz=60,initialize=function(ctx) ctx.state={x=0} end,step=function(ctx) ctx.state.x=ctx.state.x+10*ctx.time.dt end,sample=function(ctx) ctx.entity.transform.x=ctx.state.x end}";
+    const char *simulation_source="return {step_hz=60,initialize=function(ctx) ctx.state={x=0} end,step=function(ctx) ctx.state.x=ctx.state.x+10*ctx.time.dt end,sample=function(ctx) ctx.entity.pose.x=ctx.state.x end}";
     CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET, .source_kind=FL_ASSET_LUA,.name="GPU simulation",.source=simulation_source,.source_size=strlen(simulation_source)},&simulated_asset));
     Fl_Component behavior={0}; CHECK(fl_script_encode(&(Fl_Script){.script=simulated_asset,.enabled=true},&behavior));
     CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_COMPONENT_SET,.scene=simulated_scene,.entity=simulated_entity,.component=behavior},NULL));
@@ -391,7 +391,7 @@ int main(int argc, char **argv)
     fl_frame_free(&repeated);
     /* Lua structural output shares native render schemas and owner motion without authored child mutations. */
     Fl_Id generator_asset=0,generator_scene=0,generator_entity=0;
-    const char *generator="return {build=function(ctx) return {version=1,root=1,next_id=2,next_component_id=3,duration=120000,beats={},clips={},entities={{id=1,parent=0,name='Generated',visible=true,components={{id=1,type='transform',version=1,x=0,y=0,width=20,height=20,rotation=0,scale_x=1,scale_y=1},{id=2,type='rectangle',version=1,color={255,0,0,255}}}}}} end,sample=function(ctx) ctx.entity.transform.x=10*ctx.time.seconds end}";
+    const char *generator="return {build=function(ctx) return {version=1,root=1,next_id=2,next_component_id=4,duration=120000,beats={},clips={},entities={{id=1,parent=0,name='Generated',visible=true,components={{id=1,type='pose',version=1,x=0,y=0,z=0,rx=0,ry=0,rz=0,scale_x=1,scale_y=1,scale_z=1,pivot_x=0,pivot_y=0,pivot_z=0},{id=2,type='bounds',version=1,width=20,height=20,depth=0},{id=3,type='rectangle',version=1,color={255,0,0,255}}}}}} end,sample=function(ctx) ctx.entity.pose.x=10*ctx.time.seconds end}";
     CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET,.source_kind=FL_ASSET_LUA,.name="Rendered generator",.source=generator,.source_size=strlen(generator)},&generator_asset));
     CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_SCENE_ADD,.name="Generated scene"},&generator_scene));
     CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_SCENE_SETTINGS,.scene=generator_scene,.width=100,.height=100,.duration=2*FL_TICKS_PER_SECOND},NULL));

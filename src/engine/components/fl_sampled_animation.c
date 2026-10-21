@@ -130,7 +130,7 @@ bool fl_sampled_animation_read(Fl_Json *context, const cJSON *samples, Fl_Compon
     size_t count=cJSON_IsArray(samples) ? (size_t)cJSON_GetArraySize(samples) : 0;
     if (!count || count>FL_SAMPLED_ANIMATION_KEYS) return fl_json_fail(context,"Invalid sampled animation count");
     Fl_SampledKey *keys=calloc(count,sizeof(*keys)); if (!keys) return fl_json_fail(context,"Cannot allocate sampled poses");
-    char fields[512]="text";
+    char fields[2048]="text";
     for (int p=0;p<FL_PROP_COUNT;++p) {strcat(fields," "); strcat(fields,fl_property_name((Fl_AnimProperty)p));}
     bool valid=true,has_text=false; const char *text=NULL; size_t index=0;
     for (const cJSON *sample=samples->child;valid && sample;sample=sample->next,++index) {

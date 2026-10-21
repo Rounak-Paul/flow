@@ -199,7 +199,7 @@ bool agent_widget_from_name(const char *name, Fl_WidgetKind *kind)
 }
 bool agent_property_from_name(const char *name, Fl_AnimProperty *property)
 {
-    for (int i = 0; i < FL_PROP_COUNT; ++i) if (!strcmp(name, fl_property_name((Fl_AnimProperty)i))) {*property = (Fl_AnimProperty)i; return true;}
+    for (int i = 0; i < FL_PROP_COUNT; ++i)     if (!strcmp(name, fl_property_name((Fl_AnimProperty)i)) || (i == FL_PROP_RZ && !strcmp(name, "rotation"))) {*property = (Fl_AnimProperty)i; return true;}
     return false;
 }
 const char *agent_ease_name(Fl_Ease ease) { return ease >= 0 && ease < FL_EASE_COUNT ? ease_names[ease] : "linear"; }
@@ -320,7 +320,7 @@ static void track_value_json(cJSON *key, Fl_AnimProperty property, const double 
         unsigned char rgba[4];
         for (int i = 0; i < 4; ++i) rgba[i] = (unsigned char)lround(v[i]);
         agent_color_json(key, "value", rgba);
-    } else cJSON_AddNumberToObject(key, "value", property == FL_PROP_ROTATION ? v[0] * RAD_TO_DEG : v[0]);
+    } else cJSON_AddNumberToObject(key, "value", property == FL_PROP_RX || property == FL_PROP_RY || property == FL_PROP_RZ ? v[0] * RAD_TO_DEG : v[0]);
 }
 
 static cJSON *track_json(const Fl_Scene *s, const Fl_Track *t)
@@ -352,12 +352,13 @@ static cJSON *entity_json(const Fl_Scene *s, const Fl_Entity *e)
     cJSON_AddStringToObject(o, "kind", def ? agent_widget_name(def->kind) : "unknown");
     if (e->parent) cJSON_AddItemToObject(o, "parent", agent_id_json(e->parent));
     cJSON_AddBoolToObject(o, "visible", e->visible);
-    Fl_Transform t = {.scale_x = 1, .scale_y = 1};
-    fl_transform_decode(fl_entity_component(e, FL_COMPONENT_TRANSFORM), &t);
-    cJSON_AddNumberToObject(o, "x", t.x); cJSON_AddNumberToObject(o, "y", t.y);
-    cJSON_AddNumberToObject(o, "width", t.width); cJSON_AddNumberToObject(o, "height", t.height);
-    cJSON_AddNumberToObject(o, "rotation", t.rotation * RAD_TO_DEG);
-    cJSON_AddNumberToObject(o, "scale_x", t.scale_x); cJSON_AddNumberToObject(o, "scale_y", t.scale_y);
+    Fl_Pose t = fl_pose_identity(); Fl_Bounds box = fl_entity_bounds(e);
+    fl_pose_decode(fl_entity_component(e, FL_COMPONENT_POSE), &t);
+    cJSON_AddNumberToObject(o, "x", t.x); cJSON_AddNumberToObject(o, "y", t.y); cJSON_AddNumberToObject(o, "z", t.z);
+    cJSON_AddNumberToObject(o, "width", box.width); cJSON_AddNumberToObject(o, "height", box.height); cJSON_AddNumberToObject(o, "depth", box.depth);
+    cJSON_AddNumberToObject(o, "rotation", t.rz * RAD_TO_DEG);
+    cJSON_AddNumberToObject(o, "rx", t.rx * RAD_TO_DEG); cJSON_AddNumberToObject(o, "ry", t.ry * RAD_TO_DEG);
+    cJSON_AddNumberToObject(o, "scale_x", t.sx); cJSON_AddNumberToObject(o, "scale_y", t.sy); cJSON_AddNumberToObject(o, "scale_z", t.sz);
     cJSON_AddNumberToObject(o, "opacity", fl_widget_opacity(e));
     Fl_Appearance a = fl_widget_appearance(e);
     if (def && def->has_fill) agent_color_json(o, "fill", a.fill);

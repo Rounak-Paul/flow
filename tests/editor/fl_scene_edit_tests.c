@@ -10,10 +10,14 @@
 #include "core/fl_clock.h"
 #include "core/fl_thread.h"
 
-/* Borrow and decode an entity's current local transform. */
-static Fl_Transform read_transform(Fl_Project *p,Fl_Id scene,Fl_Id entity)
+/* Borrow and decode an entity's current local pose and bounds. */
+static Fl_TransformEdit read_transform(Fl_Project *p,Fl_Id scene,Fl_Id entity)
 {
-    Fl_Transform t={0};CHECK(fl_transform_decode(fl_entity_component(fl_scene_entity(fl_project_scene(p,scene),entity),FL_COMPONENT_TRANSFORM),&t));return t;
+    const Fl_Entity *e=fl_scene_entity(fl_project_scene(p,scene),entity);
+    Fl_TransformEdit t={.entity=entity};
+    CHECK(fl_pose_decode(fl_entity_component(e,FL_COMPONENT_POSE),&t.pose));
+    t.bounds=fl_entity_bounds(e);
+    return t;
 }
 /* Compare transform results with a tolerance appropriate to affine composition. */
 static bool near(double a,double b) {return fabs(a-b)<1e-8;}
@@ -24,10 +28,11 @@ static void check_keyed_gesture(Fl_Project *p, Fl_SceneEdit *edit, Fl_Id scene)
     Fl_Id entity;
     CHECK(fl_widget_create(p, scene, 0, FL_WIDGET_RECTANGLE, 0, 0, &entity));
     CHECK(fl_scene_edit_select(edit, scene, entity, false));
+    const Fl_AnimProperty properties[] = {FL_PROP_X, FL_PROP_Y, FL_PROP_WIDTH, FL_PROP_HEIGHT};
     const double initial[] = {0, 0, 320, 180};
     for (int property = 0; property < 4; ++property)
         CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_KEY_SET, .scene = scene, .entity = entity,
-            .property = (Fl_AnimProperty)property, .anchor = fl_anchor_at(fl_project_scene(p, scene), 0), .value = {initial[property]}}, NULL));
+            .property = properties[property], .anchor = fl_anchor_at(fl_project_scene(p, scene), 0), .value = {initial[property]}}, NULL));
     fl_scene_edit_set_time(edit, FL_TICKS_PER_SECOND);
     CHECK(fl_scene_edit_begin(edit, FL_GESTURE_MOVE, 0, 0));
     CHECK(fl_scene_edit_update(edit, 10, 0));
@@ -57,23 +62,23 @@ static void check_canvas_authoring(Fl_Project *p, Fl_SceneEdit *edit, Fl_Id scen
     CHECK(fl_project_scene(p,scene)->revision==revision);
     CHECK(fl_scene_edit_begin(edit,FL_GESTURE_MOVE,0,0));
     CHECK(fl_scene_edit_update(edit,60,60));
-    Fl_Transform first=read_transform(p,scene,a),second=read_transform(p,scene,b);
-    CHECK(near(first.x,64)&&near(first.y,64));
-    CHECK(near(second.x-first.x,20)&&near(second.y-first.y,30));
+    Fl_TransformEdit first=read_transform(p,scene,a),second=read_transform(p,scene,b);
+    CHECK(near(first.pose.x,64)&&near(first.pose.y,64));
+    CHECK(near(second.pose.x-first.pose.x,20)&&near(second.pose.y-first.pose.y,30));
     fl_scene_edit_end(edit,true);
-    first=read_transform(p,scene,a);CHECK(near(first.x,13)&&near(first.y,27));
+    first=read_transform(p,scene,a);CHECK(near(first.pose.x,13)&&near(first.pose.y,27));
     CHECK(fl_scene_edit_insert(edit,FL_WIDGET_RECTANGLE,0,-35,98));
     Fl_Id inserted=fl_scene_edit_primary(edit);
-    first=read_transform(p,scene,inserted);CHECK(near(first.x,-64)&&near(first.y,128));
+    first=read_transform(p,scene,inserted);CHECK(near(first.pose.x,-64)&&near(first.pose.y,128));
     const Fl_Scene *s=fl_project_scene(p,scene);size_t count=s->entity_count;
     CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_SCENE_ASPECT,.scene=scene,.aspect_width=9,.aspect_height=16},NULL));
     CHECK(fl_scene_edit_primary(edit)==inserted&&fl_scene_edit_count(edit)==1);
     CHECK(fl_project_scene(p,scene)->entity_count==count);
     second=read_transform(p,scene,inserted);
-    CHECK(near(first.x,second.x)&&near(first.y,second.y));
+    CHECK(near(first.pose.x,second.pose.x)&&near(first.pose.y,second.pose.y));
     Fl_Id group;
     CHECK(fl_widget_create(p,scene,0,FL_WIDGET_GROUP,0,0,&group));
-    Fl_TransformEdit transform={group,{100,50,320,180,.3,2,2}};
+    Fl_TransformEdit transform={.entity=group,.pose={.x=100,.y=50,.rz=.3,.sx=2,.sy=2,.sz=1},.bounds={320,180,0}};
     CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_TRANSFORMS,.scene=scene,.transforms=&transform,.transform_count=1},NULL));
     CHECK(fl_scene_edit_insert(edit,FL_WIDGET_RECTANGLE,group,19,31));
     const Fl_SceneGeometry *g=fl_scene_edit_geometry(edit);
@@ -112,7 +117,7 @@ static void check_async_preview(Fl_Project *project, Fl_EventBus *bus, Fl_Id sce
     if (!edit) {fl_jobs_destroy(jobs); return;}
     Fl_Id entity=0, asset=0;
     CHECK(fl_widget_create(project,scene,0,FL_WIDGET_RECTANGLE,0,0,&entity));
-    const char *source="return {step_hz=60,initialize=function(ctx) ctx.state={x=0} end,step=function(ctx) ctx.state.x=ctx.state.x+100*ctx.time.dt end,sample=function(ctx) ctx.entity.transform.x=ctx.state.x end}";
+    const char *source="return {step_hz=60,initialize=function(ctx) ctx.state={x=0} end,step=function(ctx) ctx.state.x=ctx.state.x+100*ctx.time.dt end,sample=function(ctx) ctx.entity.pose.x=ctx.state.x end}";
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET, .source_kind=FL_ASSET_LUA,.name="Async Preview",.source=source,.source_size=strlen(source)},&asset));
     Fl_Component component={0}; CHECK(fl_script_encode(&(Fl_Script){.script=asset,.enabled=true},&component));
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_COMPONENT_SET,.scene=scene,.entity=entity,.component=component},NULL));
@@ -122,18 +127,18 @@ static void check_async_preview(Fl_Project *project, Fl_EventBus *bus, Fl_Id sce
     const Fl_SceneState *state=await_preview(edit,bus,FL_TICKS_PER_SECOND);
     const Fl_Scene *document=fl_project_scene(project,scene);
     size_t index=(size_t)(fl_scene_entity(document,entity)-document->entities);
-    CHECK(state && near(state->entities[index].transform.x,100));
+    CHECK(state && near(state->entities[index].pose.x,100));
     fl_scene_edit_set_snap(edit,false);
     CHECK(!fl_scene_edit_begin(edit,FL_GESTURE_MOVE,100,0));
     state=await_preview(edit,bus,FL_TICKS_PER_SECOND); CHECK(state);
     fl_scene_edit_set_time(edit,2*FL_TICKS_PER_SECOND);
     state=fl_scene_edit_state(edit);
     CHECK(state && state->tick==FL_TICKS_PER_SECOND && fl_scene_edit_evaluating(edit));
-    source="return {sample=function(ctx) ctx.entity.transform.x=ctx.time.seconds*1000 end}";
+    source="return {sample=function(ctx) ctx.entity.pose.x=ctx.time.seconds*1000 end}";
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET, .source_kind=FL_ASSET_LUA,.asset =asset,.source=source,.source_size=strlen(source)},NULL));
     CHECK(!fl_scene_edit_state(edit));
     state=await_preview(edit,bus,2*FL_TICKS_PER_SECOND);
-    CHECK(state && state->entities[index].transform.x==2000);
+    CHECK(state && state->entities[index].pose.x==2000);
     fl_scene_edit_set_time(edit,3*FL_TICKS_PER_SECOND); fl_scene_edit_state(edit);
     fl_scene_edit_destroy(edit); CHECK(fl_jobs_destroy(jobs)); fl_event_bus_dispatch(bus);
 }
@@ -154,7 +159,7 @@ static void check_scoped_editing(Fl_Project *project, Fl_SceneEdit *edit, Fl_Id 
     CHECK(fl_scene_edit_contains(edit,generated) && !fl_scene_edit_contains(edit,owner));
     CHECK(fl_scene_edit_begin(edit,FL_GESTURE_MOVE,0,0)); CHECK(fl_scene_edit_update(edit,15,25)); fl_scene_edit_end(edit,false);
     state=fl_scene_edit_state(edit); flat=fl_scene_state_scene(state,NULL); const Fl_Entity *entity=fl_scene_entity(flat,generated); CHECK(entity);
-    if (entity) CHECK(state->entities[entity-flat->entities].transform.x==15 && state->entities[entity-flat->entities].transform.y==25);
+    if (entity) CHECK(state->entities[entity-flat->entities].pose.x==15 && state->entities[entity-flat->entities].pose.y==25);
     Fl_Id key=0; CHECK(fl_scene_edit_timeline_apply(edit,&(Fl_Op){.kind=FL_OP_KEY_SET,.entity=generated,.property=FL_PROP_Y,.anchor={.kind=FL_ANCHOR_ABSOLUTE,.offset=0},.value={25}},&key)); CHECK(key>>63);
     fl_scene_edit_set_time(edit,12000);
     CHECK(fl_scene_edit_begin(edit,FL_GESTURE_MOVE,0,0));
@@ -167,7 +172,7 @@ static void check_scoped_editing(Fl_Project *project, Fl_SceneEdit *edit, Fl_Id 
     CHECK(operations && cJSON_GetArraySize(operations)<12); cJSON_Delete(operations);
     CHECK(fl_scene_edit_begin(edit,FL_GESTURE_MOVE,0,0)); CHECK(fl_scene_edit_update(edit,100,100)); fl_scene_edit_end(edit,true);
     state=fl_scene_edit_state(edit); flat=fl_scene_state_scene(state,NULL); entity=fl_scene_entity(flat,generated);
-    CHECK(entity && state->entities[entity-flat->entities].transform.y==35);
+    CHECK(entity && state->entities[entity-flat->entities].pose.y==35);
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_REMOVE,.scene=scene,.entity=owner},NULL));
     CHECK(fl_scene_edit_count(edit)==0);
 }
@@ -180,7 +185,7 @@ int main(int argc,char **argv)
     Fl_Id scene=fl_project_scene_at(p,0)->id,parent,child;
     CHECK(fl_widget_create(p,scene,0,FL_WIDGET_GROUP,100,100,&parent));
     CHECK(fl_widget_create(p,scene,parent,FL_WIDGET_RECTANGLE,10,20,&child));
-    Fl_TransformEdit parent_transform={parent,{100,100,320,180,1.5707963267948966,2,2}};
+    Fl_TransformEdit parent_transform={.entity=parent,.pose={.x=100,.y=100,.rz=1.5707963267948966,.sx=2,.sy=2,.sz=1},.bounds={320,180,0}};
     CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_TRANSFORMS,.scene=scene,.transforms=&parent_transform,.transform_count=1},NULL));
     Fl_SceneEdit *edit=fl_scene_edit_create(p,bus,NULL);CHECK(edit);
     CHECK(fl_scene_edit_select(edit,scene,child,false));
@@ -188,25 +193,25 @@ int main(int argc,char **argv)
     CHECK(fl_scene_edit_begin(edit,FL_GESTURE_MOVE,0,0));CHECK(fl_scene_edit_update(edit,0,0));fl_scene_edit_end(edit,true);
     CHECK(fl_project_scene(p,scene)->revision==revision);
     CHECK(fl_scene_edit_begin(edit,FL_GESTURE_MOVE,0,0));CHECK(fl_scene_edit_update(edit,20,40));
-    Fl_Transform t=read_transform(p,scene,child);CHECK(near(t.x,30)&&near(t.y,10));
-    fl_scene_edit_end(edit,true);t=read_transform(p,scene,child);CHECK(near(t.x,10)&&near(t.y,20));
+    Fl_TransformEdit t=read_transform(p,scene,child);CHECK(near(t.pose.x,30)&&near(t.pose.y,10));
+    fl_scene_edit_end(edit,true);t=read_transform(p,scene,child);CHECK(near(t.pose.x,10)&&near(t.pose.y,20));
     CHECK(fl_scene_edit_select(edit,scene,parent,true));CHECK(fl_scene_edit_count(edit)==2);
     CHECK(fl_scene_edit_begin(edit,FL_GESTURE_MOVE,0,0));CHECK(fl_scene_edit_update(edit,50,60));fl_scene_edit_end(edit,false);
-    t=read_transform(p,scene,parent);CHECK(near(t.x,150)&&near(t.y,160));
-    t=read_transform(p,scene,child);CHECK(near(t.x,10)&&near(t.y,20));
+    t=read_transform(p,scene,parent);CHECK(near(t.pose.x,150)&&near(t.pose.y,160));
+    t=read_transform(p,scene,child);CHECK(near(t.pose.x,10)&&near(t.pose.y,20));
     CHECK(!fl_scene_edit_begin(edit,FL_GESTURE_ROTATE,0,0));
     CHECK(fl_scene_edit_select(edit,scene,parent,false));
-    Fl_Transform before=read_transform(p,scene,parent);Fl_Affine old=fl_affine_transform(&before);
-    double right_x,right_y,start_x,start_y;fl_affine_point(old,before.width,before.height,&right_x,&right_y);fl_affine_point(old,0,0,&start_x,&start_y);
+    Fl_TransformEdit before=read_transform(p,scene,parent);Fl_Affine old=fl_affine_pose(&before.pose);
+    double right_x,right_y,start_x,start_y;fl_affine_point(old,before.bounds.width,before.bounds.height,&right_x,&right_y);fl_affine_point(old,0,0,&start_x,&start_y);
     CHECK(fl_scene_edit_begin(edit,FL_GESTURE_NW,start_x,start_y));CHECK(fl_scene_edit_update(edit,start_x+20,start_y+40));fl_scene_edit_end(edit,false);
-    t=read_transform(p,scene,parent);double x,y;fl_affine_point(fl_affine_transform(&t),t.width,t.height,&x,&y);CHECK(near(x,right_x)&&near(y,right_y));
-    double cx,cy;fl_affine_point(fl_affine_transform(&t),t.width*.5,t.height*.5,&cx,&cy);
+    t=read_transform(p,scene,parent);double x,y;fl_affine_point(fl_affine_pose(&t.pose),t.bounds.width,t.bounds.height,&x,&y);CHECK(near(x,right_x)&&near(y,right_y));
+    double cx,cy;fl_affine_point(fl_affine_pose(&t.pose),t.bounds.width*.5,t.bounds.height*.5,&cx,&cy);
     CHECK(fl_scene_edit_begin(edit,FL_GESTURE_ROTATE,cx+100,cy));CHECK(fl_scene_edit_update(edit,cx,cy+100));fl_scene_edit_end(edit,false);
-    t=read_transform(p,scene,parent);fl_affine_point(fl_affine_transform(&t),t.width*.5,t.height*.5,&x,&y);CHECK(near(x,cx)&&near(y,cy));
+    t=read_transform(p,scene,parent);fl_affine_point(fl_affine_pose(&t.pose),t.bounds.width*.5,t.bounds.height*.5,&x,&y);CHECK(near(x,cx)&&near(y,cy));
     before=t;
-    Fl_TransformEdit batch[2]={{parent,{0,0,50,50,0,1,1}},{999999,{0,0,10,10,0,1,1}}};
+    Fl_TransformEdit batch[2]={{.entity=parent,.pose={.sx=1,.sy=1,.sz=1},.bounds={50,50,0}},{.entity=999999,.pose={.sx=1,.sy=1,.sz=1},.bounds={10,10,0}}};
     CHECK(!fl_project_apply(p,&(Fl_Op){.kind=FL_OP_TRANSFORMS,.scene=scene,.transforms=batch,.transform_count=2},NULL));
-    t=read_transform(p,scene,parent);CHECK(t.x==before.x&&t.width==before.width);
+    t=read_transform(p,scene,parent);CHECK(t.pose.x==before.pose.x&&t.bounds.width==before.bounds.width);
     CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_ENTITY_REMOVE,.scene=scene,.entity=parent},NULL));CHECK(fl_scene_edit_count(edit)==0);
     CHECK(fl_scene_edit_insert(edit,FL_WIDGET_TEXT,0,100,200));CHECK(fl_scene_edit_count(edit)==1);
     check_keyed_gesture(p,edit,scene);

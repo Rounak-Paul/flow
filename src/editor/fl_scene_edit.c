@@ -9,7 +9,7 @@
 typedef struct Fl_GestureTarget {
     Fl_TransformEdit initial;
     Fl_Tick local_tick;
-    Fl_Transform applied;       /* last value written by this gesture */
+    Fl_TransformEdit applied;   /* last value written by this gesture */
     Fl_Affine inverse, parent_inverse;
 } Fl_GestureTarget;
 struct Fl_SceneEdit {
@@ -288,7 +288,7 @@ bool fl_scene_edit_begin(Fl_SceneEdit *edit, Fl_EditGesture mode, double x, doub
         const Fl_ResolvedEntity *v = &geometry->entities[entity-scene->entities];
         Fl_GestureTarget *target = &edit->targets[edit->target_count];
         target->local_tick=state->entities[index].local_tick;
-        target->initial = (Fl_TransformEdit){entity->id,v->local}; target->applied = v->local; target->inverse = v->inverse;
+        target->initial = (Fl_TransformEdit){entity->id, v->pose, v->bounds}; target->applied = target->initial; target->inverse = v->inverse;
         if (!v->invertible || !fl_affine_inverse(parent ? geometry->entities[parent-scene->entities].world : fl_affine_identity(), &target->parent_inverse)) {
             clear_gesture(edit); return false;
         }
@@ -316,7 +316,7 @@ bool fl_scene_edit_update(Fl_SceneEdit *edit, double x, double y)
     }
     for (size_t i = 0; i < edit->target_count; ++i) {
         const Fl_GestureTarget *target = &edit->targets[i];
-        Fl_Transform t = target->initial.transform;
+        Fl_Pose t = target->initial.pose; Fl_Bounds box = target->initial.bounds;
         if (x==edit->start_x&&y==edit->start_y) {
             edit->updates[i]=target->initial;continue;
         }
@@ -328,29 +328,29 @@ bool fl_scene_edit_update(Fl_SceneEdit *edit, double x, double y)
             double px,py,sx,sy,cx,cy;
             fl_affine_point(target->parent_inverse,x,y,&px,&py);
             fl_affine_point(target->parent_inverse,edit->start_x,edit->start_y,&sx,&sy);
-            Fl_Affine local = fl_affine_transform(&t); fl_affine_point(local,t.width*.5,t.height*.5,&cx,&cy);
-            t.rotation += atan2(py-cy,px-cx)-atan2(sy-cy,sx-cx);
-            double c=cos(t.rotation),s=sin(t.rotation);
-            t.x = cx-c*t.scale_x*t.width*.5+s*t.scale_y*t.height*.5;
-            t.y = cy-s*t.scale_x*t.width*.5-c*t.scale_y*t.height*.5;
+            Fl_Affine local = fl_affine_pose(&t); fl_affine_point(local,box.width*.5,box.height*.5,&cx,&cy);
+            t.rz += atan2(py-cy,px-cx)-atan2(sy-cy,sx-cx);
+            double c=cos(t.rz),s=sin(t.rz);
+            t.x = cx-c*t.sx*box.width*.5+s*t.sy*box.height*.5;
+            t.y = cy-s*t.sx*box.width*.5-c*t.sy*box.height*.5;
         } else {
             double lx,ly,sx,sy;
             fl_affine_point(target->inverse,x,y,&lx,&ly);
             fl_affine_point(target->inverse,edit->start_x,edit->start_y,&sx,&sy);
             bool west = edit->gesture == FL_GESTURE_NW || edit->gesture == FL_GESTURE_SW;
             bool north = edit->gesture == FL_GESTURE_NW || edit->gesture == FL_GESTURE_NE;
-            double w=fmax(1,t.width+(west ? sx-lx : lx-sx));
-            double h=fmax(1,t.height+(north ? sy-ly : ly-sy));
-            Fl_Affine local=fl_affine_transform(&t);
-            double dx=west ? t.width-w : 0,dy=north ? t.height-h : 0;
+            double w=fmax(1,box.width+(west ? sx-lx : lx-sx));
+            double h=fmax(1,box.height+(north ? sy-ly : ly-sy));
+            Fl_Affine local=fl_affine_pose(&t);
+            double dx=west ? box.width-w : 0,dy=north ? box.height-h : 0;
             t.x += local.v[0]*dx+local.v[1]*dy; t.y += local.v[3]*dx+local.v[4]*dy;
-            t.width=w; t.height=h;
+            box.width=w; box.height=h;
         }
-        edit->updates[i]=(Fl_TransformEdit){target->initial.entity,t};
+        edit->updates[i]=(Fl_TransformEdit){target->initial.entity,t,box};
     }
     bool changed=false;
     for (size_t i=0;i<edit->target_count;++i)
-        changed|=memcmp(&edit->targets[i].applied,&edit->updates[i].transform,sizeof(Fl_Transform))!=0;
+        changed|=memcmp(&edit->targets[i].applied,&edit->updates[i],sizeof(Fl_TransformEdit))!=0;
     if (!changed) return true;
     edit->applying = true;
     bool ok=false;
@@ -359,14 +359,15 @@ bool fl_scene_edit_update(Fl_SceneEdit *edit, double x, double y)
         const Fl_Scene *flat=state ? fl_scene_state_scene(state,NULL) : NULL;
         const Fl_Entity *entity=fl_scene_entity(flat,edit->focus);
         if (entity) {
-            size_t index=(size_t)(entity-flat->entities); unsigned char bytes[56]; fl_transform_encode(&edit->updates[0].transform,bytes);
-            Fl_Component transform={.type=FL_COMPONENT_TRANSFORM,.version=1,.data=bytes,.size=56};
-            ok=fl_scope_configure(edit->project,edit->scene,state->composition,index,NULL,entity->visible,&transform,1,0,edit->targets[0].local_tick);
+            size_t index=(size_t)(entity-flat->entities); unsigned char pose_bytes[FL_POSE_BYTES], bounds_bytes[FL_BOUNDS_BYTES];
+            fl_pose_encode(&edit->updates[0].pose,pose_bytes); fl_bounds_encode(&edit->updates[0].bounds,bounds_bytes);
+            Fl_Component components[2]={{.type=FL_COMPONENT_POSE,.version=1,.data=pose_bytes,.size=FL_POSE_BYTES},{.type=FL_COMPONENT_BOUNDS,.version=1,.data=bounds_bytes,.size=FL_BOUNDS_BYTES}};
+            ok=fl_scope_configure(edit->project,edit->scene,state->composition,index,NULL,entity->visible,components,2,0,edit->targets[0].local_tick);
         }
     } else ok=fl_project_apply(edit->project, &(Fl_Op){.kind=FL_OP_TRANSFORMS,.scene=edit->scene,
         .transforms=edit->updates,.transform_count=edit->target_count,.keyed=true,.tick=edit->gesture_tick},NULL);
     edit->applying = false;
-    if (ok) for (size_t i=0;i<edit->target_count;++i) edit->targets[i].applied=edit->updates[i].transform;
+    if (ok) for (size_t i=0;i<edit->target_count;++i) edit->targets[i].applied=edit->updates[i];
     return ok;
 }
 void fl_scene_edit_end(Fl_SceneEdit *edit, bool cancel)

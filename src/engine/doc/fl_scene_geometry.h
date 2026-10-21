@@ -1,15 +1,18 @@
 #pragma once
 #include "time/fl_scene_state.h"
+#include "doc/fl_math.h"
 
-/* Local-to-scene affine matrix [a,b,tx,c,d,ty]. */
+/* XY footprint of a world matrix, used by planar tools and layer clips. [a, b, tx, c, d, ty]. */
 typedef struct Fl_Affine { double v[6]; } Fl_Affine;
 /* Resolved document geometry; entries correspond to scene entity indices. */
 typedef struct Fl_ResolvedEntity {
+    Fl_Mat4 model, inverse_model;
     Fl_Affine world, inverse;
-    Fl_Transform local;
+    Fl_Pose pose;
+    Fl_Bounds bounds;
     Fl_WidgetKind kind;
     double opacity;             /* own opacity times every ancestor's */
-    bool visible, invertible;
+    bool visible, invertible, mesh;
 } Fl_ResolvedEntity;
 typedef struct Fl_SceneGeometry {
     Fl_Id scene;
@@ -22,7 +25,8 @@ typedef struct Fl_SceneGeometry {
 } Fl_SceneGeometry;
 /* Return identity/local matrices and compose parent * local. */
 Fl_Affine fl_affine_identity(void);
-Fl_Affine fl_affine_transform(const Fl_Transform *transform);
+Fl_Affine fl_affine_from_mat4(Fl_Mat4 model);
+Fl_Affine fl_affine_pose(const Fl_Pose *pose);
 Fl_Affine fl_affine_compose(Fl_Affine parent, Fl_Affine local);
 /* Invert matrix, rejecting singular/non-finite results; out is unchanged on failure. */
 bool fl_affine_inverse(Fl_Affine matrix, Fl_Affine *out);

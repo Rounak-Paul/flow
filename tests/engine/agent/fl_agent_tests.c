@@ -78,7 +78,7 @@ static void test_authoring(Fl_Agent *agent, Fl_Id scene)
     cJSON *error = NULL, *result;
     char request[2048];
     snprintf(request, sizeof(request),
-        "{\"label\":\"Intro\",\"ops\":[{\"op\":\"entity.create\",\"scene\":%llu,\"kind\":\"rectangle\",\"as\":\"$box\",\"props\":{\"name\":\"Box\",\"x\":100,\"y\":50,\"width\":200,\"height\":100,\"fill\":\"#ff0000\",\"rotation\":90}},{\"op\":\"entity.create\",\"scene\":%llu,\"kind\":\"text\",\"parent\":\"$box\",\"as\":\"$t\",\"props\":{\"name\":\"Title\",\"text\":\"Hello\",\"font_size\":64}},{\"op\":\"key.set\",\"entity\":\"$box\",\"property\":\"x\",\"at\":0,\"value\":100},{\"op\":\"key.set\",\"entity\":\"$box\",\"property\":\"x\",\"at\":2,\"value\":600,\"ease\":\"in_out\"},{\"op\":\"script.create\",\"name\":\"Drift\",\"source\":\"return { sample = function(ctx) local self=ctx.entity; local time=ctx.time.seconds;  self.transform.y = self.transform.y + 10 end }\",\"as\":\"$s\"},{\"op\":\"script.attach\",\"entity\":\"$t\",\"script\":\"$s\"}]}", (unsigned long long)scene, (unsigned long long)scene);
+        "{\"label\":\"Intro\",\"ops\":[{\"op\":\"entity.create\",\"scene\":%llu,\"kind\":\"rectangle\",\"as\":\"$box\",\"props\":{\"name\":\"Box\",\"x\":100,\"y\":50,\"width\":200,\"height\":100,\"fill\":\"#ff0000\",\"rotation\":90}},{\"op\":\"entity.create\",\"scene\":%llu,\"kind\":\"text\",\"parent\":\"$box\",\"as\":\"$t\",\"props\":{\"name\":\"Title\",\"text\":\"Hello\",\"font_size\":64}},{\"op\":\"key.set\",\"entity\":\"$box\",\"property\":\"x\",\"at\":0,\"value\":100},{\"op\":\"key.set\",\"entity\":\"$box\",\"property\":\"x\",\"at\":2,\"value\":600,\"ease\":\"in_out\"},{\"op\":\"script.create\",\"name\":\"Drift\",\"source\":\"return { sample = function(ctx) local self=ctx.entity; local time=ctx.time.seconds;  self.pose.y = self.pose.y + 10 end }\",\"as\":\"$s\"},{\"op\":\"script.attach\",\"entity\":\"$t\",\"script\":\"$s\"}]}", (unsigned long long)scene, (unsigned long long)scene);
     cJSON *args = json(request);
     result = fl_agent_call(agent, "apply_ops", args, &error);
     cJSON_Delete(args);
@@ -248,7 +248,7 @@ static void test_scripts(Fl_Agent *agent, Fl_Id scene)
     const double first = ids ? number(ids->child, "id") : 0, second = ids ? number(ids->child->next, "id") : 0;
     cJSON_Delete(result);
 
-    snprintf(request, sizeof(request), "{\"script\":\"Wobble\",\"source\":\"return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.transform.x = 10 * t end }\",\"attach\":[%.0f,%.0f]}",
+    snprintf(request, sizeof(request), "{\"script\":\"Wobble\",\"source\":\"return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.pose.x = 10 * t end }\",\"attach\":[%.0f,%.0f]}",
              first, second);
     result = call(agent, "set_script", request, &error);
     CHECK(result && !error);
@@ -544,10 +544,13 @@ static void test_history(const char *directory)
 /* Prototype assets use the generic source protocol, exact aliases, inspection and shared undo. */
 static void test_asset_sources(Fl_Agent *agent)
 {
-    unsigned char bytes[56]; fl_transform_encode(&(Fl_Transform){.width=100,.height=50,.scale_x=1,.scale_y=1},bytes);
-    Fl_Component transform={.type=FL_COMPONENT_TRANSFORM,.version=1,.id=1,.size=sizeof(bytes),.data=bytes};
-    Fl_Entity root={.id=1,.name="Template",.visible=true,.components=&transform,.component_count=1};
-    Fl_Prototype prototype={.root=1,.next_id=2,.next_component_id=2,.scope={.duration=120000,.entities=&root,.entity_count=1}};
+    unsigned char pose_bytes[FL_POSE_BYTES], bounds_bytes[FL_BOUNDS_BYTES];
+    fl_pose_encode(&(Fl_Pose){.sx=1,.sy=1,.sz=1},pose_bytes);
+    fl_bounds_encode(&(Fl_Bounds){100,50,0},bounds_bytes);
+    Fl_Component spatial[2]={{.type=FL_COMPONENT_BOUNDS,.version=1,.id=1,.size=sizeof(bounds_bytes),.data=bounds_bytes},
+        {.type=FL_COMPONENT_POSE,.version=1,.id=2,.size=sizeof(pose_bytes),.data=pose_bytes}};
+    Fl_Entity root={.id=1,.name="Template",.visible=true,.components=spatial,.component_count=2};
+    Fl_Prototype prototype={.root=1,.next_id=2,.next_component_id=3,.scope={.duration=120000,.entities=&root,.entity_count=1}};
     Fl_Json context={0}; cJSON *document=fl_prototype_write(&context,&prototype);
     char *source=document ? cJSON_PrintUnformatted(document) : NULL; cJSON_Delete(document); CHECK(source);
     if (!source) return;

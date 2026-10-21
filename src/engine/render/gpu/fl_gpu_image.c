@@ -120,6 +120,7 @@ Fl_GpuImages *fl_gpu_images_create(const Fl_GpuContext *context)
     return device;
 }
 VkDescriptorSetLayout fl_gpu_images_layout(const Fl_GpuImages *device) { return device ? device->layout : VK_NULL_HANDLE; }
+VkSampler fl_gpu_images_sampler(const Fl_GpuImages *device) { return device ? device->sampler : VK_NULL_HANDLE; }
 VkDescriptorSet fl_gpu_images_white(const Fl_GpuImages *device) { return device ? fl_gpu_image_descriptor(device->white) : VK_NULL_HANDLE; }
 VkDescriptorSet fl_gpu_image_descriptor(const Fl_GpuImage *image) { return image ? image->descriptor : VK_NULL_HANDLE; }
 void fl_gpu_image_destroy(Fl_GpuImage *image)

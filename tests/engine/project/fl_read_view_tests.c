@@ -30,7 +30,7 @@ int main(int argc, char **argv)
     Fl_Project *project=fl_project_create(argv[1],"Read view",NULL);
     CHECK(project); if (!project) return 1;
     Fl_Id scene=fl_project_scene_at(project,0)->id, entity=0, asset=0;
-    const char *source="return {sample=function(ctx) ctx.entity.transform.x=42; ctx.entity.text=string.rep('text',1000) end}";
+    const char *source="return {sample=function(ctx) ctx.entity.pose.x=42; ctx.entity.text=string.rep('text',1000) end}";
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_ADD,.scene=scene,.name="Text"},&entity));
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_COMPONENT_SET,.scene=scene,.entity=entity,
         .component={.type=FL_COMPONENT_TEXT,.version=1,.data=(const unsigned char *)"Original",.size=8}},NULL));
@@ -44,7 +44,7 @@ int main(int argc, char **argv)
     CHECK(view && fl_project_is_read_view(view) && !fl_project_is_read_view(project));
     CHECK(!fl_project_apply(view,&(Fl_Op){.kind=FL_OP_SCENE_REMOVE,.scene=scene},NULL));
     CHECK(!fl_project_edit_begin(view,"forbidden",false) && !fl_project_save(view) && fl_project_reload(view)==FL_RELOAD_INVALID);
-    const char *changed="return {sample=function(ctx) ctx.entity.transform.x=99 end}";
+    const char *changed="return {sample=function(ctx) ctx.entity.pose.x=99 end}";
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET, .source_kind=FL_ASSET_LUA,.asset =asset,.source=changed,.source_size=strlen(changed)},NULL));
     fl_project_destroy(project);
     if (view) {
@@ -55,7 +55,7 @@ int main(int argc, char **argv)
         Evaluation evaluation={.scene=frozen}; atomic_init(&evaluation.cancel,false);
         Fl_JobHandle job=fl_job_submit(jobs,&(Fl_JobDesc){.fn=evaluate,.data=&evaluation});
         CHECK(job.generation); fl_job_wait(jobs,job);
-        CHECK(evaluation.completed && evaluation.state.entities[0].transform.x==42 &&
+        CHECK(evaluation.completed && evaluation.state.entities[0].pose.x==42 &&
               evaluation.state.entities[0].text_size==4000);
         atomic_store(&evaluation.cancel,true);
         job=fl_job_submit(jobs,&(Fl_JobDesc){.fn=evaluate,.data=&evaluation});
@@ -64,13 +64,13 @@ int main(int argc, char **argv)
         atomic_store(&evaluation.cancel,false);
         job=fl_job_submit(jobs,&(Fl_JobDesc){.fn=evaluate,.data=&evaluation});
         CHECK(job.generation); fl_job_wait(jobs,job);
-        CHECK(evaluation.completed && evaluation.state.entities[0].transform.x==42);
+        CHECK(evaluation.completed && evaluation.state.entities[0].pose.x==42);
         Fl_Evaluation *session=fl_evaluation_create(jobs,view,scene); CHECK(session);
         CHECK(fl_evaluation_request(session,FL_TICKS_PER_SECOND)==FL_EVALUATION_PENDING);
         CHECK(!fl_evaluation_state(session));
         CHECK(fl_evaluation_wait(session,FL_TICKS_PER_SECOND));
         const Fl_SceneState *published=fl_evaluation_state(session);
-        CHECK(published && published->entities[0].transform.x==42 && published->entities[0].text_size==4000);
+        CHECK(published && published->entities[0].pose.x==42 && published->entities[0].text_size==4000);
         const char *published_text=published ? published->entities[0].text : NULL;
         CHECK(fl_evaluation_request(session,2*FL_TICKS_PER_SECOND)==FL_EVALUATION_PENDING);
         CHECK(fl_evaluation_state(session)==published && published_text && !strcmp(published_text,published->entities[0].text));

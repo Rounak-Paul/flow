@@ -9,9 +9,9 @@
 #include <string.h>
 
 /* Replace a local transform through the same atomic operation used by viewport gestures. */
-static bool transform(Fl_Project *project,Fl_Id scene,Fl_Id entity,Fl_Transform value)
+static bool transform(Fl_Project *project,Fl_Id scene,Fl_Id entity,Fl_Pose pose,Fl_Bounds bounds)
 {
-    Fl_TransformEdit edit={entity,value};
+    Fl_TransformEdit edit={entity,pose,bounds};
     return fl_project_apply(project,&(Fl_Op){.kind=FL_OP_TRANSFORMS,.scene=scene,.transforms=&edit,.transform_count=1},NULL);
 }
 /* Verify every registered primitive, schema validation and persisted representation. */
@@ -28,7 +28,7 @@ int main(int argc,char **argv)
         CHECK(fl_widget_create(p,scene,0,(Fl_WidgetKind)i,i*600,20,&ids[i]));
         const Fl_Entity *e=fl_scene_entity(fl_project_scene(p,scene),ids[i]);
         CHECK(fl_widget_for_entity(e)==def);
-        Fl_Transform t;CHECK(fl_transform_decode(fl_entity_component(e,FL_COMPONENT_TRANSFORM),&t));CHECK(t.x==i*600);
+        Fl_Pose t;CHECK(fl_pose_decode(fl_entity_component(e,FL_COMPONENT_POSE),&t));CHECK(t.x==i*600);
     }
     CHECK(!fl_widget_definition((Fl_WidgetKind)-1));CHECK(!fl_widget_create(p,scene,0,FL_WIDGET_RECTANGLE,NAN,0,NULL));
     const Fl_Scene *s=fl_project_scene(p,scene);size_t count=s->entity_count;
@@ -51,13 +51,13 @@ int main(int argc,char **argv)
     CHECK(fl_scene_geometry_pick(&geometry,fl_project_scene(p,scene),1201,21,0)==0);
     CHECK(fl_scene_geometry_pick(&geometry,fl_project_scene(p,scene),1320,140,0)==ids[FL_WIDGET_ELLIPSE]);
     Fl_Id child=0;CHECK(fl_widget_create(p,scene,ids[0],FL_WIDGET_RECTANGLE,10,10,&child));
-    CHECK(transform(p,scene,ids[0],(Fl_Transform){100,200,320,180,1.5707963267948966,2,2}));
+    CHECK(transform(p,scene,ids[0],(Fl_Pose){.x=100,.y=200,.rz=1.5707963267948966,.sx=2,.sy=2,.sz=1},(Fl_Bounds){320,180,0}));
     CHECK(fl_scene_geometry_update(&geometry,fl_project_scene(p,scene),NULL));
     CHECK(fl_scene_geometry_pick(&geometry,fl_project_scene(p,scene),60,240,0)==child);
     CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_ENTITY_VISIBLE,.scene=scene,.entity=ids[0],.visible=false},NULL));
     CHECK(fl_scene_geometry_update(&geometry,fl_project_scene(p,scene),NULL));
     CHECK(fl_scene_geometry_pick(&geometry,fl_project_scene(p,scene),60,240,0)==0);
-    CHECK(transform(p,scene,child,(Fl_Transform){0,0,100,100,0,0,1}));
+    CHECK(transform(p,scene,child,(Fl_Pose){.sy=1,.sz=1},(Fl_Bounds){100,100,0}));
     CHECK(fl_scene_geometry_update(&geometry,fl_project_scene(p,scene),NULL));
     const Fl_Scene *current=fl_project_scene(p,scene);const Fl_Entity *child_entity=fl_scene_entity(current,child);
     CHECK(!geometry.entities[child_entity-current->entities].invertible);

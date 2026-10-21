@@ -272,10 +272,11 @@ static cJSON *tool_evaluate_scene(Fl_Agent *a, const cJSON *args, cJSON **error)
             cJSON *writer=cJSON_AddObjectToObject(writers,property==FL_PROP_COUNT ? "text" : fl_property_name((Fl_AnimProperty)property));
             if (writer) {cJSON_AddItemToObject(writer,"component",agent_id_json(component)); cJSON_AddNumberToObject(writer,"layer",layer);}
         }
-        cJSON_AddNumberToObject(item, "x", v->transform.x); cJSON_AddNumberToObject(item, "y", v->transform.y);
-        cJSON_AddNumberToObject(item, "width", v->transform.width); cJSON_AddNumberToObject(item, "height", v->transform.height);
-        cJSON_AddNumberToObject(item, "rotation", v->transform.rotation * 180.0 / 3.14159265358979323846);
-        cJSON_AddNumberToObject(item, "scale_x", v->transform.scale_x); cJSON_AddNumberToObject(item, "scale_y", v->transform.scale_y);
+        cJSON_AddNumberToObject(item, "x", v->pose.x); cJSON_AddNumberToObject(item, "y", v->pose.y); cJSON_AddNumberToObject(item, "z", v->pose.z);
+        cJSON_AddNumberToObject(item, "width", v->bounds.width); cJSON_AddNumberToObject(item, "height", v->bounds.height); cJSON_AddNumberToObject(item, "depth", v->bounds.depth);
+        cJSON_AddNumberToObject(item, "rotation", v->pose.rz * 180.0 / 3.14159265358979323846);
+        cJSON_AddNumberToObject(item, "rx", v->pose.rx * 180.0 / 3.14159265358979323846); cJSON_AddNumberToObject(item, "ry", v->pose.ry * 180.0 / 3.14159265358979323846);
+        cJSON_AddNumberToObject(item, "scale_x", v->pose.sx); cJSON_AddNumberToObject(item, "scale_y", v->pose.sy); cJSON_AddNumberToObject(item, "scale_z", v->pose.sz);
         cJSON_AddNumberToObject(item, "opacity", v->opacity);
         double values[FL_PROP_COUNT][4]; fl_entity_state_values(v,values);
         cJSON *properties=cJSON_AddObjectToObject(item,"properties");

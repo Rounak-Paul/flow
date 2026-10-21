@@ -35,7 +35,7 @@ static void insert_centre(Fl_WidgetAction *action)
     Fl_SceneEdit *edit=action->library->edit;
     const Fl_Scene *scene=fl_project_scene(fl_scene_edit_project(edit),fl_scene_edit_scene(edit));
     const Fl_WidgetDef *def=fl_widget_definition(action->kind);
-    if (scene&&!fl_scene_edit_insert(edit,action->kind,0,(scene->width-def->transform.width)*.5,(scene->height-def->transform.height)*.5))
+    if (scene&&!fl_scene_edit_insert(edit,action->kind,0,(scene->width-def->bounds.width)*.5,(scene->height-def->bounds.height)*.5))
         FL_LOG_ERROR("widgets","could not insert %s",def->name);
 }
 /* Pointer presses use the enclosing drag handler; keyboard activation inserts directly. */

@@ -3,13 +3,22 @@
 #include "time/fl_time.h"
 #include "doc/fl_binary.h"
 
-/* Animatable entity properties. Colour values are sRGB 0..255 per channel; crop values are fractions of the source image. */
+/* Channel registry shared by animation, Lua, bake and native controls.
+   Identity is (component schema, channel). The enum is the registry index. */
 typedef enum Fl_AnimProperty {
-    FL_PROP_X, FL_PROP_Y, FL_PROP_WIDTH, FL_PROP_HEIGHT, FL_PROP_ROTATION, FL_PROP_SCALE_X, FL_PROP_SCALE_Y,
+    FL_PROP_X, FL_PROP_Y, FL_PROP_Z, FL_PROP_RX, FL_PROP_RY, FL_PROP_RZ,
+    FL_PROP_SCALE_X, FL_PROP_SCALE_Y, FL_PROP_SCALE_Z, FL_PROP_PIVOT_X, FL_PROP_PIVOT_Y, FL_PROP_PIVOT_Z,
+    FL_PROP_WIDTH, FL_PROP_HEIGHT, FL_PROP_DEPTH,
     FL_PROP_OPACITY, FL_PROP_FILL, FL_PROP_STROKE, FL_PROP_STROKE_WIDTH, FL_PROP_FONT_SIZE,
     FL_PROP_CROP_X, FL_PROP_CROP_Y, FL_PROP_CROP_W, FL_PROP_CROP_H, FL_PROP_RADIUS, FL_PROP_BLUR, FL_PROP_GRADIENT_ANGLE,
-    FL_PROP_SHADOW_BLUR, FL_PROP_SHADOW_X, FL_PROP_SHADOW_Y, FL_PROP_GRADIENT_TO, FL_PROP_SHADOW_COLOR, FL_PROP_MEDIA_TIME, FL_PROP_COUNT
+    FL_PROP_SHADOW_BLUR, FL_PROP_SHADOW_X, FL_PROP_SHADOW_Y, FL_PROP_GRADIENT_TO, FL_PROP_SHADOW_COLOR, FL_PROP_MEDIA_TIME,
+    FL_PROP_FOV, FL_PROP_NEAR, FL_PROP_FAR, FL_PROP_EXPOSURE, FL_PROP_ORTHO,
+    FL_PROP_ROUGHNESS, FL_PROP_METALLIC, FL_PROP_EMISSIVE,
+    FL_PROP_INTENSITY, FL_PROP_RANGE, FL_PROP_SPOT_ANGLE, FL_PROP_LIGHT_COLOR,
+    FL_PROP_EMIT_RATE, FL_PROP_LIFE, FL_PROP_PARTICLE_SIZE, FL_PROP_SPEED, FL_PROP_PARTICLE_COLOR,
+    FL_PROP_BLOOM, FL_PROP_COUNT
 } Fl_AnimProperty;
+#define FL_PROP_ROTATION FL_PROP_RZ
 /* Interpolation from a keyframe towards the next one. */
 typedef enum Fl_Ease { FL_EASE_LINEAR, FL_EASE_IN, FL_EASE_OUT, FL_EASE_IN_OUT, FL_EASE_HOLD, FL_EASE_COUNT } Fl_Ease;
 typedef struct Fl_Keyframe {
@@ -21,13 +30,14 @@ typedef struct Fl_Keyframe {
 /* One property of one entity driven by keyframes (at most one track per entity/property). */
 typedef struct Fl_Track {
     Fl_Id id, entity;
-    Fl_AnimProperty property;
+    uint64_t component;         /* schema that owns the channel */
+    Fl_AnimProperty property;   /* channel index in the registry */
     Fl_Keyframe *keys;
     size_t key_count, key_capacity;
 } Fl_Track;
 
 /* Wire and in-memory schema version of the animation component. */
-#define FL_ANIMATION_VERSION 4u
+#define FL_ANIMATION_VERSION 5u
 
 /* Entity-owned keyframe tracks, at most one per property. */
 typedef struct Fl_Animation {

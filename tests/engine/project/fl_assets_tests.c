@@ -276,7 +276,7 @@ static void test_resource_snapshot(const char *root)
     CHECK(fl_asset_record(project,&stored,"Picture",&asset)==FL_IMPORT_ADDED);
     CHECK(fl_widget_create_image(project,scene,0,asset,0,0,3,2,&entity));
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_REMOVE,.scene=scene,.entity=entity},NULL));
-    char generator[1024]; snprintf(generator,sizeof(generator),"return {build=function(ctx)return {version=1,root=1,next_id=2,next_component_id=3,duration=120000,beats={},clips={},entities={{id=1,parent=0,name='Generated image',visible=true,components={{id=1,type='transform',version=1,x=0,y=0,width=3,height=2,rotation=0,scale_x=1,scale_y=1},{id=2,type='image',version=1,asset='%llu'}}}}} end}",(unsigned long long)asset);
+    char generator[2048]; snprintf(generator,sizeof(generator),"return {build=function(ctx)return {version=1,root=1,next_id=2,next_component_id=4,duration=120000,beats={},clips={},entities={{id=1,parent=0,name='Generated image',visible=true,components={{id=1,type='pose',version=1,x=0,y=0,z=0,rx=0,ry=0,rz=0,scale_x=1,scale_y=1,scale_z=1,pivot_x=0,pivot_y=0,pivot_z=0},{id=2,type='bounds',version=1,width=3,height=2,depth=0},{id=3,type='image',version=1,asset='%llu'}}}}} end}",(unsigned long long)asset);
     Fl_Id module=0;
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET,.source_kind=FL_ASSET_LUA,.name="Image generator",.source=generator,.source_size=strlen(generator)},&module));
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_ADD,.scene=scene,.name="Generator"},&entity));

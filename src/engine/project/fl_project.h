@@ -89,7 +89,7 @@ typedef enum Fl_OpKind {
     FL_OP_RESTORE /* notification kind only: scenes were replaced by fl_project_restore; never a valid operation */
 } Fl_OpKind;
 /* One local transform replacement in an atomic selection gesture. */
-typedef struct Fl_TransformEdit { Fl_Id entity; Fl_Transform transform; } Fl_TransformEdit;
+typedef struct Fl_TransformEdit { Fl_Id entity; Fl_Pose pose; Fl_Bounds bounds; } Fl_TransformEdit;
 /* Operations reference stable ids; position is a scene/entity array insertion index. Borrowed document pointers
    expire after mutation/cancellation; retain ids and reacquire views after an attempted changeset. */
 typedef struct Fl_Op {

@@ -1,4 +1,5 @@
 #include "fl_animation.h"
+#include "schema/fl_properties.h"
 #include "project/fl_project.h"
 #include <math.h>
 #include <stdlib.h>
@@ -43,12 +44,13 @@ Fl_Animation *fl_animation_clone(const Fl_Animation *a)
 bool fl_animation_valid(const Fl_Animation *a)
 {
     if (!a || a->track_count > FL_PROP_COUNT) return false;
-    uint32_t properties = 0;
+    unsigned char seen[FL_PROP_COUNT] = {0};
     for (size_t i = 0; i < a->track_count; ++i) {
         const Fl_Track *t = &a->tracks[i];
-        if (!t->id || !t->entity || t->property < 0 || t->property >= FL_PROP_COUNT ||
-            !t->key_count || t->key_count > t->key_capacity || !t->keys || (properties & (1u << t->property))) return false;
-        properties |= 1u << t->property;
+        const Fl_PropertyDef *definition = t->property >= 0 && t->property < FL_PROP_COUNT ? fl_property_definition(t->property) : NULL;
+        if (!t->id || !t->entity || !definition || t->component != definition->component_type ||
+            !t->key_count || t->key_count > t->key_capacity || !t->keys || seen[t->property]) return false;
+        seen[t->property] = 1;
         for (size_t k = 0; k < t->key_count; ++k)
             if (!t->keys[k].id || !fl_time_anchor_valid(&t->keys[k].at) || t->keys[k].ease < 0 || t->keys[k].ease >= FL_EASE_COUNT ||
                 !fl_property_value_valid(t->property, t->keys[k].value)) return false;
@@ -66,7 +68,7 @@ static void write_tracks(const Fl_Animation *a, Fl_Binary *b)
     fl_binary_u64(b, a->track_count);
     for (size_t i = 0; i < a->track_count; ++i) {
         const Fl_Track *t = &a->tracks[i];
-        fl_binary_u64(b, t->id); fl_binary_u64(b, t->property); fl_binary_u64(b, t->key_count);
+        fl_binary_u64(b, t->id); fl_binary_u64(b, t->component); fl_binary_u64(b, t->property); fl_binary_u64(b, t->key_count);
         for (size_t k = 0; k < t->key_count; ++k) {
             const Fl_Keyframe *key = &t->keys[k];
             fl_binary_u64(b, key->id); fl_time_anchor_write(&key->at, b);
@@ -84,9 +86,9 @@ static bool read_tracks(Fl_Animation *a, Fl_Binary *b)
     for (size_t i = 0; i < count && !b->failed; ++i) {
         Fl_Track *t = &a->tracks[a->track_count++];
         t->id = fl_binary_get_u64(b);
-        uint64_t property = fl_binary_get_u64(b), keys = fl_binary_get_u64(b);
+        uint64_t component = fl_binary_get_u64(b), property = fl_binary_get_u64(b), keys = fl_binary_get_u64(b);
         if (b->failed || property >= FL_PROP_COUNT || keys > SIZE_MAX / sizeof(Fl_Keyframe) || keys > (b->size - b->cursor) / 88) {b->failed = true; break;}
-        t->property = (Fl_AnimProperty)property;
+        t->component = component; t->property = (Fl_AnimProperty)property;
         t->keys = keys ? calloc((size_t)keys, sizeof(*t->keys)) : NULL;
         if (keys && !t->keys) {b->failed = true; break;}
         t->key_count = t->key_capacity = (size_t)keys;

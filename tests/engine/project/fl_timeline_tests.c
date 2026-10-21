@@ -168,17 +168,19 @@ int main(int argc, char **argv)
     CHECK(fl_scene_state_update(&state, s, SECOND / 2) && fl_scene_geometry_update(&geometry, s, &state));
     const Fl_Entity *e = fl_scene_entity(s, box);
     size_t index = (size_t)(e - s->entities);
-    CHECK(fabs(state.entities[index].transform.x - 50) < 1e-9 && state.entities[index].appearance.fill[0] >= 186);
+    CHECK(fabs(state.entities[index].pose.x - 50) < 1e-9 && state.entities[index].appearance.fill[0] >= 186);
     CHECK(fabs(geometry.entities[index].opacity - 0.25) < 1e-9 && geometry.animated && geometry.tick == SECOND / 2);
-    CHECK(fl_scene_geometry_update(&geometry, s, NULL) && geometry.entities[index].local.x == 10 && !geometry.animated);
+    CHECK(fl_scene_geometry_update(&geometry, s, NULL) && geometry.entities[index].pose.x == 10 && !geometry.animated);
 
     /* Keyed edits: animated channels become keys at the tick, others change the base. */
-    Fl_Transform moved = state.entities[index].transform; moved.x = 70; moved.y = 33; moved.width = 400;
-    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_TRANSFORMS, .scene = scene, .transforms = &(Fl_TransformEdit){box, moved},
+    Fl_Pose moved = state.entities[index].pose; moved.x = 70; moved.y = 33;
+    Fl_Bounds moved_bounds = state.entities[index].bounds; moved_bounds.width = 400;
+    Fl_TransformEdit moved_edit = {box, moved, moved_bounds};
+    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_TRANSFORMS, .scene = scene, .transforms = &moved_edit,
         .transform_count = 1, .keyed = true, .tick = SECOND / 2}, NULL));
     s = fl_project_scene(p, scene); e = fl_scene_entity(s, box);
-    Fl_Transform base; fl_transform_decode(fl_entity_component(e, FL_COMPONENT_TRANSFORM), &base);
-    CHECK(base.x == 10 && base.width == 400 && fl_scene_track(s, box, FL_PROP_X)->key_count == 3 && sample(p, scene, box, FL_PROP_X, SECOND / 2) == 70);
+    Fl_Pose base; fl_pose_decode(fl_entity_component(e, FL_COMPONENT_POSE), &base);
+    CHECK(base.x == 10 && fl_entity_bounds(e).width == 400 && fl_scene_track(s, box, FL_PROP_X)->key_count == 3 && sample(p, scene, box, FL_PROP_X, SECOND / 2) == 70);
     CHECK(fl_scene_track(s, box, FL_PROP_Y)->key_count == 2 && base.y == 20);
     unsigned char alpha[8]; fl_opacity_encode(0.9, alpha);
     Fl_Component opacity = {.type = FL_COMPONENT_OPACITY, .version = 1, .size = 8, .data = alpha};

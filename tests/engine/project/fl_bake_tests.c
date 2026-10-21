@@ -28,7 +28,7 @@ int main(int argc, char **argv)
     if (!project) return FLOW_TEST_RESULT("fl_bake_tests");
     Fl_Id scene=fl_project_scene_at(project,0)->id,entity=0,asset=0;
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_ADD,.scene=scene,.name="Motion"},&entity));
-    const char *source="return {outputs={self={x='replace'}},sample=function(ctx) ctx.entity.transform.x=ctx.time.seconds*20 end}";
+    const char *source="return {outputs={self={x='replace'}},sample=function(ctx) ctx.entity.pose.x=ctx.time.seconds*20 end}";
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET,.source_kind=FL_ASSET_LUA,.name="Motion",.source=source,.source_size=strlen(source)},&asset));
     Fl_Component script={0}; CHECK(fl_script_encode(&(Fl_Script){.script=asset,.enabled=true},&script));
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_COMPONENT_SET,.scene=scene,.entity=entity,.component=script},NULL)); fl_component_clear(&script);
@@ -45,7 +45,7 @@ int main(int argc, char **argv)
     for (unsigned k=0;k<5;++k) {
         CHECK(fl_scene_state_update(&original,fl_project_scene(project,scene),(Fl_Tick)k*24000));
         const Fl_Scene *flat=fl_scene_state_scene(&original,fl_project_scene(project,scene)); unsigned index=0;
-        for (size_t i=0;i<flat->entity_count;++i) if (!strcmp(flat->entities[i].name,"Motion") && index<2) expected[k][index++]=original.entities[i].transform.x;
+        for (size_t i=0;i<flat->entity_count;++i) if (!strcmp(flat->entities[i].name,"Motion") && index<2) expected[k][index++]=original.entities[i].pose.x;
         CHECK(index==2);
     }
     fl_scene_state_clear(&original);
@@ -58,13 +58,13 @@ int main(int argc, char **argv)
     Fl_SceneState state={0}; CHECK(fl_scene_state_update(&state,fl_project_scene(project,scene),60000));
     const Fl_Scene *flat=fl_scene_state_scene(&state,fl_project_scene(project,scene)); bool found=false;
     for (size_t i=0;i<flat->entity_count;++i) if (!strcmp(flat->entities[i].name,"Motion")) {
-        found=true; CHECK(fabs(state.entities[i].transform.x-10)<0.001 || fabs(state.entities[i].transform.x)<0.001); CHECK(!fl_entity_component(&flat->entities[i],FL_COMPONENT_SCRIPT));
+        found=true; CHECK(fabs(state.entities[i].pose.x-10)<0.001 || fabs(state.entities[i].pose.x)<0.001); CHECK(!fl_entity_component(&flat->entities[i],FL_COMPONENT_SCRIPT));
     }
     CHECK(found);
     for (unsigned k=0;k<5;++k) {
         CHECK(fl_scene_state_update(&state,fl_project_scene(project,scene),(Fl_Tick)k*24000));
         flat=fl_scene_state_scene(&state,fl_project_scene(project,scene)); unsigned index=0;
-        for (size_t i=0;i<flat->entity_count;++i) if (!strcmp(flat->entities[i].name,"Motion") && index<2) CHECK(fabs(state.entities[i].transform.x-expected[k][index++])<0.001);
+        for (size_t i=0;i<flat->entity_count;++i) if (!strcmp(flat->entities[i].name,"Motion") && index<2) CHECK(fabs(state.entities[i].pose.x-expected[k][index++])<0.001);
         CHECK(index==2);
     }
     fl_scene_state_clear(&state); CHECK(fl_project_save(project));

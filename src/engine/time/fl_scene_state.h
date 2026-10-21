@@ -1,13 +1,22 @@
 #pragma once
 #include "schema/fl_widgets.h"
 #include "components/fl_style.h"
+#include "components/fl_spatial.h"
 #include <stdatomic.h>
 #include "scripting/fl_script_runtime.h"
 
 /* Evaluated per-entity values at one scene time (base components overridden by tracks). */
 typedef struct Fl_EntityState {
     Fl_Tick local_tick;         /* source scope tick, used by native media */
-    Fl_Transform transform;
+    Fl_Pose pose;
+    Fl_Bounds bounds;
+    Fl_Camera camera;
+    Fl_Material material;
+    Fl_Light light;
+    Fl_Particles particles;
+    Fl_Post post;
+    Fl_MeshShape mesh;
+    bool has_camera, has_mesh, has_material, has_light, has_particles, has_post;
     Fl_Appearance appearance;
     Fl_Style style;
     double media_seconds;       /* -1 follows the native video placement clock */

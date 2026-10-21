@@ -60,10 +60,10 @@ bool fl_prototype_capture(Fl_Project *project, Fl_Id scene_id, Fl_Id root, const
             if (entity->id>max_id) max_id=entity->id;
             for (size_t j=0;j<entity->component_count;++j) if (entity->components[j].id>max_component) max_component=entity->components[j].id;
             if (entity->id==root) {
-                Fl_Component *component=(Fl_Component *)fl_entity_component(entity,FL_COMPONENT_TRANSFORM); Fl_Transform transform;
-                if (!fl_transform_decode(component,&transform)) {ok=false; break;}
-                transform.x=transform.y=transform.rotation=0; transform.scale_x=transform.scale_y=1;
-                fl_transform_encode(&transform,(unsigned char *)component->data);
+                Fl_Component *component=(Fl_Component *)fl_entity_component(entity,FL_COMPONENT_POSE); Fl_Pose pose;
+                if (!component || component->size!=FL_POSE_BYTES || !fl_pose_decode(component,&pose)) {ok=false; break;}
+                pose.x=pose.y=pose.z=pose.rx=pose.ry=pose.rz=0; pose.sx=pose.sy=pose.sz=1;
+                fl_pose_encode(&pose,(unsigned char *)component->data);
             }
         }
     }
@@ -84,16 +84,19 @@ bool fl_prototype_instantiate(Fl_Project *project, Fl_Id scene, Fl_Id parent, Fl
     if (!asset || asset->kind!=FL_ASSET_PROTOTYPE || !entity || !isfinite(x) || !isfinite(y)) return false;
     Fl_Json context={0}; Fl_Prototype prototype={0};
     if (!fl_prototype_read(&context,asset->source,(size_t)asset->size,&prototype)) return false;
-    const Fl_Entity *root=fl_scene_entity(&prototype.scope,prototype.root); Fl_Transform shape;
-    bool ok=root && fl_transform_decode(fl_entity_component(root,FL_COMPONENT_TRANSFORM),&shape);
-    unsigned char bytes[56]; Fl_Component components[2]={0};
+    const Fl_Entity *root=fl_scene_entity(&prototype.scope,prototype.root); Fl_Bounds box={0};
+    bool ok=root && fl_entity_component(root,FL_COMPONENT_POSE);
+    if (ok) box=fl_entity_bounds(root);
+    unsigned char bytes[FL_POSE_BYTES], bound_bytes[FL_BOUNDS_BYTES]; Fl_Component components[3]={0};
     if (ok) {
-        Fl_Transform transform={.x=x,.y=y,.width=shape.width,.height=shape.height,.scale_x=1,.scale_y=1}; fl_transform_encode(&transform,bytes);
-        components[0]=(Fl_Component){.type=FL_COMPONENT_TRANSFORM,.version=1,.size=sizeof(bytes),.data=bytes};
-        ok=fl_prototype_instance_encode(&(Fl_PrototypeInstance){.asset=asset_id},&components[1]);
+        Fl_Pose pose=fl_pose_identity(); pose.x=x; pose.y=y;
+        fl_pose_encode(&pose,bytes); fl_bounds_encode(&box,bound_bytes);
+        components[0]=(Fl_Component){.type=FL_COMPONENT_POSE,.version=1,.size=FL_POSE_BYTES,.data=bytes};
+        components[1]=(Fl_Component){.type=FL_COMPONENT_BOUNDS,.version=1,.size=FL_BOUNDS_BYTES,.data=bound_bytes};
+        ok=fl_prototype_instance_encode(&(Fl_PrototypeInstance){.asset=asset_id},&components[2]);
     }
-    if (ok) ok=fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_ADD,.scene=scene,.parent=parent,.name=asset->name,.components=components,.component_count=2},entity);
-    fl_component_clear(&components[1]); fl_prototype_clear(&prototype); return ok;
+    if (ok) ok=fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_ADD,.scene=scene,.parent=parent,.name=asset->name,.components=components,.component_count=3},entity);
+    fl_component_clear(&components[2]); fl_prototype_clear(&prototype); return ok;
 }
 
 bool fl_prototype_set_overrides(Fl_Project *project, Fl_Id scene_id, Fl_Id entity_id, const char *overrides, size_t size)

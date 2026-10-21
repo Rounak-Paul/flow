@@ -30,7 +30,7 @@ bool fl_timeline_load(Fl_Scene *scene, Fl_Binary *stream);
    Returns SIZE_MAX for invalid/duplicate input components.
    Scratch byte arrays remain borrowed by rewritten components until the caller commits them. */
 size_t fl_keyed_components(const Fl_Scene *scene, const Fl_Entity *entity, Fl_Component *components, size_t count,
-                            unsigned char transform[56], unsigned char appearance[24], unsigned char opacity[8], unsigned char style[91],
+                            unsigned char pose[FL_POSE_BYTES], unsigned char bounds[FL_BOUNDS_BYTES], unsigned char appearance[24], unsigned char opacity[8], unsigned char style[91],
                             Fl_KeyWrite *writes, Fl_Tick tick);
 
 /* Whether a proposed native key value differs from the track sample at tick. */

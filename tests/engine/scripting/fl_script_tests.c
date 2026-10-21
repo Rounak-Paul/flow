@@ -39,7 +39,7 @@ static double sample(Fl_SceneState *state, const Fl_Scene *scene, Fl_Id entity, 
     CHECK(fl_scene_state_update(state, scene, tick));
     const Fl_Entity *e = fl_scene_entity(scene, entity);
     CHECK(e != NULL);
-    return e ? state->entities[e - scene->entities].transform.x : 0;
+    return e ? state->entities[e - scene->entities].pose.x : 0;
 }
 
 /* Runtime errors, budgets and invalid outputs retain all evaluated base values. */
@@ -57,7 +57,7 @@ static void repository(Fl_Project *project, Fl_Id scene_id, const char *director
     const Fl_Scene *scene = fl_project_scene(project, scene_id);
     Fl_Id one = 0, two = 0, counter = 0, other = 0;
     CHECK(fl_widget_create(project, scene_id, 0, FL_WIDGET_RECTANGLE, 0, 0, &one) && fl_widget_create(project, scene_id, 0, FL_WIDGET_RECTANGLE, 0, 0, &two));
-    const char *source = "return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.transform.x = self.transform.x + 10 * t end }";
+    const char *source = "return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.pose.x = self.pose.x + 10 * t end }";
     CHECK(!fl_project_apply(project, &(Fl_Op){.kind = FL_OP_ASSET_SOURCE_SET, .source_kind=FL_ASSET_LUA, .scene = scene_id, .name = "Counter"}, &counter));
     CHECK(!fl_project_apply(project, &(Fl_Op){.kind = FL_OP_ASSET_SOURCE_SET, .source_kind=FL_ASSET_LUA, .scene = scene_id, .source = source, .source_size = strlen(source)}, &counter));
     CHECK(!fl_project_apply(project, &(Fl_Op){.kind = FL_OP_ASSET_SOURCE_SET, .source_kind=FL_ASSET_LUA, .scene = scene_id, .name = "", .source = source, .source_size = strlen(source)}, &counter));
@@ -82,11 +82,11 @@ static void repository(Fl_Project *project, Fl_Id scene_id, const char *director
     Fl_SceneState state = {0};
     CHECK(fl_scene_state_update(&state, scene, SECOND));
     const size_t first = (size_t)(fl_scene_entity(scene, one) - scene->entities), second_index = (size_t)(fl_scene_entity(scene, two) - scene->entities);
-    CHECK(state.entities[first].transform.x == 10 && state.entities[second_index].transform.x == 10);
-    const char *faster = "return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.transform.x = 100 * t end }";
+    CHECK(state.entities[first].pose.x == 10 && state.entities[second_index].pose.x == 10);
+    const char *faster = "return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.pose.x = 100 * t end }";
     CHECK(fl_project_apply(project, &(Fl_Op){.kind = FL_OP_ASSET_SOURCE_SET, .source_kind=FL_ASSET_LUA, .scene = scene_id, .asset = counter, .source = faster, .source_size = strlen(faster)}, NULL));
     CHECK(fl_scene_state_update(&state, scene, SECOND));
-    CHECK(state.entities[first].transform.x == 100 && state.entities[second_index].transform.x == 100);
+    CHECK(state.entities[first].pose.x == 100 && state.entities[second_index].pose.x == 100);
     CHECK(fl_project_apply(project, &(Fl_Op){.kind = FL_OP_ASSET_SOURCE_SET, .source_kind=FL_ASSET_LUA, .scene = scene_id, .asset = counter, .name = "Ramp"}, NULL));
     CHECK(fl_project_asset_named(scene->project, FL_ASSET_LUA, "Ramp") && !fl_project_asset_named(scene->project, FL_ASSET_LUA, "Counter") && fl_scene_script_uses(scene, counter) == 2);
     CHECK(fl_project_save(project));
@@ -123,7 +123,7 @@ static void instances(const char *directory)
     Fl_Project *project=fl_project_create(dir,"Instances",NULL); CHECK(project); if (!project) return;
     Fl_Id scene_id=fl_project_scene_at(project,0)->id, entity=0, x=0, y=0, first=0, second=0;
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_ADD,.scene=scene_id,.name="Object"},&entity));
-    const char *sx="return { outputs={self={x='replace'}}, sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.transform.x=10*t end }", *sy="return { outputs={self={y='replace'}}, sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.transform.y=20*t end }";
+    const char *sx="return { outputs={self={x='replace'}}, sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.pose.x=10*t end }", *sy="return { outputs={self={y='replace'}}, sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.pose.y=20*t end }";
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET, .source_kind=FL_ASSET_LUA,.name="X",.source=sx,.source_size=strlen(sx)},&x));
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET, .source_kind=FL_ASSET_LUA,.name="Y",.source=sy,.source_size=strlen(sy)},&y));
     Fl_Component component={0};
@@ -133,19 +133,19 @@ static void instances(const char *directory)
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_COMPONENT_SET,.scene=scene_id,.entity=entity,.component=component},&second)); fl_component_clear(&component);
     CHECK(first && second && first!=second);
     Fl_SceneState state={0}; const Fl_Scene *scene=fl_project_scene(project,scene_id);
-    CHECK(fl_scene_state_update(&state,scene,SECOND)); CHECK(state.entities[0].transform.x==10 && state.entities[0].transform.y==20);
-    Fl_Id transform=fl_entity_component(fl_scene_entity(scene,entity),FL_COMPONENT_TRANSFORM)->id;
-    unsigned char bytes[56]; fl_transform_encode(&(Fl_Transform){.x=50,.width=100,.height=100,.scale_x=1,.scale_y=1},bytes);
-    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_COMPONENT_SET,.scene=scene_id,.entity=entity,.component={.type=FL_COMPONENT_TRANSFORM,.version=1,.size=56,.data=bytes}},NULL));
-    CHECK(fl_entity_component(fl_scene_entity(scene,entity),FL_COMPONENT_TRANSFORM)->id==transform);
+    CHECK(fl_scene_state_update(&state,scene,SECOND)); CHECK(state.entities[0].pose.x==10 && state.entities[0].pose.y==20);
+    Fl_Id transform=fl_entity_component(fl_scene_entity(scene,entity),FL_COMPONENT_POSE)->id;
+    unsigned char bytes[FL_POSE_BYTES]; fl_pose_encode(&(Fl_Pose){.x=50,.sx=1,.sy=1,.sz=1},bytes);
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_COMPONENT_SET,.scene=scene_id,.entity=entity,.component={.type=FL_COMPONENT_POSE,.version=1,.size=FL_POSE_BYTES,.data=bytes}},NULL));
+    CHECK(fl_entity_component(fl_scene_entity(scene,entity),FL_COMPONENT_POSE)->id==transform);
     CHECK(fl_project_save(project)); fl_scene_state_clear(&state); fl_project_destroy(project);
     project=fl_project_open(dir,NULL); CHECK(project); if (!project) return;
     scene=fl_project_scene(project,scene_id); const Fl_Entity *owner=fl_scene_entity(scene,entity);
     CHECK(fl_entity_component_instance(owner,first) && fl_entity_component_instance(owner,second));
-    CHECK(fl_scene_state_update(&state,scene,SECOND)); CHECK(state.entities[0].transform.x==10 && state.entities[0].transform.y==20);
+    CHECK(fl_scene_state_update(&state,scene,SECOND)); CHECK(state.entities[0].pose.x==10 && state.entities[0].pose.y==20);
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_COMPONENT_REMOVE,.scene=scene_id,.entity=entity,.component.id=first},NULL));
     CHECK(!fl_entity_component_instance(fl_scene_entity(scene,entity),first) && fl_entity_component_instance(fl_scene_entity(scene,entity),second));
-    CHECK(fl_scene_state_update(&state,scene,SECOND)); CHECK(state.entities[0].transform.x==50 && state.entities[0].transform.y==20);
+    CHECK(fl_scene_state_update(&state,scene,SECOND)); CHECK(state.entities[0].pose.x==50 && state.entities[0].pose.y==20);
     fl_scene_state_clear(&state); fl_project_destroy(project);
 }
 
@@ -157,7 +157,7 @@ static void retiming(const char *directory)
     Fl_Id scene_id=fl_project_scene_at(project,0)->id, before=fl_project_scene_at(project,0)->beats[0].id, beat=0, entity=0, asset=0, attachment=0;
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_BEAT_ADD,.scene=scene_id,.name="Effect",.position=1,.beat_duration=3*SECOND},&beat));
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_ADD,.scene=scene_id,.name="Motion"},&entity));
-    const char *source="return {parameters={distance={type='number',default=100,min=0,max=1000}},sample=function(ctx) ctx.entity.transform.x=ctx.params.distance*ctx.time.progress end}";
+    const char *source="return {parameters={distance={type='number',default=100,min=0,max=1000}},sample=function(ctx) ctx.entity.pose.x=ctx.params.distance*ctx.time.progress end}";
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET, .source_kind=FL_ASSET_LUA,.name="Entrance",.source=source,.source_size=strlen(source)},&asset));
     Fl_Script script={.script=asset,.enabled=true,.time=fl_time_mapping_default(),.parameters="{\"distance\":200}",.parameters_size=16};
     script.time.explicit_range=true; script.time.start=(Fl_TimeAnchor){.kind=FL_ANCHOR_BEAT,.beat=beat,.end=false,.offset=0}; script.time.end=(Fl_TimeAnchor){.kind=FL_ANCHOR_BEAT,.beat=beat,.end=true,.offset=0}; script.time.duration=SECOND;
@@ -197,9 +197,9 @@ static void simulation(const char *root)
         "local hidden=0; return {step_hz=60,"
         "initialize=function(ctx) ctx.state={x=0,count=0,input=0,random=0,integer=9223372036854775807,buffer='a\\0b'} end,"
         "step=function(ctx) hidden=hidden+1; local s=ctx.state; s.hidden=hidden; s.x=s.x+ctx.time.dt*10; s.count=s.count+1;"
-        "s.input=s.input+ctx.entity.transform.y*ctx.time.dt; s.random=s.random+math.random() end,"
-        "sample=function(ctx) local s=ctx.state; ctx.entity.transform.x=s.x; ctx.entity.transform.y=s.count;"
-        "ctx.entity.transform.width=s.input; ctx.entity.transform.height=s.hidden or 0;"
+        "s.input=s.input+ctx.entity.pose.y*ctx.time.dt; s.random=s.random+math.random() end,"
+        "sample=function(ctx) local s=ctx.state; ctx.entity.pose.x=s.x; ctx.entity.pose.y=s.count;"
+        "ctx.entity.bounds.width=s.input; ctx.entity.bounds.height=s.hidden or 0;"
         "ctx.entity.opacity=s.random/(ctx.time.step+1); ctx.entity.text=tostring(s.integer)..s.buffer; s.x=999999 end}";
     CHECK(script(project,scene_id,entity,source,true));
     const Fl_Scene *scene=fl_project_scene(project,scene_id);
@@ -214,21 +214,21 @@ static void simulation(const char *root)
         "local hidden=0; return {step_hz=60,"
         "initialize=function(ctx) ctx.state={x=0,count=0,input=0,random=0,integer=9223372036854775807,buffer='a\\0b'} end,"
         "step=function(ctx) hidden=hidden+1; local s=ctx.state; s.hidden=hidden; s.x=s.x+ctx.time.dt*10; s.count=s.count+1;"
-        "s.input=s.input+ctx.entity.transform.y*ctx.time.dt; s.random=s.random+math.random() end,"
-        "sample=function(ctx) local s=ctx.state; assert(#s.buffer==3); ctx.entity.transform.x=s.x; ctx.entity.transform.y=s.count;"
-        "ctx.entity.transform.width=s.input; ctx.entity.transform.height=s.hidden or 0;"
+        "s.input=s.input+ctx.entity.pose.y*ctx.time.dt; s.random=s.random+math.random() end,"
+        "sample=function(ctx) local s=ctx.state; assert(#s.buffer==3); ctx.entity.pose.x=s.x; ctx.entity.pose.y=s.count;"
+        "ctx.entity.bounds.width=s.input; ctx.entity.bounds.height=s.hidden or 0;"
         "ctx.entity.opacity=s.random/(ctx.time.step+1); ctx.entity.text=tostring(s.integer); s.x=999999 end}";
     CHECK(script(project,scene_id,entity,source,true));
     CHECK(fabs(sample(&state,scene,entity,SECOND)-10)<1e-10);
-    CHECK(state.entities[0].transform.y==60 && state.entities[0].transform.height==1 && fabs(state.entities[0].transform.width-3.05)<1e-10);
+    CHECK(state.entities[0].pose.y==60 && state.entities[0].bounds.height==1 && fabs(state.entities[0].bounds.width-3.05)<1e-10);
     CHECK(state.entities[0].text_override && !strcmp(state.entities[0].text,"9223372036854775807"));
     Fl_Tick times[]={2*SECOND,4*SECOND,SECOND/2,3*SECOND+SECOND/4,0,SECOND,4*SECOND,SECOND/3};
     for (size_t i=0;i<sizeof(times)/sizeof(*times);++i) {
         Fl_SceneState fresh={0};
         double warm=sample(&state,scene,entity,times[i]), cold=sample(&fresh,scene,entity,times[i]);
         CHECK(fabs(warm-cold)<1e-10 && fabs(warm-(double)(times[i]/2000)/6)<1e-10);
-        CHECK(fabs(state.entities[0].transform.width-fresh.entities[0].transform.width)<1e-10 &&
-              state.entities[0].opacity==fresh.entities[0].opacity && state.entities[0].transform.y==fresh.entities[0].transform.y);
+        CHECK(fabs(state.entities[0].bounds.width-fresh.entities[0].bounds.width)<1e-10 &&
+              state.entities[0].opacity==fresh.entities[0].opacity && state.entities[0].pose.y==fresh.entities[0].pose.y);
         fl_scene_state_clear(&fresh);
     }
     const Fl_Entity *owner=fl_scene_entity(scene,entity);
@@ -240,15 +240,15 @@ static void simulation(const char *root)
     Fl_Id beat=scene->beats[0].id;
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_BEAT_UPDATE,.scene=scene_id,.beat=beat,.name="Stretched",.beat_duration=10*SECOND},NULL));
     CHECK(fabs(sample(&state,scene,entity,2*SECOND)-10)<1e-10);
-    CHECK(fabs(state.entities[0].transform.width-6.1)<1e-10);
+    CHECK(fabs(state.entities[0].bounds.width-6.1)<1e-10);
     attached=fl_entity_component(fl_scene_entity(scene,entity),FL_COMPONENT_SCRIPT);
     CHECK(fl_script_decode(attached,&behavior)); behavior.time.duration=SECOND; behavior.time.mode=FL_RETIME_FIXED; behavior.time.loop=true;
     CHECK(fl_script_encode(&behavior,&mapped)); mapped.id=attached->id;
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_COMPONENT_SET,.scene=scene_id,.entity=entity,.component=mapped},NULL)); fl_component_clear(&mapped);
     CHECK(fabs(sample(&state,scene,entity,SECOND+SECOND/4)-2.5)<1e-10);
-    CHECK(state.entities[0].transform.y==15 && fabs(state.entities[0].transform.width-1.7)<1e-10);
+    CHECK(state.entities[0].pose.y==15 && fabs(state.entities[0].bounds.width-1.7)<1e-10);
     CHECK(fabs(sample(&state,scene,entity,SECOND/4)-2.5)<1e-10);
-    CHECK(fabs(state.entities[0].transform.width-0.2)<1e-10);
+    CHECK(fabs(state.entities[0].bounds.width-0.2)<1e-10);
     CHECK(!script(project,scene_id,entity,"return {step_hz=7,step=function(ctx) end}",true));
     CHECK(strstr(fl_project_diagnostic(project),"step_hz"));
     scene=fl_project_scene(project,scene_id);
@@ -266,7 +266,7 @@ static void imports(const char *directory)
     const char *library="local n=0; return {next=function() n=n+1;return n end}";
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET,.source_kind=FL_ASSET_LUA,.name="Helper",.source=library,.source_size=strlen(library)},&helper));
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_ADD,.scene=scene,.name="Imported motion"},&entity));
-    char source[512]; snprintf(source,sizeof(source),"return {imports={one='%llu',two='%llu'},sample=function(ctx) ctx.entity.transform.x=ctx.imports.one.next()+ctx.imports.two.next() end}",(unsigned long long)helper,(unsigned long long)helper);
+    char source[512]; snprintf(source,sizeof(source),"return {imports={one='%llu',two='%llu'},sample=function(ctx) ctx.entity.pose.x=ctx.imports.one.next()+ctx.imports.two.next() end}",(unsigned long long)helper,(unsigned long long)helper);
     CHECK(script(project,scene,entity,source,true));
     Fl_SceneState state={0};
     CHECK(sample(&state,fl_project_scene(project,scene),entity,SECOND)==3);
@@ -279,7 +279,7 @@ static void imports(const char *directory)
     Fl_Id nested=0;
     snprintf(source,sizeof(source),"local m={imports={child='%llu'}};m.next=function()return m.imports.child.next() end;return m",(unsigned long long)helper);
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET,.source_kind=FL_ASSET_LUA,.name="Nested",.source=source,.source_size=strlen(source)},&nested));
-    snprintf(source,sizeof(source),"return {imports={nested='%llu'},sample=function(ctx)ctx.entity.transform.x=ctx.imports.nested.next() end}",(unsigned long long)nested);
+    snprintf(source,sizeof(source),"return {imports={nested='%llu'},sample=function(ctx)ctx.entity.pose.x=ctx.imports.nested.next() end}",(unsigned long long)nested);
     CHECK(script(project,scene,entity,source,true));
     CHECK(sample(&state,fl_project_scene(project,scene),entity,SECOND)==11);
     char cycle[128]; snprintf(cycle,sizeof(cycle),"return {imports={nested='%llu'},next=function()return 1 end}",(unsigned long long)nested);
@@ -287,7 +287,7 @@ static void imports(const char *directory)
     CHECK(strstr(fl_project_diagnostic(project),"recursive"));
     const char *noise="return {draw=function()return math.random() end}";
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET,.source_kind=FL_ASSET_LUA,.name="Noise",.source=noise,.source_size=strlen(noise)},&helper));
-    snprintf(source,sizeof(source),"return {imports={noise='%llu'},step_hz=60,initialize=function(ctx)ctx.state={sum=0} end,step=function(ctx)ctx.state.sum=ctx.state.sum+ctx.imports.noise.draw() end,sample=function(ctx)ctx.entity.transform.x=ctx.state.sum end}",(unsigned long long)helper);
+    snprintf(source,sizeof(source),"return {imports={noise='%llu'},step_hz=60,initialize=function(ctx)ctx.state={sum=0} end,step=function(ctx)ctx.state.sum=ctx.state.sum+ctx.imports.noise.draw() end,sample=function(ctx)ctx.entity.pose.x=ctx.state.sum end}",(unsigned long long)helper);
     CHECK(script(project,scene,entity,source,true));
     double half=sample(&state,fl_project_scene(project,scene),entity,SECOND/2),whole=sample(&state,fl_project_scene(project,scene),entity,SECOND);
     CHECK(half>0 && whole>half && fabs(whole-2*half)>1e-9);
@@ -307,15 +307,15 @@ static void bindings(const char *directory)
     Fl_Id scene_id=fl_project_scene_at(project,0)->id,reader=0,target=0,asset=0,resource=0,attachment=0;
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_ADD,.scene=scene_id,.name="Reader"},&reader));
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_ADD,.scene=scene_id,.name="Target"},&target));
-    unsigned char bytes[56]; fl_transform_encode(&(Fl_Transform){.x=37,.width=100,.height=100,.scale_x=1,.scale_y=1},bytes);
-    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_COMPONENT_SET,.scene=scene_id,.entity=target,.component={.type=FL_COMPONENT_TRANSFORM,.version=1,.size=56,.data=bytes}},NULL));
-    CHECK(script(project,scene_id,target,"return {sample=function(ctx) ctx.entity.transform.x=999 end}",true));
-    const char *source="return {bindings={target={type='entity'},transform={type='component'},region={type='region'},resource={type='asset'},unused={type='entity',optional=true}},sample=function(ctx) assert(ctx.bindings.transform.type=='transform'); assert(ctx.bindings.resource.name=='Bound resource'); assert(ctx.bindings.region.end_tick>ctx.bindings.region.start_tick); ctx.entity.transform.x=ctx.bindings.target.transform.x;ctx.bindings.target.transform.x=888 end}";
+    unsigned char bytes[FL_POSE_BYTES]; fl_pose_encode(&(Fl_Pose){.x=37,.sx=1,.sy=1,.sz=1},bytes);
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_COMPONENT_SET,.scene=scene_id,.entity=target,.component={.type=FL_COMPONENT_POSE,.version=1,.size=FL_POSE_BYTES,.data=bytes}},NULL));
+    CHECK(script(project,scene_id,target,"return {sample=function(ctx) ctx.entity.pose.x=999 end}",true));
+    const char *source="return {bindings={target={type='entity'},transform={type='component'},region={type='region'},resource={type='asset'},unused={type='entity',optional=true}},sample=function(ctx) assert(ctx.bindings.transform.type=='pose'); assert(ctx.bindings.resource.name=='Bound resource'); assert(ctx.bindings.region.end_tick>ctx.bindings.region.start_tick); ctx.entity.pose.x=ctx.bindings.target.pose.x;ctx.bindings.target.pose.x=888 end}";
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET,.source_kind=FL_ASSET_LUA,.name="Reader behavior",.source=source,.source_size=strlen(source)},&asset));
     const char *library="return {}";
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET,.source_kind=FL_ASSET_LUA,.name="Bound resource",.source=library,.source_size=strlen(library)},&resource));
     const Fl_Scene *scene=fl_project_scene(project,scene_id);
-    Fl_Id transform=fl_entity_component(fl_scene_entity(scene,target),FL_COMPONENT_TRANSFORM)->id;
+    Fl_Id transform=fl_entity_component(fl_scene_entity(scene,target),FL_COMPONENT_POSE)->id;
     char references[512]; snprintf(references,sizeof(references),"{\"target\":{\"type\":\"entity\",\"id\":\"%llu\"},\"transform\":{\"type\":\"component\",\"entity\":\"%llu\",\"id\":\"%llu\"},\"region\":{\"type\":\"region\",\"id\":\"%llu\"},\"resource\":{\"type\":\"asset\",\"id\":\"%llu\"}}",(unsigned long long)target,(unsigned long long)target,(unsigned long long)transform,(unsigned long long)scene->beats[0].id,(unsigned long long)resource);
     Fl_Script configuration={.script=asset,.enabled=true,.bindings=references,.bindings_size=strlen(references)};
     Fl_Component component={0}; CHECK(fl_script_encode(&configuration,&component));
@@ -326,7 +326,7 @@ static void bindings(const char *directory)
     Fl_SceneState state={0}; CHECK(sample(&state,fl_project_scene(project,scene_id),reader,SECOND)==37);
     CHECK(!fl_script_runtime_component_error(fl_scene_state_scripts(&state),attachment)[0]);
     char simulated[2048]; const char *callback=strstr(source,",sample="); CHECK(callback);
-    snprintf(simulated,sizeof(simulated),"%.*s,step_hz=10,initialize=function(ctx) ctx.state={x=0} end,step=function(ctx) ctx.state.x=ctx.state.x+ctx.bindings.target.transform.x*ctx.time.dt end,sample=function(ctx) ctx.entity.transform.x=ctx.state.x end}",(int)(callback-source),source);
+    snprintf(simulated,sizeof(simulated),"%.*s,step_hz=10,initialize=function(ctx) ctx.state={x=0} end,step=function(ctx) ctx.state.x=ctx.state.x+ctx.bindings.target.pose.x*ctx.time.dt end,sample=function(ctx) ctx.entity.pose.x=ctx.state.x end}",(int)(callback-source),source);
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET,.source_kind=FL_ASSET_LUA,.asset=asset,.source=simulated,.source_size=strlen(simulated)},NULL));
     CHECK(fabs(sample(&state,fl_project_scene(project,scene_id),reader,SECOND)-37)<1e-10);
     CHECK(fabs(sample(&state,fl_project_scene(project,scene_id),reader,SECOND/2)-18.5)<1e-10);
@@ -341,7 +341,7 @@ static void bindings(const char *directory)
     for (size_t i=0;i<state.count;++i) {
         const Fl_Origin *origin=fl_composition_origin(state.composition,i);
         if (origin && origin->generated && origin->owner==instance && origin->entity==reader) {
-            generated=true; CHECK(state.entities[i].transform.x==37);
+            generated=true; CHECK(state.entities[i].pose.x==37);
             CHECK(!fl_scene_state_entity_error(&state,i)[0]);
         }
     }
@@ -373,12 +373,12 @@ int main(int argc, char **argv)
     CHECK(fl_widget_create(project,scene_id,box,FL_WIDGET_RECTANGLE,10,20,&second));
     const Fl_Scene *scene=fl_project_scene(project,scene_id);
     const Fl_Entity *entity=fl_scene_entity(scene,box);
-    CHECK(entity->components[0].type==FL_COMPONENT_TRANSFORM);
+    CHECK(entity->components[0].type==FL_COMPONENT_POSE);
     uint64_t revision=scene->revision;
-    CHECK(!fl_project_apply(project,&(Fl_Op){.kind=FL_OP_COMPONENT_REMOVE,.scene=scene_id,.entity=box,.component={.type=FL_COMPONENT_TRANSFORM}},NULL));
+    CHECK(!fl_project_apply(project,&(Fl_Op){.kind=FL_OP_COMPONENT_REMOVE,.scene=scene_id,.entity=box,.component={.type=FL_COMPONENT_POSE}},NULL));
     CHECK(scene->revision==revision);
     Fl_SceneState state={0};
-    const char *motion="return { sample = function(ctx) local self=ctx.entity; local time=ctx.time.seconds;  self.transform.x = self.transform.x + time * 120 end }";
+    const char *motion="return { sample = function(ctx) local self=ctx.entity; local time=ctx.time.seconds;  self.pose.x = self.pose.x + time * 120 end }";
     CHECK(script(project,scene_id,box,motion,true));
     revision=scene->revision;
     CHECK(sample(&state,scene,box,SECOND)==145);
@@ -386,8 +386,8 @@ int main(int argc, char **argv)
     CHECK(sample(&state,scene,box,SECOND/2)==85);
     CHECK(sample(&state,scene,box,SECOND)==145);
     CHECK(scene->revision==revision);
-    Fl_Transform transform;
-    CHECK(fl_transform_decode(fl_entity_component(fl_scene_entity(scene,box),FL_COMPONENT_TRANSFORM),&transform));
+    Fl_Pose transform;
+    CHECK(fl_pose_decode(fl_entity_component(fl_scene_entity(scene,box),FL_COMPONENT_POSE),&transform));
     CHECK(transform.x==25);
     CHECK(!*fl_script_runtime_error(fl_scene_state_scripts(&state),0));
     Fl_SceneGeometry geometry={0};
@@ -399,8 +399,8 @@ int main(int argc, char **argv)
     const Fl_Animation *animation=fl_entity_animation(fl_scene_entity(scene,box));
     CHECK(animation && animation->track_count==1 && animation->tracks[0].property==FL_PROP_Y);
     CHECK(script(project,scene_id,box,motion,true));
-    CHECK(sample(&state,scene,box,SECOND)==145 && state.entities[0].transform.y==100);
-    CHECK(script(project,scene_id,second,"return { sample = function(ctx) local self=ctx.entity; local time=ctx.time.seconds;  self.transform.x = time * 10 end }",true));
+    CHECK(sample(&state,scene,box,SECOND)==145 && state.entities[0].pose.y==100);
+    CHECK(script(project,scene_id,second,"return { sample = function(ctx) local self=ctx.entity; local time=ctx.time.seconds;  self.pose.x = time * 10 end }",true));
     CHECK(sample(&state,scene,second,SECOND)==10);
     CHECK(sample(&state,scene,box,SECOND)==145);
     /* Malformed executable declarations never replace the last accepted behavior. */
@@ -411,17 +411,17 @@ int main(int argc, char **argv)
     CHECK(script(project,scene_id,box,motion,true));
     CHECK(sample(&state,scene,box,SECOND)==145);
     /* A keyed Inspector-like configure must not bake evaluated script channels into base values. */
-    CHECK(fl_transform_decode(fl_entity_component(fl_scene_entity(scene,box),FL_COMPONENT_TRANSFORM),&transform));
-    transform.y=state.entities[0].transform.y;
-    unsigned char bytes[56]; fl_transform_encode(&transform,bytes);
-    Fl_Component component={.type = FL_COMPONENT_TRANSFORM, .version = 1, .size = 56, .data = bytes};
+    CHECK(fl_pose_decode(fl_entity_component(fl_scene_entity(scene,box),FL_COMPONENT_POSE),&transform));
+    transform.y=state.entities[0].pose.y;
+    unsigned char bytes[FL_POSE_BYTES]; fl_pose_encode(&transform,bytes);
+    Fl_Component component={.type = FL_COMPONENT_POSE, .version = 1, .size = FL_POSE_BYTES, .data = bytes};
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_CONFIGURE,.scene=scene_id,.entity=box,.name="Renamed",.visible=true,
         .components=&component,.component_count=1,.keyed=true,.tick=SECOND},NULL));
-    CHECK(fl_transform_decode(fl_entity_component(fl_scene_entity(scene,box),FL_COMPONENT_TRANSFORM),&transform) && transform.x==25);
+    CHECK(fl_pose_decode(fl_entity_component(fl_scene_entity(scene,box),FL_COMPONENT_POSE),&transform) && transform.x==25);
     CHECK(fl_entity_animation(fl_scene_entity(scene,box))->tracks[0].key_count==1);
     /* Growing a copied animation during configure must remain owned by the replacement component. */
     for (unsigned k=1;k<7;++k) {
-        transform.y=100+k;fl_transform_encode(&transform,bytes);
+        transform.y=100+k;fl_pose_encode(&transform,bytes);
         CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_CONFIGURE,.scene=scene_id,.entity=box,.name="Renamed",.visible=true,
             .components=&component,.component_count=1,.keyed=true,.tick=(Fl_Tick)k*SECOND/2},NULL));
     }
@@ -434,22 +434,22 @@ int main(int argc, char **argv)
     CHECK(sample(&state,scene,box,SECOND)==145);
     CHECK(fl_entity_animation(fl_scene_entity(scene,box))->tracks[0].key_count==7);
     /* The global environment and random stream reset for each evaluation. */
-    CHECK(script(project,scene_id,box,"n=(n or 0)+1; return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.transform.x=n+math.random() end }",true));
+    CHECK(script(project,scene_id,box,"n=(n or 0)+1; return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.pose.x=n+math.random() end }",true));
     double a=sample(&state,scene,box,SECOND);
     CHECK(sample(&state,scene,box,2*SECOND)==a && a>1 && a<2);
     failure(project,scene,box,&state,"return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  while true do end end }","instruction limit");
-    failure(project,scene,box,&state,"return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.transform.x=0/0 end }","invalid x");
-    failure(project,scene,box,&state,"return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.transform.x=99; error('failed') end }","failed");
-    failure(project,scene,box,&state,"return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.transform.x=string.rep('a',1000000000) end }","memory");
+    failure(project,scene,box,&state,"return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.pose.x=0/0 end }","invalid x");
+    failure(project,scene,box,&state,"return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.pose.x=99; error('failed') end }","failed");
+    failure(project,scene,box,&state,"return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.pose.x=string.rep('a',1000000000) end }","memory");
     CHECK(!script(project,scene_id,box,"return { sample=function(",true) && strstr(fl_project_diagnostic(project),"expected"));
     failure(project,scene,box,&state,"return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  io.open('file') end }","nil");
     failure(project,scene,box,&state,"return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  pcall(function() end) end }","nil");
     failure(project,scene,box,&state,"return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  os.execute('echo nope') end }","nil");
     failure(project,scene,box,&state,"return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  require('x') end }","nil");
-    failure(project,scene,box,&state,"return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.transform=nil end }","table");
+    failure(project,scene,box,&state,"return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.pose=nil end }","table");
     failure(project,scene,box,&state,"return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  math.randomseed() end }","number expected");
-    failure(project,scene,box,&state,"return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.transform.x=tonumber(tostring({})) end }","scalar");
-    CHECK(script(project,scene_id,box,"return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  local sum=0; for k,v in pairs({c=3,a=1,b=2}) do sum=sum*10+v end; self.transform.x=sum end }",true));
+    failure(project,scene,box,&state,"return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.pose.x=tonumber(tostring({})) end }","scalar");
+    CHECK(script(project,scene_id,box,"return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  local sum=0; for k,v in pairs({c=3,a=1,b=2}) do sum=sum*10+v end; self.pose.x=sum end }",true));
     CHECK(sample(&state,scene,box,SECOND)==123);
     CHECK(sample(&state,scene,box,2*SECOND)==123);
     /* Scripts may replace a text entity's content; the document keeps its own text. */

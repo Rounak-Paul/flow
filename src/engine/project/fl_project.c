@@ -286,7 +286,7 @@ static bool merge_components(const Fl_Entity *entity, const Fl_Component *update
         }
         ++*out_count;
     }
-    for (size_t i = 0; i < *out_count; ++i) if (copy[i].type == FL_COMPONENT_TRANSFORM) {
+    for (size_t i = 0; i < *out_count; ++i) if (copy[i].type == FL_COMPONENT_POSE) {
         Fl_Component transform = copy[i];
         memmove(copy + 1, copy, i * sizeof(*copy)); copy[0] = transform; break;
     }
@@ -423,11 +423,13 @@ static bool apply_operation(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
             !references_valid(p, s, op->components, op->component_count) ||
             p->next_id == UINT64_MAX || s->entity_count >= SIZE_MAX / sizeof(*e) - 1) return false;
         char *name = copy_string(op->name);
-        unsigned char bytes[56];
-        Fl_Transform t = {.width = 320, .height = 180, .scale_x = 1, .scale_y = 1};
-        fl_transform_encode(&t, bytes);
-        Fl_Component base = {.type = FL_COMPONENT_TRANSFORM, .version = 1, .size = 56, .data = bytes};
-        Fl_Entity initial = {.components = &base, .component_count = 1}, prepared = {.name = name};
+        unsigned char pose_bytes[FL_POSE_BYTES], bounds_bytes[FL_BOUNDS_BYTES];
+        Fl_Pose pose = fl_pose_identity();
+        Fl_Bounds bounds = {320, 180, 0};
+        fl_pose_encode(&pose, pose_bytes); fl_bounds_encode(&bounds, bounds_bytes);
+        Fl_Component base[2] = {{.type = FL_COMPONENT_POSE, .version = 1, .size = FL_POSE_BYTES, .data = pose_bytes},
+                                {.type = FL_COMPONENT_BOUNDS, .version = 1, .size = FL_BOUNDS_BYTES, .data = bounds_bytes}};
+        Fl_Entity initial = {.components = base, .component_count = 2}, prepared = {.name = name};
         Fl_Component *c = NULL;
         if (!name || !merge_components(&initial, op->components, op->component_count, &c, &prepared.component_count)) {
             free(name); return false;
@@ -511,14 +513,14 @@ static bool apply_operation(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
         if (!e || !op->name || !op->name[0] || !references_valid(p, s, op->components, op->component_count) ||
             op->component_count > 64) return false;
         Fl_Component keyed[64];
-        unsigned char transform_bytes[56], appearance_bytes[24], opacity_bytes[8], style_bytes[91];
+        unsigned char pose_bytes[FL_POSE_BYTES], bounds_bytes[FL_BOUNDS_BYTES], appearance_bytes[24], opacity_bytes[8], style_bytes[91];
         Fl_KeyWrite writes[FL_PROP_COUNT];
         size_t write_count = 0;
         const Fl_Component *components = op->components;
         if (op->keyed && op->component_count) {
             memcpy(keyed, op->components, op->component_count * sizeof(*keyed));
             components = keyed;
-            write_count = fl_keyed_components(s, e, keyed, op->component_count, transform_bytes, appearance_bytes, opacity_bytes, style_bytes, writes, op->tick);
+            write_count = fl_keyed_components(s, e, keyed, op->component_count, pose_bytes, bounds_bytes, appearance_bytes, opacity_bytes, style_bytes, writes, op->tick);
             if (write_count==SIZE_MAX) return false;
         }
         Fl_Entity prepared = {.name = copy_string(op->name)};
@@ -536,42 +538,58 @@ static bool apply_operation(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
         break;
     }
     case FL_OP_TRANSFORMS: {
-        typedef struct Target { Fl_Component *component; unsigned char *bytes; } Target;
-        if (!s || !op->transforms || !op->transform_count || op->transform_count > SIZE_MAX / sizeof(Target) / 7) return false;
+        typedef struct Target { Fl_Component *pose, *bounds; unsigned char *pose_bytes, *bounds_bytes; } Target;
+        if (!s || !op->transforms || !op->transform_count || op->transform_count > SIZE_MAX / sizeof(Target) / 16) return false;
         Target *targets = calloc(op->transform_count, sizeof(*targets));
-        Fl_KeyWrite *writes = op->keyed ? calloc(op->transform_count * 7, sizeof(*writes)) : NULL;
+        Fl_KeyWrite *writes = op->keyed ? calloc(op->transform_count * 16, sizeof(*writes)) : NULL;
         if (!targets || (op->keyed && !writes)) { free(targets); free(writes); return false; }
         bool valid = true;
         size_t write_count = 0;
+        static const Fl_AnimProperty pose_channels[] = {FL_PROP_X, FL_PROP_Y, FL_PROP_Z, FL_PROP_RX, FL_PROP_RY, FL_PROP_RZ, FL_PROP_SCALE_X, FL_PROP_SCALE_Y, FL_PROP_SCALE_Z, FL_PROP_PIVOT_X, FL_PROP_PIVOT_Y, FL_PROP_PIVOT_Z};
+        static const Fl_AnimProperty bounds_channels[] = {FL_PROP_WIDTH, FL_PROP_HEIGHT, FL_PROP_DEPTH};
         for (size_t i = 0; valid && i < op->transform_count; ++i) {
             const Fl_TransformEdit *edit = &op->transforms[i];
             for (size_t j = 0; j < i; ++j) if (op->transforms[j].entity == edit->entity) valid = false;
             Fl_Entity *entity = (Fl_Entity *)fl_scene_entity(s, edit->entity);
-            targets[i].component = (Fl_Component *)fl_entity_component(entity, FL_COMPONENT_TRANSFORM);
-            targets[i].bytes = malloc(56);
-            if (!targets[i].component || !targets[i].bytes) { valid = false; break; }
-            Fl_Transform base = edit->transform, current;
-            if (op->keyed && fl_transform_decode(targets[i].component, &current)) {
-                double *next[7] = {&base.x, &base.y, &base.width, &base.height, &base.rotation, &base.scale_x, &base.scale_y};
-                const double now[7] = {current.x, current.y, current.width, current.height, current.rotation, current.scale_x, current.scale_y};
-                for (int c = 0; c < 7; ++c) {
-                            if (!fl_scene_track(s, edit->entity, (Fl_AnimProperty)(FL_PROP_X + c))) continue;
-                    Fl_KeyWrite write = {edit->entity, (Fl_AnimProperty)(FL_PROP_X + c), {*next[c], 0, 0, 0}};
-                    if (fl_keyed_value_changed(s, fl_scene_track(s, edit->entity, write.property), op->tick, write.value))
-                        writes[write_count++] = write;
-                    *next[c] = now[c];
+            targets[i].pose = (Fl_Component *)fl_entity_component(entity, FL_COMPONENT_POSE);
+            targets[i].bounds = (Fl_Component *)fl_entity_component(entity, FL_COMPONENT_BOUNDS);
+            targets[i].pose_bytes = malloc(FL_POSE_BYTES); targets[i].bounds_bytes = malloc(FL_BOUNDS_BYTES);
+            if (!targets[i].pose || !targets[i].pose_bytes || !targets[i].bounds_bytes) { valid = false; break; }
+            Fl_Pose pose = edit->pose; Fl_Bounds bounds = edit->bounds, current_bounds = fl_entity_bounds(entity); Fl_Pose current;
+            if (op->keyed && fl_pose_decode(targets[i].pose, &current)) {
+                double *next_pose[12] = {&pose.x,&pose.y,&pose.z,&pose.rx,&pose.ry,&pose.rz,&pose.sx,&pose.sy,&pose.sz,&pose.px,&pose.py,&pose.pz};
+                const double now_pose[12] = {current.x,current.y,current.z,current.rx,current.ry,current.rz,current.sx,current.sy,current.sz,current.px,current.py,current.pz};
+                double *next_bounds[3] = {&bounds.width,&bounds.height,&bounds.depth};
+                const double now_bounds[3] = {current_bounds.width,current_bounds.height,current_bounds.depth};
+                for (int c = 0; c < 12; ++c) {
+                    if (!fl_scene_track(s, edit->entity, pose_channels[c])) continue;
+                    Fl_KeyWrite write = {edit->entity, pose_channels[c], {*next_pose[c], 0, 0, 0}};
+                    if (fl_keyed_value_changed(s, fl_scene_track(s, edit->entity, write.property), op->tick, write.value)) writes[write_count++] = write;
+                    *next_pose[c] = now_pose[c];
+                }
+                for (int c = 0; targets[i].bounds && c < 3; ++c) {
+                    if (!fl_scene_track(s, edit->entity, bounds_channels[c])) continue;
+                    Fl_KeyWrite write = {edit->entity, bounds_channels[c], {*next_bounds[c], 0, 0, 0}};
+                    if (fl_keyed_value_changed(s, fl_scene_track(s, edit->entity, write.property), op->tick, write.value)) writes[write_count++] = write;
+                    *next_bounds[c] = now_bounds[c];
                 }
             }
-            fl_transform_encode(&base, targets[i].bytes);
-            Fl_Component candidate = {.type = FL_COMPONENT_TRANSFORM, .version = 1, .size = 56, .data = targets[i].bytes};
-            valid &= fl_widget_component_valid(&candidate);
+            fl_pose_encode(&pose, targets[i].pose_bytes);
+            fl_bounds_encode(&bounds, targets[i].bounds_bytes);
+            Fl_Component candidate = {.type = FL_COMPONENT_POSE, .version = 1, .size = FL_POSE_BYTES, .data = targets[i].pose_bytes};
+            Fl_Component bounds_candidate = {.type = FL_COMPONENT_BOUNDS, .version = 1, .size = FL_BOUNDS_BYTES, .data = targets[i].bounds_bytes};
+            valid &= fl_widget_component_valid(&candidate) && fl_widget_component_valid(&bounds_candidate);
         }
         if (valid && write_count) valid = fl_timeline_reserve(s, writes, write_count, p->next_id);
         for (size_t i = 0; i < op->transform_count; ++i) {
             if (valid) {
-                free((void *)targets[i].component->data);
-                *targets[i].component = (Fl_Component){.type = FL_COMPONENT_TRANSFORM, .version = 1, .size = 56, .data = targets[i].bytes, .id=targets[i].component->id};
-            } else free(targets[i].bytes);
+                free((void *)targets[i].pose->data);
+                *targets[i].pose = (Fl_Component){.type = FL_COMPONENT_POSE, .version = 1, .size = FL_POSE_BYTES, .data = targets[i].pose_bytes, .id=targets[i].pose->id};
+                if (targets[i].bounds) {
+                    free((void *)targets[i].bounds->data);
+                    *targets[i].bounds = (Fl_Component){.type = FL_COMPONENT_BOUNDS, .version = 1, .size = FL_BOUNDS_BYTES, .data = targets[i].bounds_bytes, .id=targets[i].bounds->id};
+                } else free(targets[i].bounds_bytes);
+            } else {free(targets[i].pose_bytes); free(targets[i].bounds_bytes);}
         }
         if (valid && write_count) fl_timeline_commit(s, writes, write_count, op->tick, &p->next_id);
         free(targets); free(writes); if (!valid) return false;
@@ -1262,8 +1280,8 @@ static bool decode_scene(Fl_Project *p, Fl_Scene *s, const Fl_Binary *input)
             if (!fl_widget_component_valid(c)) b.failed = true;
             for (size_t k = 0; k < j; ++k) if (components[k].type == c->type && c->type!=FL_COMPONENT_SCRIPT) b.failed = true;
         }
-        if (!b.failed && !fl_entity_component(e, FL_COMPONENT_TRANSFORM)) b.failed = true;
-        for (size_t j = 0; !b.failed && j < e->component_count; ++j) if (e->components[j].type == FL_COMPONENT_TRANSFORM) {
+        if (!b.failed && !fl_entity_component(e, FL_COMPONENT_POSE)) b.failed = true;
+        for (size_t j = 0; !b.failed && j < e->component_count; ++j) if (e->components[j].type == FL_COMPONENT_POSE) {
             Fl_Component *all = (Fl_Component *)e->components, transform = all[j];
             memmove(all + 1, all, j * sizeof(*all)); all[0] = transform; break;
         }
@@ -1470,7 +1488,7 @@ static bool validate_project(const Fl_Project *p)
         if (s->entity_count && !state) { free(ids); return false; }
         for (size_t j = 0; j < s->entity_count; ++j) {
             const Fl_Entity *e = &s->entities[j]; ids[n++] = e->id;
-            if (!references_valid(p, s, e->components, e->component_count) || !fl_entity_component(e, FL_COMPONENT_TRANSFORM)) { free(state); free(ids); return false; }
+            if (!references_valid(p, s, e->components, e->component_count) || !fl_entity_component(e, FL_COMPONENT_POSE)) { free(state); free(ids); return false; }
             const Fl_Entity *current = e;
             while (current && !state[current - s->entities]) {
                 state[current - s->entities] = 1;

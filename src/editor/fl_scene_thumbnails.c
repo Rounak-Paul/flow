@@ -55,9 +55,9 @@ static double coverage(const Fl_ResolvedEntity *v, Fl_WidgetKind kind, const Fl_
         if (x < frame->x || y < frame->y || x > frame->x + frame->width || y > frame->y + frame->height) continue;
         double lx, ly;
         fl_affine_point(v->inverse, x, y, &lx, &ly);
-        if (lx < 0 || ly < 0 || lx > v->local.width || ly > v->local.height) continue;
+        if (lx < 0 || ly < 0 || lx > v->bounds.width || ly > v->bounds.height) continue;
         if (kind == FL_WIDGET_ELLIPSE || fl_widget_is_polygon(kind)) {
-            if (!fl_widget_shape_contains(kind, lx / v->local.width * 2 - 1, ly / v->local.height * 2 - 1)) continue;
+            if (!fl_widget_shape_contains(kind, lx / v->bounds.width * 2 - 1, ly / v->bounds.height * 2 - 1)) continue;
         }
         ++inside;
     }
@@ -70,7 +70,7 @@ static bool shape_bounds(const Fl_ResolvedEntity *v, const Fl_Artboard *board, u
     double min_x = INFINITY, min_y = INFINITY, max_x = -INFINITY, max_y = -INFINITY;
     for (unsigned corner = 0; corner < 4; ++corner) {
         double x, y;
-        fl_affine_point(v->world, (corner & 1) * v->local.width, (corner >> 1) * v->local.height, &x, &y);
+        fl_affine_point(v->world, (corner & 1) * v->bounds.width, (corner >> 1) * v->bounds.height, &x, &y);
         x = x * board->scale + board->x; y = y * board->scale + board->y;
         min_x = fmin(min_x, x); max_x = fmax(max_x, x); min_y = fmin(min_y, y); max_y = fmax(max_y, y);
     }
@@ -122,7 +122,7 @@ static unsigned char *rasterize(const Fl_Scene *scene)
             size_t index = geometry.order[i];
             const Fl_ResolvedEntity *v = &geometry.entities[index];
             Fl_WidgetKind kind = v->kind;
-            if (!v->visible || !v->invertible || v->opacity <= 0 || v->local.width <= 0 || v->local.height <= 0) continue;
+            if (!v->visible || !v->invertible || v->opacity <= 0 || v->bounds.width <= 0 || v->bounds.height <= 0) continue;
             if (kind != FL_WIDGET_RECTANGLE && kind != FL_WIDGET_ELLIPSE && kind != FL_WIDGET_IMAGE && !fl_widget_is_polygon(kind)) continue;
             unsigned x0, y0, x1, y1;
             if (!shape_bounds(v, &board, &x0, &y0, &x1, &y1)) continue;

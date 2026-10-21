@@ -91,7 +91,8 @@ const char *const FL_AGENT_REFERENCE[] = {
 "build(ctx) returns a typed version-one flproto descriptor and runs on document changes, not every frame.\n"
 "imports={alias=\"LuaAssetId\"} declares tracked Lua asset dependencies; callbacks/build use ctx.imports.alias.\n"
 "Imports are fresh per callback, shared by diamond aliases within that callback, bounded and cycle-checked.\n"
-"ctx.entity starts with keyframed entity values. Write transform.{x,y,width,height,rotation(radians),scale_x,scale_y},\n"
+"ctx.entity starts with keyframed entity values. Write pose.{x,y,z,rx,ry,rz,scale_x,scale_y,scale_z} (radians),\n"
+"bounds.{width,height,depth}, camera, material, light, particles, post, appearance, opacity and crop.\n"
 "appearance.{fill,stroke (RGBA arrays 0..255),stroke_width,font_size}, opacity, crop.{x,y,width,height}, or text (16 MiB aggregate frame budget).\n"
 "ctx.time supplies local tick, seconds, duration, progress, cycle, phase and composition_seconds.\n"
 "ctx.params merges instance overrides with module parameter defaults. Declarations support number/integer/boolean/\n"
@@ -104,7 +105,7 @@ const char *const FL_AGENT_REFERENCE[] = {
 "Available: math, string, table, utf8, ipairs, pairs (stable order), select, tonumber, tostring, type, assert, error.\n"
 "No files, network, os, require, pcall or coroutines. Randomness is deterministic per entity/component instance.\n"
 "Limits: 1M instructions per sample and 16 MiB per evaluator. Errors keep keyframed values and appear as script_error.\n"
-"Example: return {sample=function(ctx) ctx.entity.transform.y=ctx.entity.transform.y+math.sin(ctx.time.seconds*4)*20 end}\n"
+"Example: return {sample=function(ctx) ctx.entity.pose.y=ctx.entity.pose.y+math.sin(ctx.time.seconds*4)*20 end}\n"
 "\n",
 "## Assets\n"
 "`import_asset {path}` copies a local image, audio, video, font or Lua file into the project and returns its id. Asset\n"

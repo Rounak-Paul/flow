@@ -67,9 +67,9 @@ static bool handle_point(Fl_ScenePreview *p,const Fl_Scene *scene,const Fl_Scene
     const Fl_ResolvedEntity *v=&g->entities[e-scene->entities];
     if (!v->visible||!v->invertible) return false;
     const double corners[4][2]={{0,0},{1,0},{1,1},{0,1}};
-    if (handle<4) fl_affine_point(v->world,corners[handle][0]*v->local.width,corners[handle][1]*v->local.height,x,y);
+    if (handle<4) fl_affine_point(v->world,corners[handle][0]*v->bounds.width,corners[handle][1]*v->bounds.height,x,y);
     else {
-        fl_affine_point(v->world,v->local.width*.5,0,x,y);
+        fl_affine_point(v->world,v->bounds.width*.5,0,x,y);
         double length=hypot(v->world.v[1],v->world.v[4]);
         if (length<1e-12) return false;
         double offset=FL_STYLE_ROTATE_OFFSET/(pixels_per_scene*length);
@@ -120,20 +120,27 @@ void fl_scene_preview_render(Ca_Viewport *viewport,void *data)
     if (p->renderer&&scene) fl_scene_renderer_prepare(p->renderer,project,scene,state,g,1,false);
     uint32_t w=ca_viewport_width(viewport),h=ca_viewport_height(viewport);
     VkCommandBuffer cmd=ca_viewport_cmd(viewport);
+    VkImageView depth=p->renderer ? fl_scene_renderer_depth(p->renderer,cmd,w,h) : VK_NULL_HANDLE;
     VkRenderingAttachmentInfo attachment={.sType=VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
         .imageView=ca_viewport_image_view(viewport),.imageLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         .loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR,.storeOp=VK_ATTACHMENT_STORE_OP_STORE,.clearValue.color={.float32=FL_STYLE_VIEW_CLEAR}};
+    VkRenderingAttachmentInfo depth_info={.sType=VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,.imageView=depth,
+        .imageLayout=VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,.loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR,.storeOp=VK_ATTACHMENT_STORE_OP_STORE,
+        .clearValue.depthStencil.depth=1};
     VkRenderingInfo info={.sType=VK_STRUCTURE_TYPE_RENDERING_INFO,.renderArea.extent={w,h},.layerCount=1,
-        .colorAttachmentCount=1,.pColorAttachments=&attachment};
+        .colorAttachmentCount=1,.pColorAttachments=&attachment,.pDepthAttachment=depth ? &depth_info : NULL};
+    if (p->renderer) fl_scene_renderer_sync_uniforms(p->renderer,cmd);
     vkCmdBeginRendering(cmd,&info);
     float logical_x,logical_y,logical_w,logical_h;
     ca_viewport_screen_rect(viewport,&logical_x,&logical_y,&logical_w,&logical_h);
     Fl_CanvasMapping map=preview_mapping(scene,logical_w,logical_h);
     Fl_SceneFrame target=map.target, frame=map.world;
-    if (g&&map.scale>0&&p->renderer&&fl_scene_renderer_begin(p->renderer,cmd,ca_viewport_format(viewport),w,h)) {
+    Fl_Mat4 view; Fl_Vec3 right, up; double bloom=0;
+    if (p->renderer) {fl_scene_camera(scene,state,frame.x,frame.y,frame.width,frame.height,&view,&right,&up,&bloom); fl_scene_renderer_set_view(p->renderer,view,right,up,bloom);}
+    if (g&&map.scale>0&&depth&&p->renderer&&fl_scene_renderer_begin(p->renderer,cmd,ca_viewport_format(viewport),w,h,true)) {
         fl_scene_renderer_background(p->renderer,cmd,&frame,&target,scene->background);
         draw_grid(p,cmd,&frame);
-        Fl_RenderTarget surface={ca_viewport_image_view(viewport),ca_viewport_format(viewport),w,h,ca_viewport_frame_index(viewport)};
+        Fl_RenderTarget surface={.view=ca_viewport_image_view(viewport),.format=ca_viewport_format(viewport),.width=w,.height=h,.slot=ca_viewport_frame_index(viewport),.image=ca_viewport_image(viewport),.depth=depth};
         fl_scene_renderer_entities(p->renderer,cmd,&surface,&frame,scene,state,g);
         VkDescriptorSet white=fl_scene_renderer_white(p->renderer);
         double logical_scale=map.scale;
@@ -146,7 +153,7 @@ void fl_scene_preview_render(Ca_Viewport *viewport,void *data)
             if (!v->visible||!fl_scene_edit_contains(p->edit,scene->entities[i].id)) continue;
             double local_scale=fmax(hypot(v->world.v[0],v->world.v[3]),hypot(v->world.v[1],v->world.v[4]));
             outline.stroke_width=FL_STYLE_OUTLINE_WIDTH/(logical_scale*fmax(local_scale,1e-9));
-            fl_scene_renderer_primitive(p->renderer,cmd,&frame,v->world,v->local.width,v->local.height,FL_WIDGET_RECTANGLE,outline,white);
+            fl_scene_renderer_primitive(p->renderer,cmd,&frame,v->world,v->bounds.width,v->bounds.height,FL_WIDGET_RECTANGLE,outline,white);
         }
         Fl_Appearance handle={.fill=FL_STYLE_GIZMO_RGBA,.font_size=48};double size=FL_STYLE_HANDLE_SIZE/logical_scale;
         for (unsigned i=0;i<5;++i) {

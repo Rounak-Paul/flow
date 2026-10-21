@@ -1,5 +1,6 @@
 #pragma once
 #include "project/fl_project.h"
+#include "components/fl_transform.h"
 
 typedef enum Fl_WidgetKind {
     FL_WIDGET_GROUP, FL_WIDGET_RECTANGLE, FL_WIDGET_ELLIPSE,
@@ -23,7 +24,8 @@ typedef struct Fl_Appearance {
 typedef struct Fl_WidgetDef {
     Fl_WidgetKind kind;
     const char *name, *description;
-    Fl_Transform transform;
+    Fl_Pose pose;
+    Fl_Bounds bounds;
     Fl_Appearance appearance;
     bool has_fill, has_stroke, has_text, has_image, has_video;
 } Fl_WidgetDef;

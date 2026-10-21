@@ -18,6 +18,7 @@ Fl_GpuImages *fl_gpu_images_create(const Fl_GpuContext *context);
 void fl_gpu_images_destroy(Fl_GpuImages *images);
 /* Return the combined-image-sampler layout and the white texel's descriptor used by untextured primitives. */
 VkDescriptorSetLayout fl_gpu_images_layout(const Fl_GpuImages *images);
+VkSampler fl_gpu_images_sampler(const Fl_GpuImages *images);
 VkDescriptorSet fl_gpu_images_white(const Fl_GpuImages *images);
 /* Upload width x height pixels of format synchronously. NULL on invalid input or failure. */
 Fl_GpuImage *fl_gpu_image_create(Fl_GpuImages *images, Fl_GpuImageFormat format, const unsigned char *pixels,

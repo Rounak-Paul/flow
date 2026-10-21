@@ -173,8 +173,8 @@ static bool root_document(Fl_Json *c, cJSON *document)
         uint64_t parent; ok=fl_json_uint(c,cJSON_GetObjectItemCaseSensitive(entity,"parent"),&parent);
         if (ok && !parent) ok=cJSON_ReplaceItemInObjectCaseSensitive(entity,"parent",fl_json_u64(max+1));
     }
-    unsigned char bytes[56]; fl_transform_encode(&(Fl_Transform){.scale_x=1,.scale_y=1},bytes);
-    Fl_Component transform={.id=component+1,.type=FL_COMPONENT_TRANSFORM,.version=1,.data=bytes,.size=56};
+    unsigned char bytes[FL_POSE_BYTES]; fl_pose_encode(&(Fl_Pose){.sx=1,.sy=1,.sz=1},bytes);
+    Fl_Component transform={.id=component+1,.type=FL_COMPONENT_POSE,.version=1,.data=bytes,.size=FL_POSE_BYTES};
     cJSON *group=cJSON_CreateObject(), *components=cJSON_CreateArray();
     if (ok) ok=group && components && fl_json_add(c,group,"id",fl_json_u64(max+1)) && fl_json_add(c,group,"parent",fl_json_u64(0)) && fl_json_add(c,group,"name",cJSON_CreateString("Baked content")) && fl_json_add(c,group,"visible",cJSON_CreateBool(true));
     if (ok) {ok=fl_json_add(c,group,"components",components); components=NULL;}

@@ -5,7 +5,10 @@
 #include "components/fl_events.h"
 #include "components/fl_script.h"
 #include "components/fl_style.h"
+#include "components/fl_transform.h"
+#include "components/fl_spatial.h"
 #include "schema/fl_widgets.h"
+#include "schema/fl_properties.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,7 +17,14 @@
 typedef enum FieldKind { NUMBER, UNSIGNED, SIGNED, BYTE, FLAG, WORD_FLAG, COLOR } FieldKind;
 typedef struct Field { const char *name; size_t offset; FieldKind kind; } Field;
 typedef struct Schema { const char *name; size_t size; const Field *fields; } Schema;
-static const Field transform[] = {{"x",0,NUMBER},{"y",8,NUMBER},{"width",16,NUMBER},{"height",24,NUMBER},{"rotation",32,NUMBER},{"scale_x",40,NUMBER},{"scale_y",48,NUMBER},{0}};
+static const Field pose[] = {{"x",0,NUMBER},{"y",8,NUMBER},{"z",16,NUMBER},{"rx",24,NUMBER},{"ry",32,NUMBER},{"rz",40,NUMBER},{"scale_x",48,NUMBER},{"scale_y",56,NUMBER},{"scale_z",64,NUMBER},{"pivot_x",72,NUMBER},{"pivot_y",80,NUMBER},{"pivot_z",88,NUMBER},{0}};
+static const Field bounds[] = {{"width",0,NUMBER},{"height",8,NUMBER},{"depth",16,NUMBER},{0}};
+static const Field camera_fields[] = {{"perspective",0,BYTE},{"fov",8,NUMBER},{"near",16,NUMBER},{"far",24,NUMBER},{"ortho_height",32,NUMBER},{"exposure",40,NUMBER},{0}};
+static const Field material_fields[] = {{"base",0,COLOR},{"roughness",8,NUMBER},{"metallic",16,NUMBER},{"emissive",24,NUMBER},{0}};
+static const Field light_fields[] = {{"kind",0,BYTE},{"color",4,COLOR},{"intensity",8,NUMBER},{"range",16,NUMBER},{"spot_angle",24,NUMBER},{0}};
+static const Field particle_fields[] = {{"capacity",0,UNSIGNED},{"seed",8,UNSIGNED},{"rate",16,NUMBER},{"life",24,NUMBER},{"size",32,NUMBER},{"speed",40,NUMBER},{"color",48,COLOR},{0}};
+static const Field post_fields[] = {{"bloom",0,NUMBER},{0}};
+static const Field mesh_fields[] = {{"shape",0,BYTE},{0}};
 static const Field rectangle[] = {{"color",0,COLOR},{0}};
 static const Field appearance[] = {{"fill",0,COLOR},{"stroke",4,COLOR},{"stroke_width",8,NUMBER},{"font_size",16,NUMBER},{0}};
 static const Field geometry[] = {{"shape",0,BYTE},{0}};
@@ -22,7 +32,7 @@ static const Field image[] = {{"asset",0,UNSIGNED},{0}};
 static const Field opacity[] = {{"value",0,NUMBER},{0}};
 static const Field style[] = {{"radius",0,NUMBER},{"gradient_angle",8,NUMBER},{"shadow_blur",16,NUMBER},{"shadow_x",24,NUMBER},{"shadow_y",32,NUMBER},{"gradient_to",40,COLOR},{"shadow_color",44,COLOR},{"gradient",48,FLAG},{"align",49,BYTE},{"crop_x",50,NUMBER},{"crop_y",58,NUMBER},{"crop_width",66,NUMBER},{"crop_height",74,NUMBER},{"clip",82,FLAG},{"blur",83,NUMBER},{0}};
 static const Field video[] = {{"asset",0,UNSIGNED},{"start",8,SIGNED},{"offset",16,SIGNED},{"rate",24,NUMBER},{"loop",32,FLAG},{0}};
-static const Schema schemas[] = {{0}, {"transform",56,transform},{"rectangle",4,rectangle},{"text",0,NULL},{"appearance",24,appearance},{"geometry",1,geometry},{"typography",0,NULL},{"image",8,image},{"opacity",8,opacity},{"animation",0,NULL},{"script",0,NULL},{"style",91,style},{"video",33,video},{"prototype",0,NULL},{"composition",0,NULL},{"sampled",0,NULL},{"events",0,NULL}};
+static const Schema schemas[] = {{0}, {"pose",FL_POSE_BYTES,pose},{"rectangle",4,rectangle},{"text",0,NULL},{"appearance",24,appearance},{"geometry",1,geometry},{"typography",0,NULL},{"image",8,image},{"opacity",8,opacity},{"animation",0,NULL},{"script",0,NULL},{"style",91,style},{"video",33,video},{"prototype",0,NULL},{"composition",0,NULL},{"sampled",0,NULL},{"events",0,NULL},{"bounds",FL_BOUNDS_BYTES,bounds},{"camera",FL_CAMERA_BYTES,camera_fields},{"mesh",FL_MESH_BYTES,mesh_fields},{"material",FL_MATERIAL_BYTES,material_fields},{"light",FL_LIGHT_BYTES,light_fields},{"particles",FL_PARTICLES_BYTES,particle_fields},{"post",FL_POST_BYTES,post_fields}};
 static const char *const ease_names[] = {"linear","in","out","in_out","hold"};
 
 /* Read/write a canonical little-endian word without alignment assumptions. */
@@ -64,7 +74,10 @@ static cJSON *animation_write(Fl_Json *c, const Fl_Animation *animation)
     cJSON *tracks=cJSON_CreateArray();
     for (size_t i=0;i<animation->track_count;++i) {
         const Fl_Track *t=&animation->tracks[i]; cJSON *o=cJSON_CreateObject(), *keys=cJSON_CreateArray();
-        fl_json_add(c,o,"id",fl_json_u64(t->id)); fl_json_add(c,o,"property",cJSON_CreateString(fl_property_name(t->property)));
+        const Fl_PropertyDef *definition = fl_property_definition(t->property);
+        fl_json_add(c,o,"id",fl_json_u64(t->id));
+        fl_json_add(c,o,"component",cJSON_CreateString(definition ? definition->component : ""));
+        fl_json_add(c,o,"channel",cJSON_CreateString(fl_property_name(t->property)));
         for (size_t k=0;k<t->key_count;++k) {
             const Fl_Keyframe *key=&t->keys[k]; cJSON *item=cJSON_CreateObject();
             fl_json_add(c,item,"id",fl_json_u64(key->id)); fl_json_add(c,item,"at",fl_document_anchor_write(c,&key->at));
@@ -84,12 +97,15 @@ static bool animation_read(Fl_Json *c, const cJSON *array, Fl_Id entity, Fl_Comp
     Fl_Animation *a=calloc(1,sizeof(*a)); if (!a) return fl_json_fail(c,"Cannot allocate animation");
     out->data=(unsigned char *)a; out->size=sizeof(*a);
     for (const cJSON *o=array->child;o;o=o->next) {
-        if (!fl_json_object(c,o,"id property keys")) return false;
+        if (!fl_json_object(c,o,"id component channel keys")) return false;
         Fl_Track *t=&a->tracks[a->track_count++]; t->entity=entity; t->property=FL_PROP_COUNT;
-        const cJSON *property=fl_json_member(c,o,"property",cJSON_String), *keys=fl_json_member(c,o,"keys",cJSON_Array);
-        if (!property || !keys || !fl_json_uint(c,fl_json_member(c,o,"id",0),&t->id)) return false;
-        for (int p=0;p<FL_PROP_COUNT;++p) if (!strcmp(property->valuestring,fl_property_name((Fl_AnimProperty)p))) t->property=(Fl_AnimProperty)p;
-        if (t->property==FL_PROP_COUNT) return fl_json_fail(c,"Unknown animated property");
+        const cJSON *component=fl_json_member(c,o,"component",cJSON_String), *channel=fl_json_member(c,o,"channel",cJSON_String), *keys=fl_json_member(c,o,"keys",cJSON_Array);
+        if (!component || !channel || !keys || !fl_json_uint(c,fl_json_member(c,o,"id",0),&t->id)) return false;
+        for (int p=0;p<FL_PROP_COUNT;++p) {
+            const Fl_PropertyDef *definition=fl_property_definition((Fl_AnimProperty)p);
+            if (definition && !strcmp(channel->valuestring,definition->name) && !strcmp(component->valuestring,definition->component)) {t->property=(Fl_AnimProperty)p; t->component=definition->component_type;}
+        }
+        if (t->property==FL_PROP_COUNT) return fl_json_fail(c,"Unknown animated channel");
         t->key_count=t->key_capacity=(size_t)cJSON_GetArraySize(keys);
         t->keys=t->key_count ? calloc(t->key_count,sizeof(*t->keys)) : NULL;
         if (t->key_count && !t->keys) {t->key_count=0; return fl_json_fail(c,"Cannot allocate keys");}

@@ -216,10 +216,13 @@ static void push_value(lua_State *L, int property, const double value[4])
 /* Construct the per-evaluation self table from the current document state. */
 static void push_entity(lua_State *L, Fl_ScriptRuntime *r, size_t entity, const Fl_EntityState *state, const double values[FL_PROP_COUNT][4])
 {
-    lua_createtable(L, 0, 6); int self = lua_gettop(L);
-    static const char *const groups[] = {"transform", "appearance", "crop", "style", "media"};
-    for (size_t i = 0; i < sizeof(groups) / sizeof(*groups); ++i) {
-        lua_newtable(L); lua_setfield(L, self, groups[i]);
+    lua_createtable(L, 0, 8); int self = lua_gettop(L);
+    for (int p = 0; p < FL_PROP_COUNT; ++p) {
+        const char *group = fl_property_definition((Fl_AnimProperty)p)->lua_group;
+        if (!group) continue;
+        lua_getfield(L, self, group);
+        if (lua_isnil(L, -1)) {lua_pop(L, 1); lua_newtable(L); lua_setfield(L, self, group);}
+        else lua_pop(L, 1);
     }
     for (int p = 0; p < FL_PROP_COUNT; ++p) {
         const Fl_PropertyDef *definition = fl_property_definition((Fl_AnimProperty)p);

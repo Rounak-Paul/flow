@@ -21,7 +21,7 @@ bool fl_keyed_value_changed(const Fl_Scene *scene, const Fl_Track *track, Fl_Tic
 /* Split keyed configure components: animated channels become key writes and keep their base values.
    Rewritten components point at the caller's scratch buffers. Returns the number of writes. */
 size_t fl_keyed_components(const Fl_Scene *s, const Fl_Entity *e, Fl_Component *components, size_t count,
-                               unsigned char transform[56], unsigned char appearance[24], unsigned char opacity[8], unsigned char style[91],
+                               unsigned char pose_bytes[FL_POSE_BYTES], unsigned char bounds_bytes[FL_BOUNDS_BYTES], unsigned char appearance[24], unsigned char opacity[8], unsigned char style[91],
                                Fl_KeyWrite *writes, Fl_Tick tick)
 {
     if (!s || !e || count>64 || (count && !components)) return SIZE_MAX;
@@ -32,18 +32,28 @@ size_t fl_keyed_components(const Fl_Scene *s, const Fl_Entity *e, Fl_Component *
     size_t n = 0;
     for (size_t i = 0; i < count; ++i) {
         Fl_Component *c = &components[i];
-        if (c->type == FL_COMPONENT_TRANSFORM) {
-            Fl_Transform next, base;
-            if (!fl_transform_decode(c, &next) || !fl_transform_decode(fl_entity_component(e, FL_COMPONENT_TRANSFORM), &base)) continue;
-            double *value[7] = {&next.x, &next.y, &next.width, &next.height, &next.rotation, &next.scale_x, &next.scale_y};
-            const double kept[7] = {base.x, base.y, base.width, base.height, base.rotation, base.scale_x, base.scale_y};
-            for (int k = 0; k < 7; ++k) {
-                if (fl_scene_track(s, e->id, (Fl_AnimProperty)(FL_PROP_X + k))) {
-                    writes[n++] = (Fl_KeyWrite){e->id, (Fl_AnimProperty)(FL_PROP_X + k), {*value[k], 0, 0, 0}};
-                    *value[k] = kept[k];
-                }
+        if (c->type == FL_COMPONENT_POSE) {
+            Fl_Pose next, base;
+            if (!fl_pose_decode(c, &next) || !fl_pose_decode(fl_entity_component(e, FL_COMPONENT_POSE), &base)) continue;
+            double *value[12] = {&next.x,&next.y,&next.z,&next.rx,&next.ry,&next.rz,&next.sx,&next.sy,&next.sz,&next.px,&next.py,&next.pz};
+            const double kept[12] = {base.x,base.y,base.z,base.rx,base.ry,base.rz,base.sx,base.sy,base.sz,base.px,base.py,base.pz};
+            static const Fl_AnimProperty channels[12] = {FL_PROP_X,FL_PROP_Y,FL_PROP_Z,FL_PROP_RX,FL_PROP_RY,FL_PROP_RZ,FL_PROP_SCALE_X,FL_PROP_SCALE_Y,FL_PROP_SCALE_Z,FL_PROP_PIVOT_X,FL_PROP_PIVOT_Y,FL_PROP_PIVOT_Z};
+            for (int k = 0; k < 12; ++k) if (fl_scene_track(s, e->id, channels[k])) {
+                writes[n++] = (Fl_KeyWrite){e->id, channels[k], {*value[k], 0, 0, 0}};
+                *value[k] = kept[k];
             }
-            fl_transform_encode(&next, transform); c->data = transform;
+            fl_pose_encode(&next, pose_bytes); c->data = pose_bytes;
+        } else if (c->type == FL_COMPONENT_BOUNDS) {
+            Fl_Bounds next, base = fl_entity_bounds(e);
+            if (!fl_bounds_decode(c, &next)) continue;
+            double *value[3] = {&next.width,&next.height,&next.depth};
+            const double kept[3] = {base.width,base.height,base.depth};
+            static const Fl_AnimProperty channels[3] = {FL_PROP_WIDTH,FL_PROP_HEIGHT,FL_PROP_DEPTH};
+            for (int k = 0; k < 3; ++k) if (fl_scene_track(s, e->id, channels[k])) {
+                writes[n++] = (Fl_KeyWrite){e->id, channels[k], {*value[k], 0, 0, 0}};
+                *value[k] = kept[k];
+            }
+            fl_bounds_encode(&next, bounds_bytes); c->data = bounds_bytes;
         } else if (c->type == FL_COMPONENT_APPEARANCE) {
             Fl_Appearance next, base = fl_widget_appearance(e);
             if (!fl_appearance_decode(c, &next)) continue;

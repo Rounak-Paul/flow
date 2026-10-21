@@ -39,8 +39,16 @@ void fl_scene_renderer_destroy(Fl_SceneRenderer *renderer);
  */
 void fl_scene_renderer_prepare(Fl_SceneRenderer *renderer, const Fl_Project *project, const Fl_Scene *scene,
                                const Fl_SceneState *state, const Fl_SceneGeometry *geometry, double text_scale, bool wait);
-/* Bind the primitive pipeline for a colour format and the whole target as viewport/scissor. False when unavailable. */
-bool fl_scene_renderer_begin(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, VkFormat format, uint32_t width, uint32_t height);
+/* Make this frame's host uniform writes visible to vertex and fragment shaders.
+   Record it before vkCmdBeginRendering. A barrier inside dynamic rendering is invalid. */
+void fl_scene_renderer_sync_uniforms(Fl_SceneRenderer *renderer, VkCommandBuffer cmd);
+/* Bind the primitive pipeline for a colour format and the whole target as viewport/scissor.
+   depth selects the pipeline that matches a D32 attachment on the current rendering pass. */
+bool fl_scene_renderer_begin(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, VkFormat format, uint32_t width, uint32_t height, bool depth);
+/* Depth image for a target of this size, transitioned for use as a depth attachment. NULL when it cannot be created. */
+VkImageView fl_scene_renderer_depth(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, uint32_t width, uint32_t height);
+/* View used by later primitive draws. right/up orient particle billboards. bloom is the active camera's post strength. */
+void fl_scene_renderer_set_view(Fl_SceneRenderer *renderer, Fl_Mat4 view_proj, Fl_Vec3 right, Fl_Vec3 up, double bloom);
 /* Fill target (scene units) with the backdrop colour; frame is the visible world rectangle the target maps into. */
 void fl_scene_renderer_background(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, const Fl_SceneFrame *frame, const Fl_SceneFrame *target,
                                   const unsigned char color[4]);
@@ -51,6 +59,8 @@ typedef struct Fl_RenderTarget {
     VkFormat format;
     uint32_t width, height;
     uint32_t slot;                  /* frame-in-flight index, selecting a private set of layer images */
+    VkImage image;                  /* colour image, sampled by bloom; may be NULL */
+    VkImageView depth;              /* D32 attachment of the pass that called entities, or NULL */
 } Fl_RenderTarget;
 
 /*
