@@ -62,7 +62,7 @@ void fl_scene_preview_reset_view(Fl_ScenePreview *p)
 static bool handle_point(Fl_ScenePreview *p,const Fl_Scene *scene,const Fl_SceneGeometry *g,
                          unsigned handle,double pixels_per_scene,double *x,double *y)
 {
-    const Fl_Entity *e=fl_scene_entity(scene,fl_scene_edit_primary(p->edit));
+    const Fl_Entity *e=fl_scene_entity(scene,fl_scene_edit_focus(p->edit));
     if (!e||fl_scene_edit_count(p->edit)!=1) return false;
     const Fl_ResolvedEntity *v=&g->entities[e-scene->entities];
     if (!v->visible||!v->invertible) return false;

@@ -1,5 +1,8 @@
 #include "flow_test.h"
 #include "fl_scene_edit.h"
+#include "time/fl_composition.h"
+#include "project/fl_prototype_authoring.h"
+#include "components/fl_prototype_instance.h"
 #include "platform/fl_fs.h"
 #include "platform/fl_paths.h"
 #include <math.h>
@@ -121,7 +124,7 @@ static void check_async_preview(Fl_Project *project, Fl_EventBus *bus, Fl_Id sce
     size_t index=(size_t)(fl_scene_entity(document,entity)-document->entities);
     CHECK(state && near(state->entities[index].transform.x,100));
     fl_scene_edit_set_snap(edit,false);
-    CHECK(fl_scene_edit_begin(edit,FL_GESTURE_MOVE,100,0)); fl_scene_edit_end(edit,true);
+    CHECK(!fl_scene_edit_begin(edit,FL_GESTURE_MOVE,100,0));
     state=await_preview(edit,bus,FL_TICKS_PER_SECOND); CHECK(state);
     fl_scene_edit_set_time(edit,2*FL_TICKS_PER_SECOND);
     state=fl_scene_edit_state(edit);
@@ -133,6 +136,40 @@ static void check_async_preview(Fl_Project *project, Fl_EventBus *bus, Fl_Id sce
     CHECK(state && state->entities[index].transform.x==2000);
     fl_scene_edit_set_time(edit,3*FL_TICKS_PER_SECOND); fl_scene_edit_state(edit);
     fl_scene_edit_destroy(edit); CHECK(fl_jobs_destroy(jobs)); fl_event_bus_dispatch(bus);
+}
+
+/* Generated children remain independently pickable, draggable and keyable in their local clock. */
+static void check_scoped_editing(Fl_Project *project, Fl_SceneEdit *edit, Fl_Id scene)
+{
+    Fl_Id shape=0,prototype=0,owner=0;
+    CHECK(fl_widget_create(project,scene,0,FL_WIDGET_RECTANGLE,10,20,&shape));
+    CHECK(fl_prototype_capture(project,scene,shape,"Scoped gesture",&prototype));
+    CHECK(fl_prototype_instantiate(project,scene,0,prototype,500,500,&owner));
+    CHECK(fl_scene_edit_select(edit,scene,owner,false)); fl_scene_edit_set_time(edit,0);
+    const Fl_SceneState *state=fl_scene_edit_state(edit); const Fl_Scene *flat=fl_scene_state_scene(state,fl_project_scene(project,scene));
+    Fl_Id generated=0;
+    for (size_t i=0;i<flat->entity_count;++i) {const Fl_Origin *origin=fl_composition_origin(state->composition,i); if (origin && origin->generated && origin->owner==owner) generated=flat->entities[i].id;}
+    CHECK(generated); CHECK(fl_scene_edit_select(edit,scene,generated,false));
+    CHECK(fl_scene_edit_primary(edit)==owner && fl_scene_edit_focus(edit)==generated);
+    CHECK(fl_scene_edit_contains(edit,generated) && !fl_scene_edit_contains(edit,owner));
+    CHECK(fl_scene_edit_begin(edit,FL_GESTURE_MOVE,0,0)); CHECK(fl_scene_edit_update(edit,15,25)); fl_scene_edit_end(edit,false);
+    state=fl_scene_edit_state(edit); flat=fl_scene_state_scene(state,NULL); const Fl_Entity *entity=fl_scene_entity(flat,generated); CHECK(entity);
+    if (entity) CHECK(state->entities[entity-flat->entities].transform.x==15 && state->entities[entity-flat->entities].transform.y==25);
+    Fl_Id key=0; CHECK(fl_scene_edit_timeline_apply(edit,&(Fl_Op){.kind=FL_OP_KEY_SET,.entity=generated,.property=FL_PROP_Y,.anchor={.kind=FL_ANCHOR_ABSOLUTE,.offset=0},.value={25}},&key)); CHECK(key>>63);
+    fl_scene_edit_set_time(edit,12000);
+    CHECK(fl_scene_edit_begin(edit,FL_GESTURE_MOVE,0,0));
+    for (unsigned i=0;i<80;++i) CHECK(fl_scene_edit_update(edit,0,(double)(i+1)/8));
+    fl_scene_edit_end(edit,false);
+    const Fl_Scene *clock=fl_scene_edit_timeline(edit); const Fl_Track *track=fl_scene_track(clock,generated,FL_PROP_Y);
+    CHECK(track && track->key_count==2 && track->keys[1].value[0]==35);
+    Fl_PrototypeInstance instance={0}; CHECK(fl_prototype_instance_decode(fl_entity_component(fl_scene_entity(fl_project_scene(project,scene),owner),FL_COMPONENT_PROTOTYPE),&instance));
+    Fl_Json context={0}; cJSON *operations=fl_json_parse(&context,instance.overrides,instance.overrides_size);
+    CHECK(operations && cJSON_GetArraySize(operations)<12); cJSON_Delete(operations);
+    CHECK(fl_scene_edit_begin(edit,FL_GESTURE_MOVE,0,0)); CHECK(fl_scene_edit_update(edit,100,100)); fl_scene_edit_end(edit,true);
+    state=fl_scene_edit_state(edit); flat=fl_scene_state_scene(state,NULL); entity=fl_scene_entity(flat,generated);
+    CHECK(entity && state->entities[entity-flat->entities].transform.y==35);
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_REMOVE,.scene=scene,.entity=owner},NULL));
+    CHECK(fl_scene_edit_count(edit)==0);
 }
 
 int main(int argc,char **argv)
@@ -175,6 +212,7 @@ int main(int argc,char **argv)
     check_keyed_gesture(p,edit,scene);
     check_canvas_authoring(p,edit,scene);
     check_async_preview(p,bus,scene);
+    check_scoped_editing(p,edit,scene);
     CHECK(fl_project_save(p));fl_scene_edit_destroy(edit);fl_project_destroy(p);CHECK(fl_event_bus_destroy(bus));fl_fs_remove(path);
     return FLOW_TEST_RESULT("fl_scene_edit_tests");
 }

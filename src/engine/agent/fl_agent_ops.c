@@ -1,4 +1,5 @@
 #include "project/fl_prototype_authoring.h"
+#include "project/fl_scope_authoring.h"
 #include "fl_agent_internal.h"
 #include "doc/fl_document.h"
 #include "components/fl_script.h"
@@ -676,6 +677,29 @@ static bool prototype_overrides(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail 
     return ok || rejected(f,"prototype.overrides",fl_project_diagnostic(x->project)[0] ? fl_project_diagnostic(x->project) : "invalid prototype override");
 }
 
+/* Detach into scene-owned native content while retaining generator identity and scoped clocks. */
+static bool prototype_detach(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    (void)result; static const char *const keys[]={"op","as","entity",NULL};
+    const Fl_Scene *scene; const Fl_Entity *entity;
+    if (!agent_only_keys(op,f,"prototype.detach",keys) || !(entity=need_entity(x,op,"entity",&scene,f,"prototype.detach"))) return false;
+    return fl_prototype_detach(x->project,scene->id,entity->id) || rejected(f,"prototype.detach","entity has no detachable prototype or already owns a composition");
+}
+
+/* Apply one provenance-addressed edit without exposing evaluated IDs as persistent identities. */
+static bool scope_edit(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    (void)result; static const char *const keys[]={"op","as","entity","component","target","path","value",NULL};
+    const Fl_Scene *scene; const Fl_Entity *owner; Fl_Origin address={.generated=true};
+    if (!agent_only_keys(op,f,"scope.edit",keys) || !(owner=need_entity(x,op,"entity",&scene,f,"scope.edit")) ||
+        !agent_get_id(op,"component",&x->refs,true,&address.component,f,"scope.edit") || !agent_get_id(op,"target",&x->refs,true,&address.entity,f,"scope.edit")) return false;
+    address.owner=owner->id; const cJSON *path=cJSON_GetObjectItemCaseSensitive(op,"path");
+    if (path && (!cJSON_IsArray(path) || cJSON_GetArraySize(path)>32)) return fl_fail(f,"invalid_argument","scope.edit path must be an array of at most32 component IDs");
+    for (const cJSON *part=path ? path->child : NULL;part;part=part->next)
+        if (!agent_id_value(part,&x->refs,&address.path[address.depth++],f,"scope.edit")) return false;
+    return fl_scope_edit(x->project,scene->id,&address,cJSON_GetObjectItemCaseSensitive(op,"value")) || rejected(f,"scope.edit",fl_project_diagnostic(x->project)[0] ? fl_project_diagnostic(x->project) : "invalid scoped edit");
+}
+
 /* Author editable asset bytes through the same validated document changeset as native editing. */
 static bool asset_source(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
 {
@@ -832,7 +856,7 @@ static const struct {const char *name; OpFn run;} OPERATIONS[] = {
     {"key.set", key_set}, {"key.remove", key_remove}, {"track.remove", track_remove},
     {"beat.add", beat_add}, {"beat.update", beat_update}, {"beat.remove", beat_remove}, {"beat.move", beat_move}, {"beat.split", beat_split},
     {"clip.add", clip_add}, {"clip.update", clip_update}, {"clip.remove", clip_remove},
-    {"prototype.capture",prototype_capture}, {"prototype.instantiate",prototype_instantiate}, {"prototype.overrides",prototype_overrides},
+    {"prototype.capture",prototype_capture}, {"prototype.instantiate",prototype_instantiate}, {"prototype.overrides",prototype_overrides}, {"prototype.detach",prototype_detach}, {"scope.edit",scope_edit},
     {"asset.source", asset_source}, {"asset.rename", asset_edit}, {"asset.remove", asset_edit},
     {"script.create", script_create}, {"script.update", script_update}, {"script.remove", script_remove},
     {"script.attach", script_attach}, {"script.detach", script_detach},

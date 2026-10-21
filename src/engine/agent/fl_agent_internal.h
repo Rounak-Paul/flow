@@ -1,5 +1,6 @@
 #pragma once
 #include "fl_agent.h"
+#include "project/fl_bake.h"
 #include "project/fl_history.h"
 #include "schema/fl_widgets.h"
 #include "time/fl_scene_state.h"
@@ -19,6 +20,8 @@ typedef struct Fl_AgentFrames {
 
 struct Fl_Agent {
     Fl_AgentHost host;
+    Fl_Bake *bake;
+    uint64_t bake_token;
     Fl_AgentFrames frames;
     void *bindings;             /* tool registrations handed to the MCP core */
 };

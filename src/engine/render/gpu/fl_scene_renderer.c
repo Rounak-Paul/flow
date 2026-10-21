@@ -456,7 +456,7 @@ static void prepare_videos(Fl_SceneRenderer *p, const Fl_Project *project, const
         const Fl_Entity *entity=&scene->entities[i]; Fl_VideoClip clip;
         if (!geometry->entities[i].visible || geometry->entities[i].opacity<=0 || !geometry->entities[i].invertible || !fl_video_clip_decode(fl_entity_component(entity,FL_COMPONENT_VIDEO),&clip)) continue;
         const Fl_Asset *asset=fl_project_asset(project,clip.asset); if (!asset) {p->video_error=true; continue;}
-        double seconds=fl_video_clip_source_seconds(&clip,state ? state->entities[i].local_tick : tick,asset->duration);
+        double seconds=state && state->entities[i].media_seconds>=0 ? state->entities[i].media_seconds : fl_video_clip_source_seconds(&clip,state ? state->entities[i].local_tick : tick,asset->duration);
         Fl_VideoFrame *slot=NULL;
         for (size_t j=0;j<p->video_count;++j) if (p->videos[j].entity==entity->id) {slot=&p->videos[j]; break;}
         if (!slot) {
@@ -637,7 +637,7 @@ static void draw_entity(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_Scene
     look.fill[3] = (unsigned char)lround(look.fill[3] * v->opacity);
     look.stroke[3] = (unsigned char)lround(look.stroke[3] * v->opacity);
     Fl_Appearance picture = {.fill = {255, 255, 255, (unsigned char)lround(255 * v->opacity)}};
-    Fl_Style style = fl_entity_style(e);
+    Fl_Style style = state ? state->entities[index].style : fl_entity_style(e);
     Fl_PrimitiveStyle shape = {.radius = style.radius, .gradient = style.gradient, .gradient_angle = style.gradient_angle};
     memcpy(shape.gradient_to, style.gradient_to, 4);
     shape.gradient_to[3] = (unsigned char)lround(style.gradient_to[3] * v->opacity);
@@ -785,7 +785,7 @@ void fl_scene_renderer_entities(Fl_SceneRenderer *p, VkCommandBuffer cmd, const 
         }
         size_t index = g->order[k];
         const Fl_ResolvedEntity *v = &g->entities[index];
-        Fl_Style style = fl_entity_style(&scene->entities[index]);
+        Fl_Style style = state ? state->entities[index].style : fl_entity_style(&scene->entities[index]);
         bool layered = parent && (style.clip || style.blur > 0) && v->visible && v->invertible && v->opacity > 0 && depth < LAYER_DEPTH &&
                        layer_image(p, target, depth);
         if (!layered) {draw_entity(p, cmd, frame, scene, state, g, index, PART_ALL); continue;}

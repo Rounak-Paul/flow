@@ -38,7 +38,8 @@ struct Fl_TimelinePanel {
     Fl_TimelineItem *items;
     size_t item_count, item_capacity;
     Fl_Id selected_key, selected_beat, selected_clip;
-    Fl_Id selection_entity;
+    Fl_Id selection_entity, timeline_scene;
+    uint64_t timeline_revision;
     Fl_AnimProperty property;
     Fl_AnimProperty properties[FL_PROP_COUNT];
     size_t property_count;
@@ -93,7 +94,14 @@ static void invalidate(Fl_TimelinePanel *p)
 
 /* Borrow the active project, scene and its timeline length. */
 static Fl_Project *project_of(const Fl_TimelinePanel *p) { return fl_scene_edit_project(p->edit); }
-static const Fl_Scene *scene_of(const Fl_TimelinePanel *p) { return fl_project_scene(project_of(p), fl_scene_edit_scene(p->edit)); }
+static const Fl_Scene *scene_of(const Fl_TimelinePanel *p) { return fl_scene_edit_timeline(p->edit); }
+
+/* Timeline lanes use the focused scope clock; transport still advances the root scene. */
+static void seek_local(Fl_TimelinePanel *p, Fl_Tick tick)
+{
+    Fl_Tick root;
+    if (fl_scene_edit_root_time(p->edit,tick,&root)) fl_playback_seek(p->playback,root);
+}
 
 /* Input coordinates are resolved pixels; timeline zoom is expressed in logical pixels. */
 static float panel_scale(const Fl_TimelinePanel *p)
@@ -123,7 +131,7 @@ static void format_time(Fl_Tick tick, char *out, size_t capacity)
 /* Apply an operation, logging rejections. */
 static bool apply(Fl_TimelinePanel *p, Fl_Op op, Fl_Id *id)
 {
-    if (fl_project_apply(project_of(p), &op, id)) return true;
+    if (fl_scene_edit_timeline_apply(p->edit, &op, id)) return true;
     FL_LOG_WARN("timeline", "timeline edit rejected");
     return false;
 }
@@ -150,7 +158,7 @@ static float playback_scroll(float cursor, float width, float offset, float cont
 /* A beat can split only strictly inside its time range. */
 static bool can_split_beat(const Fl_TimelinePanel *p, Fl_Id beat)
 {
-    Fl_Tick start, end, now = fl_scene_edit_time(p->edit);
+    Fl_Tick start, end, now = fl_scene_edit_local_time(p->edit);
     return fl_scene_beat_range(scene_of(p), beat, &start, &end) && now > start && now < end;
 }
 
@@ -158,7 +166,7 @@ static bool can_split_beat(const Fl_TimelinePanel *p, Fl_Id beat)
 static void sync_playhead(Fl_TimelinePanel *p)
 {
     const Fl_Scene *scene = scene_of(p);
-    Fl_Tick now = fl_scene_edit_time(p->edit);
+    Fl_Tick now = fl_scene_edit_local_time(p->edit);
     float scale = p->window ? ca_instance_get_scale(ca_window_instance(p->window)) : 1;
     float x = (x_of(p, now) - FL_STYLE_TL_PLAYHEAD_W * 0.5f) * scale;
     float w = FL_STYLE_TL_PLAYHEAD_W * scale;
@@ -200,7 +208,7 @@ static Fl_Tick snap(const Fl_TimelinePanel *p, const Fl_Scene *s, Fl_Tick tick)
 {
     if (!p->snap_enabled) return tick;
     Fl_Tick limit = (Fl_Tick)(FL_STYLE_TL_SNAP / (p->zoom * panel_scale(p)) * FL_TICKS_PER_SECOND), best = tick, distance = limit + 1;
-    Fl_Tick edge = 0, candidates[2] = {0, fl_scene_edit_time(p->edit)};
+    Fl_Tick edge = 0, candidates[2] = {0, fl_scene_edit_local_time(p->edit)};
     for (int i = 0; i < 2; ++i) if (llabs(candidates[i] - tick) < distance) { distance = llabs(candidates[i] - tick); best = candidates[i]; }
     for (size_t i = 0; i < s->beat_count; ++i) {
         edge += (Fl_Tick)s->beats[i].duration;
@@ -222,7 +230,7 @@ static void transport_toggle(Ca_Button *b, void *data) { (void)b; Fl_TimelinePan
 static void transport_stop(Ca_Button *b, void *data)
 {
     (void)b; Fl_TimelinePanel *p = data;
-    fl_playback_pause(p->playback); fl_playback_seek(p->playback, 0);
+    fl_playback_pause(p->playback); seek_local(p, 0);
 }
 static void zoom_in(Ca_Button *b, void *data) { (void)b; Fl_TimelinePanel *p = data; p->zoom = fmin(FL_STYLE_TL_ZOOM_MAX, p->zoom * 1.5); invalidate(p); }
 static void zoom_out(Ca_Button *b, void *data) { (void)b; Fl_TimelinePanel *p = data; p->zoom = fmax(FL_STYLE_TL_ZOOM_MIN, p->zoom / 1.5); invalidate(p); }
@@ -275,7 +283,7 @@ static void add_beat(Ca_Button *b, void *data)
     (void)b; Fl_TimelinePanel *p = data;
     const Fl_Scene *s = scene_of(p);
     if (!s) return;
-    Fl_TimeAnchor at = fl_anchor_at(s, fl_scene_edit_time(p->edit));
+    Fl_TimeAnchor at = fl_anchor_at(s, fl_scene_edit_local_time(p->edit));
     size_t position = s->beat_count;
     for (size_t i = 0; i < s->beat_count; ++i) if (s->beats[i].id == at.beat) position = i + 1;
     char name[32]; snprintf(name, sizeof(name), "Beat %zu", (s->beat_count ? s->beat_count : 1) + 1);
@@ -284,9 +292,17 @@ static void add_beat(Ca_Button *b, void *data)
                          .beat_duration = FL_STYLE_TL_BEAT_DEFAULT}, &id)) {
         p->selected_beat = id; p->selected_key = p->selected_clip = 0;
         Fl_Tick start;
-        if (fl_scene_beat_range(scene_of(p), id, &start, NULL)) fl_playback_seek(p->playback, start);
+        if (fl_scene_beat_range(scene_of(p), id, &start, NULL)) seek_local(p, start);
         invalidate(p);
     }
+}
+
+/* Behavior-owned and baked properties cannot accept ineffective native keys. */
+static bool key_editable(Fl_TimelinePanel *p, Fl_Id id, Fl_AnimProperty property)
+{
+    const Fl_SceneState *state=fl_scene_edit_state(p->edit); const Fl_Scene *flat=fl_scene_state_scene(state,scene_of(p));
+    const Fl_Entity *entity=fl_scene_entity(flat,id);
+    return entity && fl_property_supported(entity,property) && !fl_entity_component(entity,FL_COMPONENT_SAMPLED) && !fl_scene_state_writer(state,(size_t)(entity-flat->entities),property,NULL,NULL);
 }
 
 static void key_property(Fl_TimelinePanel *p, Fl_Id entity, Fl_AnimProperty property)
@@ -296,18 +312,14 @@ static void key_property(Fl_TimelinePanel *p, Fl_Id entity, Fl_AnimProperty prop
     if (fl_playback_playing(p->playback) || !fl_property_supported(e, property)) return;
     const Fl_SceneState *state = fl_scene_edit_state(p->edit);
     if (!state) return;
-    const Fl_EntityState *v = &state->entities[e - s->entities];
-    const double scalar[] = {v->transform.x, v->transform.y, v->transform.width, v->transform.height,
-        v->transform.rotation, v->transform.scale_x, v->transform.scale_y, v->opacity};
-    Fl_Tick now = fl_scene_edit_time(p->edit);
+    const Fl_Scene *flat=fl_scene_state_scene(state,s); const Fl_Entity *displayed=fl_scene_entity(flat,e->id);
+    if (!displayed || fl_entity_component(displayed,FL_COMPONENT_SAMPLED) || fl_scene_state_writer(state,(size_t)(displayed-flat->entities),property,NULL,NULL)) return;
+    const Fl_EntityState *v = &state->entities[displayed-flat->entities];
+    Fl_Tick now = fl_scene_edit_local_time(p->edit);
     Fl_Op op = {.kind = FL_OP_KEY_SET, .scene = s->id, .entity = entity, .property = property,
         .anchor = fl_anchor_at(s, now), .ease = FL_EASE_IN_OUT};
-    if (property <= FL_PROP_OPACITY) op.value[0] = scalar[property];
-    else if (property == FL_PROP_FILL || property == FL_PROP_STROKE) {
-        const unsigned char *color = property == FL_PROP_FILL ? v->appearance.fill : v->appearance.stroke;
-        for (size_t i = 0; i < 4; ++i) op.value[i] = color[i];
-    } else if (property >= FL_PROP_CROP_X) op.value[0] = v->crop[property - FL_PROP_CROP_X];
-    else op.value[0] = property == FL_PROP_STROKE_WIDTH ? v->appearance.stroke_width : v->appearance.font_size;
+    double values[FL_PROP_COUNT][4]={{0}}; fl_entity_state_values(v,values);
+    memcpy(op.value,values[property],sizeof(op.value));
     const Fl_Track *track = fl_scene_track(s, entity, property);
     Fl_Tick previous = INT64_MIN;
     for (size_t i = 0; track && i < track->key_count; ++i) {
@@ -331,7 +343,7 @@ static void property_chosen(Ca_Select *select, void *data)
 static void key_selection(Ca_Button *button, void *data)
 {
     (void)button; Fl_TimelinePanel *p = data;
-    if (fl_scene_edit_count(p->edit) == 1) key_property(p, fl_scene_edit_primary(p->edit), p->property);
+    if (fl_scene_edit_count(p->edit) == 1) key_property(p, fl_scene_edit_focus(p->edit), p->property);
 }
 
 /* Add or update a key on this row at the playhead. */
@@ -350,7 +362,7 @@ static void seek_track(Fl_TimelineItem *it, bool forward)
 {
     Fl_TimelinePanel *p = it->panel;
     const Fl_Scene *s = scene_of(p);
-    Fl_Tick now = fl_scene_edit_time(p->edit), best = forward ? INT64_MAX : INT64_MIN;
+    Fl_Tick now = fl_scene_edit_local_time(p->edit), best = forward ? INT64_MAX : INT64_MIN;
     Fl_Id id = 0;
     Fl_TrackIterator tracks = {.scene = s};
     for (const Fl_Track *track; (track = fl_scene_track_next(&tracks));) if (track->id == it->id)
@@ -360,7 +372,7 @@ static void seek_track(Fl_TimelineItem *it, bool forward)
             if (!fl_anchor_sample(s, &key->at, &tick)) continue;
             if (forward ? tick > now && tick < best : tick < now && tick > best) {best = tick; id = key->id;}
         }
-    if (id) {p->selected_key = id; fl_playback_seek(p->playback, best); invalidate(p);}
+    if (id) {p->selected_key = id; seek_local(p, best); invalidate(p);}
 }
 
 /* Previous/next buttons borrow the row's stable track context. */
@@ -398,7 +410,7 @@ static void handle_drag(const Ca_DragEvent *event, void *data)
     Fl_TimelineItem *it = data; Fl_TimelinePanel *p = it->panel;
     float origin = 0;
     if (p->header_content) ca_div_screen_rect(p->header_content, &origin, NULL, NULL, NULL);
-    fl_playback_seek(p->playback, tick_of(p, (float)event->x - origin));
+    seek_local(p, tick_of(p, (float)event->x - origin));
 }
 
 /* Read the native horizontal offset so panning during a beat drag remains coherent. */
@@ -441,7 +453,7 @@ static void item_drag_start(const Ca_DragEvent *event, void *data)
     const Fl_Scene *s = scene_of(p);
     if (!s) return;
     p->drag_beat = 0;
-    p->drag_origin = 0; p->drag_moved = false; p->drag_time = fl_scene_edit_time(p->edit);
+    p->drag_origin = 0; p->drag_moved = false; p->drag_time = fl_scene_edit_local_time(p->edit);
     if (it->kind == ITEM_BEAT) {
         Fl_Tick start, end;
         if (fl_scene_beat_range(s, it->id, &start, &end)) {
@@ -562,7 +574,7 @@ static void item_drag_end(const Ca_DragEvent *event, void *data)
             if (from != SIZE_MAX && from != p->beat_drop && apply(p, (Fl_Op){.kind = FL_OP_BEAT_MOVE,
                 .scene = s->id, .beat = beat, .position = p->beat_drop}, NULL)) {
                 Fl_Tick start;
-                if (fl_scene_beat_range(scene_of(p), beat, &start, NULL)) fl_playback_seek(p->playback, start);
+                if (fl_scene_beat_range(scene_of(p), beat, &start, NULL)) seek_local(p, start);
             }
             invalidate(p); return;
         }
@@ -573,11 +585,11 @@ static void item_drag_end(const Ca_DragEvent *event, void *data)
     if (it->kind == ITEM_KEY) {
         const Fl_Keyframe *k = fl_scene_key(s, it->id, NULL);
         p->selected_key = it->id;
-        if (k) {Fl_Tick time; if (fl_anchor_sample(s, &k->at, &time)) fl_playback_seek(p->playback, time);}
+        if (k) {Fl_Tick time; if (fl_anchor_sample(s, &k->at, &time)) seek_local(p, time);}
     } else if ((it->kind == ITEM_BEAT || it->kind == ITEM_BEAT_EDGE) && fl_scene_beat_range(s, it->id, &start, NULL)) {
         p->selected_beat = it->id;
         if (it->kind == ITEM_BEAT) {
-            fl_playback_seek(p->playback, start);
+            seek_local(p, start);
             if (beat_double_clicked(p, it->id, event, fl_clock_monotonic_ns())) {
                 for (size_t i = 0; i < s->beat_count; ++i) if (s->beats[i].id == it->id) {
                     rename_beat(p, &s->beats[i]); break;
@@ -645,7 +657,7 @@ static void split_beat(Fl_TimelinePanel *p, Fl_Id beat)
         fl_playback_pause(p->playback);
         Fl_Id id;
         if (apply(p, (Fl_Op){.kind = FL_OP_BEAT_SPLIT, .scene = scene->id, .beat = beat,
-            .name = name, .tick = fl_scene_edit_time(p->edit)}, &id)) {
+            .name = name, .tick = fl_scene_edit_local_time(p->edit)}, &id)) {
             p->selected_beat = id; invalidate(p);
         }
         return;
@@ -717,7 +729,7 @@ static void clip_menu(int index, void *data)
 static bool changed(const Fl_Event *event, void *data)
 {
     (void)event; Fl_TimelinePanel *p = data;
-    Fl_Id primary = fl_scene_edit_primary(p->edit);
+    Fl_Id primary = fl_scene_edit_focus(p->edit);
     if (primary != p->selection_entity) {
         p->selection_entity = primary; p->property = FL_PROP_X;
         const Fl_Scene *scene = scene_of(p);
@@ -732,7 +744,13 @@ static bool changed(const Fl_Event *event, void *data)
     if (!fl_scene_beat_range(scene_of(p), p->selected_beat, NULL, NULL)) p->selected_beat = 0;
     invalidate(p); return false;
 }
-static bool time_changed(const Fl_Event *event, void *data) { (void)event; sync_playhead(data); return false; }
+static bool time_changed(const Fl_Event *event, void *data)
+{
+    (void)event; Fl_TimelinePanel *p=data; const Fl_Scene *scene=scene_of(p);
+    if (scene && (scene->id!=p->timeline_scene || scene->revision!=p->timeline_revision)) invalidate(p);
+    else sync_playhead(p);
+    return false;
+}
 
 Fl_TimelinePanel *fl_timeline_panel_create(Fl_SceneEdit *edit, Fl_Playback *playback, Fl_EventBus *bus)
 {
@@ -832,7 +850,7 @@ static void build_time_ruler(Fl_TimelinePanel *p, Fl_Tick length, float width)
     Fl_TimelineItem *handle = item(p, ITEM_RULER, 0);
     p->header_playhead = ca_div_begin(&(Ca_DivDesc){.position = CA_POSITION_ABSOLUTE,
         .id = "timeline-needle", .style = FL_CLASS_TL_NEEDLE,
-        .pos_x = x_of(p, fl_scene_edit_time(p->edit)) - FL_STYLE_TL_PLAYHEAD_W * 0.5f,
+        .pos_x = x_of(p, fl_scene_edit_local_time(p->edit)) - FL_STYLE_TL_PLAYHEAD_W * 0.5f,
         .width = FL_STYLE_TL_PLAYHEAD_W, .height = FL_STYLE_TL_HEADER_H,
         .on_drag_start = handle ? handle_drag : NULL, .on_drag = handle ? handle_drag : NULL, .drag_data = handle});
     ca_div_end();
@@ -866,6 +884,7 @@ void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
     Fl_TimelinePanel *p = data; p->dock = dock; p->window = window;
     ca_effect_destroy(p->scroll_effect); p->scroll_effect = NULL; p->label_content = NULL; p->header_content = NULL; p->beat_drop_marker = NULL; p->header_playhead = NULL; p->playhead_viewport = NULL; p->split_button = NULL;
     const Fl_Scene *s = scene_of(p);
+    p->timeline_scene=s ? s->id : 0; p->timeline_revision=s ? s->revision : 0;
     Fl_Project *project = project_of(p);
     ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_TIMELINE});
     if (!s) {
@@ -892,7 +911,7 @@ void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
     p->clock = ca_text(&(Ca_TextDesc){.text = "", .style = FL_CLASS_TL_CLOCK});
     /* Key the selected object's property at the playhead, including its first one. */
     size_t selected = fl_scene_edit_count(p->edit);
-    const Fl_Entity *entity = selected == 1 ? fl_scene_entity(s, fl_scene_edit_primary(p->edit)) : NULL;
+    const Fl_Entity *entity = selected == 1 ? fl_scene_entity(s, fl_scene_edit_focus(p->edit)) : NULL;
     char selection[192];
     if (entity) snprintf(selection, sizeof(selection), "%s", entity->name);
     else if (selected) snprintf(selection, sizeof(selection), "%zu objects", selected);
@@ -911,7 +930,7 @@ void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
             .id = "timeline-property", .style = FL_CLASS_TL_SELECT, .on_change = property_chosen, .change_data = p,
             .disabled = !entity || playing});
         fl_button(&(Fl_ButtonDesc){.text = CA_ICON_NF_FA_DIAMOND, .id = "timeline-add-key", .on_click = key_selection, .click_data = p,
-             .disabled = !p->property_count || playing, .kind = FL_BUTTON_ICON, .tooltip = "Key this property at the playhead. An existing key at this time is updated."});
+             .disabled = !p->property_count || playing || !key_editable(p,fl_scene_edit_focus(p->edit),p->property), .kind = FL_BUTTON_ICON, .tooltip = "Key this property at the playhead. An existing key at this time is updated."});
     }
 
     ca_div_begin(&(Ca_DivDesc){.style = FL_CLASS_TL_SPACER}); ca_div_end();
@@ -988,7 +1007,7 @@ void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
         fl_button(&(Fl_ButtonDesc){.text = CA_ICON_NF_MD_SKIP_PREVIOUS, .on_click = previous_key, .click_data = it, .disabled = !it || playing,
             .kind = FL_BUTTON_ICON,
             .tooltip = "Previous keyframe"});
-        fl_button(&(Fl_ButtonDesc){.text = CA_ICON_NF_FA_DIAMOND, .on_click = key_track, .click_data = it, .disabled = !it || playing,
+        fl_button(&(Fl_ButtonDesc){.text = CA_ICON_NF_FA_DIAMOND, .on_click = key_track, .click_data = it, .disabled = !it || playing || !key_editable(p,t->entity,t->property),
             .kind = FL_BUTTON_ICON,
             .tooltip = "Add or update this property at the playhead"});
         fl_button(&(Fl_ButtonDesc){.text = CA_ICON_NF_MD_SKIP_NEXT, .on_click = next_key, .click_data = it, .disabled = !it || playing,

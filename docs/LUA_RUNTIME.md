@@ -5,6 +5,7 @@ Lua files are ordinary project assets. A repeatable Script component references 
 ```lua
 return {
     parameters = {distance = {type = "number", default = 100}},
+    outputs = {self = {x = "replace"}},
     step_hz = 120,
     initialize = function(ctx)
         ctx.state = {position = 0}
@@ -72,7 +73,9 @@ return {
 
 Use stable local IDs across builds. Both next-ID cursors must exceed the corresponding IDs; timeline IDs share the entity cursor. Empty native collection tables become arrays. Generated native components can include animation, scripts, nested prototypes and media. Recursion, disconnected hierarchies, duplicate identities, unsupported payloads and invalid resources reject publication. Generated resource dependencies are included in captured exports.
 
-The native viewport currently selects the persistent generator owner when a generated child is picked. Generated-child override controls, explicit detach/bake and evaluated-output writer scheduling are separate unfinished refactor work; do not infer their availability from structural rendering.
+Generated objects are independently selectable in the viewport and the Inspector Contents selector. Inspector edits and gestures persist overrides against local identities. Their timeline shows the local scope's beats and keys; seeking maps through parent clocks using the current loop cycle. A behavior-owned channel is read-only in property/gesture controls: edit its parameters, bindings or source instead. Native keyed fields retain their authored base and write at the local playhead.
+
+Detach converts a Flow prototype instance to an owned composition, preserving the generator identity, local timelines, behaviors and media clocks. Nested assets remain ordinary references. Bake explicitly samples the whole scene into native sampled-animation components and owned nested scopes; it does not generate another Lua script or freeze a single frame.
 
 ## Typed attachment inputs
 
@@ -90,11 +93,43 @@ return {
 }
 ```
 
-The Script component's `bindings` object supplies typed references, for example `{"target":{"type":"entity","id":"42"}}`. Script schema version 6 stores bindings independently of parameters. Entity/component IDs are scoped automatically inside each Flow prototype instance; regions use that scope's beat IDs and assets remain project resources. Component bindings require both `entity` and `id`. Region/asset bindings require `id`. At most 64 named bindings and 16 KiB of reference JSON are allowed. Names are nonempty and at most 63 UTF-8 bytes. Required declarations need wiring; optional declarations may be omitted. Deleted targets keep their reference and produce an unresolved runtime diagnostic.
+The Script component's `bindings` object supplies typed references, for example `{"target":{"type":"entity","id":"42"}}`. Script schema version 8 stores bindings independently of parameters. Entity/component IDs are scoped automatically inside each Flow prototype instance; regions use that scope's beat IDs and assets remain project resources. Component bindings require both `entity` and `id`. Region/asset bindings require `id`. At most 64 named bindings and 16 KiB of reference JSON are allowed. Names are nonempty and at most 63 UTF-8 bytes. Required declarations need wiring; optional declarations may be omitted. Deleted targets keep their reference and produce an unresolved runtime diagnostic.
 
 `ctx.bindings` contains independent native snapshots. Entity inputs expose the same property vocabulary as `ctx.entity`, sampled from authored components and animation at the actual callback composition tick. Fixed-step replay therefore reads its own step's inputs. Component inputs expose typed authored component JSON, bounded to 32 KiB of native payload and 512 animation keys per input. Region inputs expose `start_tick` and `end_tick`; asset inputs expose identity, name and kind. Mutating these Lua tables cannot change another entity or the document. Asset bindings participate in dependency retention and export capture, including bindings retained by prototype overrides.
 
-These are explicitly native reads. Reading another behavior's evaluated output requires the unfinished declared writer/dependency plan; no insertion-order dependency is implied.
+These are native reads. Evaluated dependencies use `reads`, `ctx.inputs`, `outputs` and explicit attachment layers:
+
+```lua
+return {
+    bindings = {target = {type = "entity"}},
+    reads = {target = {x = true}},
+    outputs = {self = {x = "replace"}, target = {y = "add"}},
+    sample = function(ctx)
+        ctx.entity.transform.x = ctx.inputs.target.transform.x + 20
+        ctx.outputs.target.transform.y = 10
+    end,
+}
+```
+
+One layer observes a coherent input snapshot. Lower layers publish before higher layers. Reads of another behavior require a strictly lower writer layer. Ambiguous same-layer writers and dependency cycles reject publication. Numeric outputs support replace/add/multiply; text supports replacement. Every target of a callback validates before any target publishes. Failed dependencies block affected downstream outputs while unaffected peers continue.
+
+Omitting `outputs` gives a sampling behavior replacement ownership of all self channels. Declare narrow outputs to leave other channels available for native authoring. Build/state-only modules own no sampled channels. The Inspector exposes layer and typed entity/component/beat/asset bindings; MCP evaluation reports writer provenance and runtime/local component addresses.
+
+## Native properties and simulation events
+
+The shared property registry includes transform, opacity, fill/stroke, font size, crop, radius, blur, gradient angle/colour, shadow blur/offset/colour and video source time. Native tracks, Lua outputs, baking and rendering use the same vocabulary. `ctx.entity.style` carries the style properties; `ctx.entity.media.seconds` overrides video source seconds (`-1` follows the native placement clock). Angles use radians in native documents/Lua and the generic evaluated properties map. Text remains a budgeted UTF-8 string.
+
+An optional `events` component contains `{next_id, points}`. Each point has a stable component-local `id`, a native beat-aware `at` anchor, a `name` and JSON `value`. The Inspector's Simulation events controls add a named payload at the local playhead and remove points through the normal Apply/Revert draft. Files and MCP `component.set` edit the same native data. At most 256 events and 64 KiB of event JSON belong to one entity.
+
+Initialize receives events at its source origin. Each fixed step receives `ctx.events` in `(previous, current]`, sorted by source tick then stable ID. Each event exposes `id`, `name`, `value` and source `tick`. Sampling receives an empty event list, preventing presentation callbacks from firing simulation events twice. Replay, checkpoints, loop scopes and backward seeks reproduce the same explicit state; beat split preserves resolved event times. Deleted beat anchors remain inactive until rebound or restored.
+
+## Explicit native bake
+
+The Inspector's collapsed Bake scene motion controls and MCP `bake_scene` share one engine job owner. Start with an explicit interval, maximum sample step and nonnegative numeric tolerance; poll completion, then apply. Capture uses immutable project documents and cancellable workers. Apply rejects a changed project and creates one shared undo entry. Scope media/audio clocks remain native.
+
+Reduction verifies every captured interior point against native linear interpolation, holding text between keys. Tolerance applies at captured ticks; maximum step defines the unsampled interval. Endpoints hold outside the captured outer interval. Nested scopes capture their complete canonical intervals to preserve loops. Unresolved structural overrides reject bake. Capture is bounded to one million total poses, 64 MiB per scope and bounded native documents. Ready data is deliberately authored, cache-independent native data.
+
+Future specialized physics, transient particle/path batches and new effects extend these boundaries; they are not additional Script types.
 
 ## Budgets
 

@@ -1,7 +1,11 @@
 #include "fl_inspector.h"
+#include "project/fl_scope_authoring.h"
+#include "project/fl_bake.h"
+#include "project/fl_prototype_authoring.h"
 #include "ui/fl_button.h"
 #include "fl_file_browser.h"
 #include "components/fl_script.h"
+#include "components/fl_events.h"
 #include "doc/fl_json.h"
 #include "schema/fl_parameters.h"
 #include "fl_script_panel.h"
@@ -22,9 +26,15 @@ enum { NAME,X,Y,WIDTH,HEIGHT,ROTATION,SCALE_X,SCALE_Y,FILL,STROKE,STROKE_WIDTH,F
 #define WEIGHT_OPTIONS 32
 typedef struct Fl_InspectorField { struct Fl_Inspector *owner; char *value; bool dirty; } Fl_InspectorField;
 typedef struct Fl_ParameterField { Fl_InspectorField input; char *name, *label; char type[12]; } Fl_ParameterField;
+typedef struct Fl_EventChoice {struct Fl_Inspector *owner; Fl_Id id;} Fl_EventChoice;
+typedef struct Fl_BindingChoice {Fl_Id id,entity;} Fl_BindingChoice;
 typedef struct Fl_FontChoice { struct Fl_Inspector *owner; size_t family; uint64_t generation; } Fl_FontChoice;
 struct Fl_Inspector {
     Fl_SceneEdit *edit;
+    Fl_Bake *bake;
+    Fl_InspectorField bake_fields[4];
+    Fl_Id bake_scene;
+    bool bake_expanded;
     Fl_Playback *playback;
     Fl_Fonts *fonts;
     Fl_EventBus *bus;
@@ -34,13 +44,26 @@ struct Fl_Inspector {
     bool script_enabled, script_new;
     Fl_Id script_component, script_instances[65], loaded_script;
     Fl_TimeMapping script_time;
-    Fl_InspectorField clock_fields[4];
+    Fl_InspectorField clock_fields[5];
     Fl_Id *clock_beats;
     size_t clock_beat_count;
+    Fl_Id scoped_entity, scoped_owner;
+    Fl_Id *scope_options;
+    size_t scope_option_count;
     size_t script_instance_count;
     char script_instance_labels[65][96];
     Fl_Id *script_options;
     size_t script_option_count;
+    Fl_InspectorField event_name,event_value;
+    cJSON *event_draft;
+    bool event_dirty,event_expanded;
+    Fl_EventChoice event_choices[FL_EVENTS_COUNT];
+    Fl_InspectorField binding_name;
+    cJSON *binding_draft;
+    bool binding_dirty;
+    int binding_type;
+    Fl_BindingChoice *binding_options;
+    size_t binding_option_count;
     Fl_ParameterField *parameters;
     size_t parameter_count;
     Ca_Label *status;
@@ -92,6 +115,149 @@ static void drafted(Fl_Inspector *p)
     p->dirty=true;status(p,"Unsaved changes");
     if (p->dock) ca_dock_invalidate_panel(p->dock,"inspector");
 }
+/* Completion uses the pool's ID-only event; result application remains an explicit document edit. */
+static bool bake_done(const Fl_Event *event, void *data)
+{
+    Fl_Inspector *p=data;
+    if (fl_bake_matches(p->bake,event->payload) && p->dock) ca_dock_invalidate_panel(p->dock,"inspector");
+    return false;
+}
+
+/* Bake settings are tool inputs and do not mark the selected entity draft dirty. */
+static void bake_edited(Ca_TextInput *input, void *data)
+{
+    Fl_InspectorField *field=data; field_set(field,ca_input_text(input));
+}
+
+/* Capture explicit native bake settings without borrowing editor data on the worker. */
+static void bake_start(Ca_Button *button, void *data)
+{
+    (void)button; Fl_Inspector *p=data; double values[4];
+    for (unsigned i=0;i<4;++i) {
+        char *end=NULL; errno=0; values[i]=strtod(p->bake_fields[i].value ? p->bake_fields[i].value : "",&end);
+        if (errno || !end || end==p->bake_fields[i].value || *end || !isfinite(values[i]) || values[i]<0 || (i<3 && values[i]>(double)INT64_MAX/FL_TICKS_PER_SECOND)) {status(p,"Enter valid nonnegative bake values."); return;}
+    }
+    Fl_BakeOptions options={.start=(Fl_Tick)llround(values[0]*FL_TICKS_PER_SECOND),.end=(Fl_Tick)llround(values[1]*FL_TICKS_PER_SECOND),.step=(Fl_Tick)llround(values[2]*FL_TICKS_PER_SECOND),.tolerance=values[3]};
+    if (!p->bake) p->bake=fl_bake_create(fl_scene_edit_jobs(p->edit));
+    bool ok=fl_bake_start(p->bake,fl_scene_edit_project(p->edit),fl_scene_edit_scene(p->edit),&options);
+    status(p,ok ? "Capturing native motion…" : "Cannot start bake: check interval and finish active edits.");
+    if (p->dock) ca_dock_invalidate_panel(p->dock,"inspector");
+}
+
+/* Apply only an unchanged captured project; failed or stale results leave it untouched. */
+static void bake_apply(Ca_Button *button, void *data)
+{
+    (void)button; Fl_Inspector *p=data; Fl_Id owner=0;
+    bool ok=fl_bake_apply(p->bake,fl_scene_edit_project(p->edit),&owner);
+    if (ok) fl_scene_edit_select(p->edit,fl_scene_edit_scene(p->edit),owner,false);
+    status(p,ok ? "Baked native motion. Undo restores the source." : "Project changed since capture. Start a fresh bake."); p->refresh=true;
+}
+static void bake_cancel(Ca_Button *button, void *data) {(void)button; Fl_Inspector *p=data; fl_bake_cancel(p->bake);}
+static void bake_expand(Ca_Checkbox *checkbox, void *data) {Fl_Inspector *p=data; p->bake_expanded=ca_checkbox_get(checkbox); if (p->dock) ca_dock_invalidate_panel(p->dock,"inspector");}
+
+/* Keep advanced capture controls collapsed until requested, independent of selection. */
+static void bake_controls(Fl_Inspector *p, const Fl_Scene *scene)
+{
+    if (!scene) return;
+    if (p->bake_scene!=scene->id) {
+        char end[48]; snprintf(end,sizeof(end),"%.17g",(double)fl_scene_length(scene)/FL_TICKS_PER_SECOND);
+        field_set(&p->bake_fields[0],"0"); field_set(&p->bake_fields[1],end); field_set(&p->bake_fields[2],"0.016666666666666666"); field_set(&p->bake_fields[3],"0.01"); p->bake_scene=scene->id;
+    }
+    ca_checkbox(&(Ca_CheckboxDesc){.text="Bake scene motion",.checked=p->bake_expanded,.id="bake-expand",.on_change=bake_expand,.change_data=p});
+    if (!p->bake_expanded) return;
+    const char *labels[]={"Start (s)","End (s)","Max step (s)","Tolerance"};
+    Fl_BakeStatus current=fl_bake_status(p->bake);
+    for (unsigned i=0;i<4;++i) {
+        char id[24]; snprintf(id,sizeof(id),"bake-setting-%u",i);
+        ca_div_begin(&(Ca_DivDesc){.direction=CA_HORIZONTAL,.style=FL_CLASS_PROPERTY_ROW}); ca_text(&(Ca_TextDesc){.text=labels[i],.style=FL_CLASS_PROPERTY_LABEL});
+        ca_input(&(Ca_InputDesc){.text=p->bake_fields[i].value,.id=id,.style=FL_CLASS_PROPERTY_INPUT,.input_mode=CA_INPUT_FLOAT,.on_change=bake_edited,.change_data=&p->bake_fields[i],.disabled=current==FL_BAKE_RUNNING}); ca_div_end();
+    }
+    ca_div_begin(&(Ca_DivDesc){.direction=CA_HORIZONTAL,.style=FL_CLASS_TOOLBAR});
+    fl_button(&(Fl_ButtonDesc){.text=CA_ICON_NF_MD_PLAY,.kind=FL_BUTTON_ICON,.tooltip="Capture native motion",.id="bake-start",.on_click=bake_start,.click_data=p,.disabled=current==FL_BAKE_RUNNING || p->dirty});
+    fl_button(&(Fl_ButtonDesc){.text=CA_ICON_NF_MD_CHECK,.kind=FL_BUTTON_ICON,.tooltip="Apply baked native data",.id="bake-apply",.on_click=bake_apply,.click_data=p,.disabled=current!=FL_BAKE_READY || p->dirty});
+    fl_button(&(Fl_ButtonDesc){.text=CA_ICON_NF_MD_CLOSE,.kind=FL_BUTTON_ICON,.tooltip="Cancel bake",.id="bake-cancel",.on_click=bake_cancel,.click_data=p,.disabled=current!=FL_BAKE_RUNNING && current!=FL_BAKE_READY}); ca_div_end();
+    const char *messages[]={"", "Capturing…", "Ready. Apply replaces scene contents; undo restores them.", "Bake failed", "Cancelled", "Applied"};
+    ca_text(&(Ca_TextDesc){.text=fl_bake_error(p->bake)[0] ? fl_bake_error(p->bake) : messages[current],.style=FL_CLASS_MUTED,.wrap=true});
+}
+
+/* Resolve Inspector content independently of the persistent selection owner. */
+static const Fl_Scene *inspector_scene(Fl_Inspector *p)
+{
+    const Fl_Scene *authored=fl_project_scene(fl_scene_edit_project(p->edit),fl_scene_edit_scene(p->edit));
+    if (!p->scoped_entity) return authored;
+    const Fl_SceneState *state=fl_scene_edit_state(p->edit);
+    return authored && state && state->valid && state->revision==authored->revision ? fl_scene_state_scene(state,authored) : NULL;
+}
+
+/* Beat controls always use the selected object's local timeline, including nested scopes. */
+static const Fl_Scene *inspector_clock_scene(Fl_Inspector *p)
+{
+    const Fl_Scene *scene=inspector_scene(p);
+    if (!p->scoped_entity || !scene) return scene;
+    const Fl_SceneState *state=fl_scene_edit_state(p->edit); const Fl_Entity *entity=fl_scene_entity(scene,p->scoped_entity);
+    return state && entity ? fl_composition_entity_scope(state->composition,(size_t)(entity-scene->entities)) : NULL;
+}
+
+/* Scope-local declarations own generated Script controls just as root declarations own authored controls. */
+static const Fl_ScriptRuntime *inspector_scripts(Fl_Inspector *p, const Fl_SceneState *state)
+{
+    if (p->scoped_entity && state && state->composition) {
+        const Fl_Scene *scene=fl_composition_scene(state->composition); const Fl_Entity *entity=fl_scene_entity(scene,p->scoped_entity);
+        return entity ? fl_composition_entity_scripts(state->composition,(size_t)(entity-scene->entities),NULL) : NULL;
+    }
+    return fl_scene_state_scripts(state);
+}
+
+/* Switch content targets only after the existing draft has been resolved. */
+static void scope_chosen(Ca_Select *select, void *data)
+{
+    Fl_Inspector *p=data; int index=ca_select_get(select);
+    if (p->dirty || index<0 || (size_t)index>=p->scope_option_count) return;
+    p->scoped_entity=p->scope_options[index];
+    fl_scene_edit_select(p->edit,fl_scene_edit_scene(p->edit),p->scoped_entity ? p->scoped_entity : fl_scene_edit_primary(p->edit),false); p->refresh=true;
+    if (p->dock) ca_dock_invalidate_panel(p->dock,"inspector");
+}
+
+/* Detach through shared document history; local clocks and generator identity remain intact. */
+static void scope_detach(Ca_Button *button, void *data)
+{
+    (void)button; Fl_Inspector *p=data;
+    bool ok=fl_prototype_detach(fl_scene_edit_project(p->edit),fl_scene_edit_scene(p->edit),fl_scene_edit_primary(p->edit));
+    status(p,ok ? "Detached into owned composition" : "Could not detach this instance"); p->refresh=true;
+}
+
+/* Expose generated objects through the existing Inspector, retaining persistent scope addresses for edits. */
+static void scope_controls(Fl_Inspector *p, const Fl_Scene *authored, const Fl_Entity *owner)
+{
+    Fl_Id focus=fl_scene_edit_focus(p->edit);
+    if (p->scoped_owner!=owner->id) {p->scoped_owner=owner->id; p->scoped_entity=0;}
+    if (focus!=owner->id) p->scoped_entity=focus;
+    const Fl_SceneState *state=fl_scene_edit_state(p->edit);
+    const Fl_Scene *flat=state && state->composition ? fl_composition_scene(state->composition) : NULL;
+    if (!flat || state->revision!=authored->revision) return;
+    size_t count=1;
+    for (size_t i=0;i<flat->entity_count;++i) {const Fl_Origin *origin=fl_composition_origin(state->composition,i); count+=origin && origin->generated && origin->owner==owner->id;}
+    if (count==1) {p->scoped_entity=0; return;}
+    Fl_Id *ids=malloc(count*sizeof(*ids)); const char **labels=malloc(count*sizeof(*labels)); char (*names)[160]=calloc(count,sizeof(*names));
+    if (!ids || !labels || !names) {free(ids); free(labels); free(names); return;}
+    size_t at=1; int selected=0; ids[0]=0; labels[0]="Instance";
+    for (size_t i=0;i<flat->entity_count;++i) {
+        const Fl_Origin *origin=fl_composition_origin(state->composition,i);
+        if (!origin || !origin->generated || origin->owner!=owner->id) continue;
+        ids[at]=flat->entities[i].id;
+        snprintf(names[at],sizeof(*names),"%s · %zu",flat->entities[i].name,at); labels[at]=names[at];
+        if (ids[at]==p->scoped_entity) selected=(int)at;
+        ++at;
+    }
+    if (!selected && p->scoped_entity) {p->scoped_entity=0; p->dirty=false; p->refresh=true;}
+    free(p->scope_options); p->scope_options=ids; p->scope_option_count=count;
+    ca_div_begin(&(Ca_DivDesc){.direction=CA_HORIZONTAL,.style=FL_CLASS_PROPERTY_ROW});
+    ca_text(&(Ca_TextDesc){.text="Contents",.style=FL_CLASS_PROPERTY_LABEL});
+    ca_select(&(Ca_SelectDesc){.options=labels,.option_count=(int)count,.selected=selected,.id="inspector-scope",.style=FL_CLASS_PROPERTY_SELECT,.on_change=scope_chosen,.change_data=p,.disabled=p->dirty}); ca_div_end(); free(labels); free(names);
+    if (fl_entity_component(owner,FL_COMPONENT_PROTOTYPE)) fl_button(&(Fl_ButtonDesc){.text="Detach instance",.id="inspector-scope-detach",.on_click=scope_detach,.click_data=p,.disabled=p->dirty});
+    if (p->scoped_entity) ca_text(&(Ca_TextDesc){.text="Local overrides. Keyed fields follow this scope’s timeline.",.style=FL_CLASS_MUTED,.wrap=true});
+}
+
 /* Retain the script's enabled flag as part of the Inspector draft. */
 static void script_enabled(Ca_Checkbox *checkbox, void *data)
 {
@@ -104,6 +270,7 @@ static void script_chosen(Ca_Select *select, void *data)
     Fl_Inspector *p = data; int index = ca_select_get(select);
     if (index < 0 || (size_t)index >= p->script_option_count) return;
     p->script = p->script_options[index];
+    cJSON_Delete(p->binding_draft); p->binding_draft=cJSON_CreateObject(); p->binding_dirty=true;
     if (p->script) p->script_enabled = true;
     drafted(p);
 }
@@ -133,7 +300,7 @@ static void clock_end_chosen(Ca_Select *select, void *data)
 }
 static void clock_scope_changed(Ca_Checkbox *checkbox, void *data)
 {
-    Fl_Inspector *p=data; const Fl_Scene *scene=fl_project_scene(fl_scene_edit_project(p->edit),p->scene);
+    Fl_Inspector *p=data; const Fl_Scene *scene=inspector_clock_scene(p);
     bool bound=ca_checkbox_get(checkbox);
     if (bound && (!scene || !scene->beat_count)) {status(p,"Create a beat before binding this behavior."); return;}
     p->script_time.explicit_range=bound;
@@ -148,6 +315,119 @@ static void clock_mode_chosen(Ca_Select *select, void *data)
 static void clock_loop_changed(Ca_Checkbox *checkbox, void *data) {Fl_Inspector *p=data; p->script_time.loop=ca_checkbox_get(checkbox); drafted(p);}
 static void clock_before_changed(Ca_Checkbox *checkbox, void *data) {Fl_Inspector *p=data; p->script_time.before=ca_checkbox_get(checkbox) ? FL_TIME_HOLD : FL_TIME_INACTIVE; drafted(p);}
 static void clock_after_changed(Ca_Checkbox *checkbox, void *data) {Fl_Inspector *p=data; p->script_time.after=ca_checkbox_get(checkbox) ? FL_TIME_HOLD : FL_TIME_INACTIVE; drafted(p);}
+
+/* Event edits are retained with the entity draft and committed through the normal component boundary. */
+static void event_expand(Ca_Checkbox *checkbox, void *data) {Fl_Inspector *p=data; p->event_expanded=ca_checkbox_get(checkbox); if (p->dock) ca_dock_invalidate_panel(p->dock,"inspector");}
+static void event_remove(Ca_Button *button, void *data)
+{
+    (void)button; Fl_EventChoice *choice=data; Fl_Inspector *p=choice->owner; Fl_Json c={0};
+    cJSON *points=cJSON_GetObjectItemCaseSensitive(p->event_draft,"points");
+    for (cJSON *event=points ? points->child : NULL;event;event=event->next) {
+        uint64_t id; if (fl_json_uint(&c,cJSON_GetObjectItemCaseSensitive(event,"id"),&id) && id==choice->id) {
+            cJSON_Delete(cJSON_DetachItemViaPointer(points,event)); p->event_dirty=true; drafted(p); return;
+        }
+    }
+}
+static void event_add(Ca_Button *button, void *data)
+{
+    (void)button; Fl_Inspector *p=data; const char *name=p->event_name.value;
+    if (!name || !name[0] || strlen(name)>63) {status(p,"Enter an event name of at most 63 bytes."); return;}
+    Fl_Json c={0}; const char *text=p->event_value.value && p->event_value.value[0] ? p->event_value.value : "null";
+    cJSON *value=fl_json_parse(&c,text,strlen(text)); if (!value) {status(p,c.error); return;}
+    if (!p->event_draft) p->event_draft=fl_json_parse(&c,"{\"next_id\":\"1\",\"points\":[]}",27);
+    cJSON *points=cJSON_GetObjectItemCaseSensitive(p->event_draft,"points"); uint64_t next=0;
+    if (!points || cJSON_GetArraySize(points)>=(int)FL_EVENTS_COUNT || !fl_json_uint(&c,cJSON_GetObjectItemCaseSensitive(p->event_draft,"next_id"),&next) || next==UINT64_MAX) {cJSON_Delete(value); status(p,"Event budget exhausted."); return;}
+    const Fl_Scene *clock=inspector_clock_scene(p); Fl_Tick tick=fl_scene_edit_local_time(p->edit);
+    Fl_TimeAnchor at=fl_anchor_at(clock,tick); cJSON *event=cJSON_CreateObject();
+    bool ok=event && fl_json_add(&c,event,"id",fl_json_u64(next)) && fl_json_add(&c,event,"at",fl_document_anchor_write(&c,&at)) && fl_json_add(&c,event,"name",cJSON_CreateString(name));
+    if (ok) {ok=fl_json_add(&c,event,"value",value); value=NULL;}
+    if (ok) {ok=fl_json_add(&c,points,NULL,event); event=NULL;}
+    if (ok) ok=cJSON_ReplaceItemInObjectCaseSensitive(p->event_draft,"next_id",fl_json_u64(next+1));
+    cJSON_Delete(value); cJSON_Delete(event);
+    if (ok) {p->event_dirty=true; drafted(p);} else status(p,"Cannot stage event.");
+}
+static void event_controls(Fl_Inspector *p)
+{
+    ca_checkbox(&(Ca_CheckboxDesc){.text="Simulation events",.checked=p->event_expanded,.id="events-expand",.on_change=event_expand,.change_data=p});
+    if (!p->event_expanded) return;
+    ca_input(&(Ca_InputDesc){.text=p->event_name.value ? p->event_name.value : "",.placeholder="Event name",.id="event-name",.on_change=bake_edited,.change_data=&p->event_name,.style=FL_CLASS_PROPERTY_INPUT});
+    ca_input(&(Ca_InputDesc){.text=p->event_value.value ? p->event_value.value : "null",.placeholder="JSON payload",.id="event-value",.on_change=bake_edited,.change_data=&p->event_value,.style=FL_CLASS_PROPERTY_INPUT});
+    fl_button(&(Fl_ButtonDesc){.text="Add at playhead",.id="event-add",.on_click=event_add,.click_data=p});
+    const cJSON *points=cJSON_GetObjectItemCaseSensitive(p->event_draft,"points"); size_t index=0; Fl_Json c={0};
+    const Fl_Scene *clock=inspector_clock_scene(p);
+    for (const cJSON *event=points ? points->child : NULL;event && index<FL_EVENTS_COUNT;event=event->next,++index) {
+        Fl_TimeAnchor at; Fl_Tick tick=0; uint64_t id=0;
+        fl_json_uint(&c,cJSON_GetObjectItemCaseSensitive(event,"id"),&id); fl_document_anchor_read(&c,cJSON_GetObjectItemCaseSensitive(event,"at"),&at);
+        bool bound=fl_anchor_sample(clock,&at,&tick); const cJSON *name=cJSON_GetObjectItemCaseSensitive(event,"name"); char label[140],button[48];
+        snprintf(label,sizeof(label),bound ? "%s · %.3fs" : "%s · unbound",cJSON_IsString(name) ? name->valuestring : "?",(double)tick/FL_TICKS_PER_SECOND);
+        snprintf(button,sizeof(button),"event-remove-%llu",(unsigned long long)id); p->event_choices[index]=(Fl_EventChoice){p,id};
+        ca_div_begin(&(Ca_DivDesc){.direction=CA_HORIZONTAL,.style=FL_CLASS_PROPERTY_ROW}); ca_text(&(Ca_TextDesc){.text=label,.style=FL_CLASS_MUTED});
+        fl_button(&(Fl_ButtonDesc){.text=CA_ICON_NF_MD_DELETE,.id=button,.kind=FL_BUTTON_ICON,.destructive=true,.tooltip="Remove event",.on_click=event_remove,.click_data=&p->event_choices[index]}); ca_div_end();
+    }
+}
+
+/* Binding choices use typed local identities; arbitrary names are validated against the Lua declaration on Apply. */
+static void binding_type_chosen(Ca_Select *select, void *data)
+{
+    Fl_Inspector *p=data; int type=ca_select_get(select); if (type<0 || type>3) return;
+    p->binding_type=type; if (p->dock) ca_dock_invalidate_panel(p->dock,"inspector");
+}
+
+static void binding_target_chosen(Ca_Select *select, void *data)
+{
+    Fl_Inspector *p=data; int index=ca_select_get(select); const char *name=p->binding_name.value;
+    if (!name || !name[0] || strlen(name)>63 || index<0 || (size_t)index>=p->binding_option_count) {status(p,"Enter the binding name declared by the Lua module."); return;}
+    if (!p->binding_draft) p->binding_draft=cJSON_CreateObject();
+    cJSON_DeleteItemFromObjectCaseSensitive(p->binding_draft,name);
+    Fl_BindingChoice target=p->binding_options[index];
+    if (target.id) {
+        const char *types[]={"entity","component","region","asset"}; cJSON *value=cJSON_CreateObject();
+        cJSON_AddStringToObject(value,"type",types[p->binding_type]); cJSON_AddItemToObject(value,"id",fl_json_u64(target.id));
+        if (p->binding_type==1) cJSON_AddItemToObject(value,"entity",fl_json_u64(target.entity));
+        if (!cJSON_AddItemToObject(p->binding_draft,name,value)) {cJSON_Delete(value); status(p,"Cannot stage binding."); return;}
+    }
+    p->binding_dirty=true; drafted(p);
+}
+
+/* Select stable entity/component/beat/asset references from the focused native scope. */
+static void binding_controls(Fl_Inspector *p)
+{
+    ca_text(&(Ca_TextDesc){.text="Bindings",.style=FL_CLASS_HEADING});
+    for (const cJSON *binding=p->binding_draft ? p->binding_draft->child : NULL;binding;binding=binding->next) {
+        const cJSON *type=cJSON_GetObjectItemCaseSensitive(binding,"type"), *id=cJSON_GetObjectItemCaseSensitive(binding,"id");
+        char label[180]; snprintf(label,sizeof(label),"%s · %s · %s",binding->string,cJSON_IsString(type) ? type->valuestring : "?",cJSON_IsString(id) ? id->valuestring : "?");
+        ca_text(&(Ca_TextDesc){.text=label,.style=FL_CLASS_MUTED,.wrap=true});
+    }
+    ca_input(&(Ca_InputDesc){.text=p->binding_name.value ? p->binding_name.value : "",.placeholder="Lua binding name",.id="binding-name",.on_change=bake_edited,.change_data=&p->binding_name,.style=FL_CLASS_PROPERTY_INPUT});
+    static const char *types[]={"Entity","Component","Beat region","Asset"};
+    ca_select(&(Ca_SelectDesc){.options=types,.option_count=4,.selected=p->binding_type,.id="binding-type",.on_change=binding_type_chosen,.change_data=p,.style=FL_CLASS_PROPERTY_SELECT});
+    const Fl_Scene *scope=inspector_clock_scene(p); Fl_Project *project=fl_scene_edit_project(p->edit);
+    const Fl_SceneState *state=fl_scene_edit_state(p->edit); const Fl_Scene *flat=state ? fl_composition_scene(state->composition) : NULL;
+    size_t count=1;
+    if (p->binding_type==3) count+=fl_project_asset_count(project);
+    else if (p->binding_type==2) count+=scope ? scope->beat_count : 0;
+    else for (size_t i=0;scope && i<scope->entity_count;++i) count+=p->binding_type==1 ? scope->entities[i].component_count : 1;
+    if (count>100001) {status(p,"Binding choice budget exceeded."); return;}
+    Fl_BindingChoice *ids=calloc(count,sizeof(*ids)); const char **labels=calloc(count,sizeof(*labels)); char (*owned)[180]=calloc(count,sizeof(*owned));
+    if (!ids || !labels || !owned) {free(ids); free(labels); free(owned); return;}
+    size_t at=1; labels[0]="Unbind / choose target";
+    if (p->binding_type==3) for (size_t i=0;i<fl_project_asset_count(project);++i) {const Fl_Asset *asset=fl_project_asset_at(project,i); ids[at].id=asset->id; labels[at++]=asset->name;}
+    else if (p->binding_type==2) for (size_t i=0;scope && i<scope->beat_count;++i) {ids[at].id=scope->beats[i].id; labels[at++]=scope->beats[i].name;}
+    else for (size_t i=0;scope && i<scope->entity_count;++i) {
+        const Fl_Entity *entity=&scope->entities[i]; const Fl_Entity *shown=fl_scene_entity(flat,entity->id); size_t index=shown ? (size_t)(shown-flat->entities) : 0;
+        const Fl_Origin *origin=shown ? fl_composition_origin(state->composition,index) : NULL;
+        Fl_Id local=origin && origin->generated ? origin->entity : entity->id;
+        if (!p->binding_type) {ids[at].id=local; labels[at++]=entity->name;}
+        else for (size_t j=0;j<entity->component_count;++j) {
+            Fl_Id component=entity->components[j].id;
+            if (origin && origin->generated && !fl_composition_component_local(state->composition,index,component,&component)) continue;
+            ids[at]=(Fl_BindingChoice){component,local}; snprintf(owned[at],sizeof(*owned),"%s · %s · %llu",entity->name,fl_component_name(entity->components[j].type) ? fl_component_name(entity->components[j].type) : "Component",(unsigned long long)component); labels[at]=owned[at]; ++at;
+        }
+    }
+    free(p->binding_options); p->binding_options=ids; p->binding_option_count=at;
+    ca_select(&(Ca_SelectDesc){.options=labels,.option_count=(int)at,.selected=0,.id="binding-target",.on_change=binding_target_chosen,.change_data=p,.style=FL_CLASS_PROPERTY_SELECT});
+    free(labels); free(owned);
+}
 
 /* Show the entity's script in the Scripts panel. */
 static void script_edit(Ca_Button *button, void *data)
@@ -254,7 +534,7 @@ static char *parameter_drafts(Fl_Inspector *p, const Fl_Script *script)
         if (!fl_json_add(&context,values,field->name,value)) {cJSON_Delete(values); return NULL;}
     }
     const Fl_SceneState *state=fl_scene_edit_state(p->edit);
-    const cJSON *schema=state ? fl_script_runtime_parameter_schema(fl_scene_state_scripts(state),p->script_component) : NULL;
+    const cJSON *schema=state ? fl_script_runtime_parameter_schema(inspector_scripts(p,state),p->script_component) : NULL;
     if (schema && !fl_parameters_resolve(&context,schema,values,NULL)) {status(p,context.error); cJSON_Delete(values); return NULL;}
     char *text=context.error[0] ? NULL : cJSON_PrintUnformatted(values); cJSON_Delete(values); return text;
 }
@@ -262,7 +542,7 @@ static char *parameter_drafts(Fl_Inspector *p, const Fl_Script *script)
 static void apply(Ca_Button *button,void *data)
 {
     (void)button;Fl_Inspector *p=data;
-    const Fl_Scene *scene=fl_project_scene(fl_scene_edit_project(p->edit),p->scene);
+    const Fl_Scene *scene=inspector_scene(p);
     const Fl_Entity *entity=fl_scene_entity(scene,p->entity);
     if (!entity||scene->revision!=p->revision) {status(p,"Scene changed. Revert to reload before applying.");return;}
     double values[7];
@@ -283,7 +563,7 @@ static void apply(Ca_Button *button,void *data)
     unsigned char bytes[56],style[24],typography[3+FL_TYPOGRAPHY_FAMILY_MAX],image[8],alpha[8];
     fl_transform_encode(&transform,bytes);fl_appearance_encode(&appearance,style);fl_opacity_encode(opacity,alpha);
     unsigned char style_bytes[FL_STYLE_BYTES],clip_bytes[FL_VIDEO_CLIP_BYTES];
-    Fl_Component components[9]={{.type=FL_COMPONENT_TRANSFORM, .version=1, .size=56, .data=bytes},{.type=FL_COMPONENT_OPACITY, .version=1, .size=8, .data=alpha}};size_t count=2;
+    Fl_Component components[11]={{.type=FL_COMPONENT_TRANSFORM, .version=1, .size=56, .data=bytes},{.type=FL_COMPONENT_OPACITY, .version=1, .size=8, .data=alpha}};size_t count=2;
     if (def&&def->kind!=FL_WIDGET_GROUP&&!def->has_image&&!def->has_video) components[count++]=(Fl_Component){.type = FL_COMPONENT_APPEARANCE, .version = 1, .size = 24, .data = style};
     if (def&&def->has_text) {
         size_t size=fl_typography_encode(&p->typography,typography);
@@ -331,7 +611,7 @@ static void apply(Ca_Button *button,void *data)
         Fl_Script configuration={.script=p->script,.enabled=p->script_enabled};
         if (attachment) {
             fl_script_decode(attachment,&configuration);
-            if (configuration.script!=p->script) {configuration.parameters=NULL; configuration.parameters_size=0; configuration.bindings=NULL; configuration.bindings_size=0;}
+            if (configuration.script!=p->script) {configuration.parameters=NULL; configuration.parameters_size=0; configuration.bindings=NULL; configuration.bindings_size=0; configuration.overrides=NULL; configuration.overrides_size=0;}
             configuration.script=p->script; configuration.enabled=p->script_enabled;
         }
         configuration.time=p->script_time;
@@ -343,24 +623,39 @@ static void apply(Ca_Button *button,void *data)
         if (p->clock_fields[1].dirty && !number(p->clock_fields[1].value,&configuration.time.rate)) {status(p,"Invalid behavior rate."); return;}
         if (p->clock_fields[2].dirty && (!number(p->clock_fields[2].value,&seconds) || !fl_time_from_seconds(seconds,&configuration.time.start.offset))) {status(p,"Invalid start offset."); return;}
         if (p->clock_fields[3].dirty && (!number(p->clock_fields[3].value,&seconds) || !fl_time_from_seconds(seconds,&configuration.time.end.offset))) {status(p,"Invalid end offset."); return;}
+        if (p->clock_fields[4].dirty) {
+            double layer;
+            if (!number(p->clock_fields[4].value,&layer) || layer!=floor(layer) || layer < -1000000 || layer > 1000000) {status(p,"Layer must be an integer between -1000000 and 1000000."); return;}
+            configuration.layer=(int32_t)layer;
+        }
+        char *binding_text=p->binding_dirty && p->binding_draft ? cJSON_PrintUnformatted(p->binding_draft) : NULL;
+        if (p->binding_dirty && !binding_text) {status(p,"Cannot encode binding draft."); return;}
+        if (binding_text) {configuration.bindings=binding_text; configuration.bindings_size=strlen(binding_text);}
         char *parameters=parameter_drafts(p,&configuration);
-        if (!parameters) {status(p,"Invalid behavior parameter value."); return;}
+        if (!parameters) {cJSON_free(binding_text); status(p,"Invalid behavior parameter value."); return;}
         configuration.parameters=parameters; configuration.parameters_size=strlen(parameters);
-        bool encoded=fl_script_encode(&configuration,&script); cJSON_free(parameters);
+        bool encoded=fl_script_encode(&configuration,&script); cJSON_free(parameters); cJSON_free(binding_text);
         if (!encoded) {status(p,"Invalid Lua script component."); return;}
         if (attachment) script.id=attachment->id;
         components[count++] = script;
     }
     p->applying=true;
+    Fl_Component events={0};
+    if (p->event_dirty) {
+        if (!fl_events_encode(p->event_draft,&events)) {fl_component_clear(&script); status(p,"Invalid or oversized event track."); return;}
+        components[count++]=events;
+    }
     bool begun=fl_project_edit_begin(fl_scene_edit_project(p->edit),"Edit component properties",false);
-    bool ok=begun && fl_project_apply(fl_scene_edit_project(p->edit),&(Fl_Op){.kind=FL_OP_ENTITY_CONFIGURE,.scene=p->scene,.entity=p->entity,
+    const Fl_SceneState *scope_state=p->scoped_entity ? fl_scene_edit_state(p->edit) : NULL;
+    bool scoped=scope_state && scope_state->composition;
+    bool ok=begun && (scoped ? fl_scope_configure(fl_scene_edit_project(p->edit),p->scene,scope_state->composition,(size_t)(entity-scene->entities),p->fields[NAME].value,p->visible,components,count,!p->script && had_script ? p->script_component : 0,scope_state->entities[entity-scene->entities].local_tick) : fl_project_apply(fl_scene_edit_project(p->edit),&(Fl_Op){.kind=FL_OP_ENTITY_CONFIGURE,.scene=p->scene,.entity=p->entity,
         .name=p->fields[NAME].value,.visible=p->visible,.components=components,.component_count=count,
-        .keyed=true,.tick=fl_scene_edit_time(p->edit)},NULL);
-    if (ok&&!p->script&&had_script) ok=fl_project_apply(fl_scene_edit_project(p->edit),&(Fl_Op){.kind=FL_OP_COMPONENT_REMOVE,.scene=p->scene,
+        .keyed=true,.tick=fl_scene_edit_time(p->edit)},NULL));
+    if (ok&&!scoped&&!p->script&&had_script) ok=fl_project_apply(fl_scene_edit_project(p->edit),&(Fl_Op){.kind=FL_OP_COMPONENT_REMOVE,.scene=p->scene,
         .entity=p->entity,.component={.type=FL_COMPONENT_SCRIPT,.id=p->script_component}},NULL);
     if (begun) {if (ok) ok=fl_project_edit_commit(fl_scene_edit_project(p->edit)); else fl_project_edit_cancel(fl_scene_edit_project(p->edit));}
     p->applying=false;
-    free((void *)script.data);
+    fl_component_clear(&script); fl_component_clear(&events);
     if (!ok) {const char *error=fl_project_diagnostic(fl_scene_edit_project(p->edit)); status(p,error[0] ? error : "Invalid values or insufficient memory. Changes were not applied.");return;}
     p->dirty=false;p->refresh=true;status(p,"Saved");
     if (p->dock) ca_dock_invalidate_panel(p->dock,"inspector");
@@ -382,7 +677,10 @@ static bool changed(const Fl_Event *event,void *data)
             return false;
         }
     }
-    Fl_Id scene=fl_scene_edit_scene(p->edit),entity=fl_scene_edit_primary(p->edit);
+    Fl_Id scene=fl_scene_edit_scene(p->edit),owner=fl_scene_edit_primary(p->edit);
+    if (p->scoped_owner!=owner) {p->scoped_entity=0; p->scoped_owner=owner;}
+    Fl_Id focus=fl_scene_edit_focus(p->edit); p->scoped_entity=focus!=owner ? focus : 0;
+    Fl_Id entity=p->scoped_entity ? p->scoped_entity : owner;
     if (p->scene!=scene||p->entity!=entity||p->selection_count!=fl_scene_edit_count(p->edit)) {p->dirty=false;p->refresh=true;}
     else if (p->dirty) {status(p,"Scene changed. Revert to reload before applying.");return false;}
     else p->refresh=true;
@@ -407,7 +705,7 @@ static int compare_parameters(const void *a, const void *b)
 static bool load_parameters(Fl_Inspector *p, const Fl_SceneState *state, const Fl_Script *script)
 {
     clear_parameters(p);
-    const cJSON *schema=state ? fl_script_runtime_parameter_schema(fl_scene_state_scripts(state),p->script_component) : NULL;
+    const cJSON *schema=state ? fl_script_runtime_parameter_schema(inspector_scripts(p,state),p->script_component) : NULL;
     if (!schema) return true;
     size_t count=0; const cJSON *ordered[64];
     for (const cJSON *item=schema->child;item && count<64;item=item->next) ordered[count++]=item;
@@ -437,11 +735,13 @@ static bool load_parameters(Fl_Inspector *p, const Fl_SceneState *state, const F
 static bool load(Fl_Inspector *p,const Fl_Scene *scene,const Fl_Entity *entity)
 {
     const Fl_SceneState *state=fl_scene_edit_state(p->edit);
-    Fl_Script attached;
-    bool scripted=false;
-    for (size_t i=0;i<entity->component_count;++i) if (fl_script_decode(&entity->components[i],&attached) && attached.enabled) scripted=true;
-    bool evaluated=!scripted&&state&&state->scene==scene->id&&state->count>=scene->entity_count;
-    const Fl_EntityState *now=evaluated ? &state->entities[entity-scene->entities] : NULL;
+    Fl_EntityState native={0}; const Fl_EntityState *now=NULL;
+    const Fl_Scene *clock=p->scoped_entity ? inspector_clock_scene(p) : scene;
+    const Fl_Entity *local=fl_scene_entity(clock,entity->id);
+    const Fl_Entity *shown=state ? fl_scene_entity(fl_scene_state_scene(state,scene),entity->id) : NULL;
+    const Fl_Scene *flat=state ? fl_scene_state_scene(state,scene) : NULL;
+    Fl_Tick tick=p->scoped_entity && shown ? state->entities[shown-flat->entities].local_tick : fl_scene_edit_time(p->edit);
+    if (local && fl_entity_state_sample(clock,(size_t)(local-clock->entities),tick,&native)) now=&native;
     Fl_Transform transform={.scale_x=1,.scale_y=1};
     if (now) transform=now->transform;
     else fl_transform_decode(fl_entity_component(entity,FL_COMPONENT_TRANSFORM),&transform);
@@ -463,7 +763,7 @@ static bool load(Fl_Inspector *p,const Fl_Scene *scene,const Fl_Entity *entity)
     copy[content ? content->size : 0]=0;free(p->fields[CONTENT].value);p->fields[CONTENT].value=copy;
     p->typography=fl_widget_typography(entity);
     p->image=0;fl_image_asset_decode(fl_entity_component(entity,FL_COMPONENT_IMAGE),&p->image);
-    Fl_Style look=fl_entity_style(entity);
+    Fl_Style look=now ? now->style : fl_entity_style(entity);
     if (now) memcpy(look.crop,now->crop,sizeof(look.crop));
     p->align=look.align;p->clip=look.clip;
     p->loaded_numbers[BLUR]=look.blur;snprintf(text,sizeof(text),"%.9g",look.blur);if (!field_set(&p->fields[BLUR],text)) return false;
@@ -488,14 +788,32 @@ static bool load(Fl_Inspector *p,const Fl_Scene *scene,const Fl_Entity *entity)
     p->script=has_script ? script.script : 0;
     p->script_enabled=has_script&&script.enabled;
     p->loaded_script=p->script; p->script_time=has_script ? script.time : fl_time_mapping_default();
-    const double clocks[]={(double)p->script_time.duration/FL_TICKS_PER_SECOND,p->script_time.rate,(double)p->script_time.start.offset/FL_TICKS_PER_SECOND,(double)p->script_time.end.offset/FL_TICKS_PER_SECOND};
-    for (size_t i=0;i<4;++i) {
+    const double clocks[]={(double)p->script_time.duration/FL_TICKS_PER_SECOND,p->script_time.rate,(double)p->script_time.start.offset/FL_TICKS_PER_SECOND,(double)p->script_time.end.offset/FL_TICKS_PER_SECOND,has_script ? script.layer : 0};
+    for (size_t i=0;i<5;++i) {
         p->clock_fields[i].owner=p;
         if (!i && !p->script_time.duration) text[0]=0; else snprintf(text,sizeof(text),"%.17g",clocks[i]);
         if (!field_set(&p->clock_fields[i],text)) return false;
         p->clock_fields[i].dirty=false;
     }
     if (has_script) {if (!load_parameters(p,state,&script)) return false;} else clear_parameters(p);
+    cJSON_Delete(p->binding_draft); p->binding_draft=NULL; p->binding_dirty=false;
+    Fl_Json binding_context={0};
+    if (has_script && p->scoped_entity && state && state->composition) {
+        const Fl_Scene *flat=fl_composition_scene(state->composition); const Fl_Entity *shown=fl_scene_entity(flat,p->scoped_entity); Fl_Id local=0;
+        cJSON *document=shown ? fl_composition_entity_document(state->composition,(size_t)(shown-flat->entities)) : NULL;
+        if (shown) fl_composition_component_local(state->composition,(size_t)(shown-flat->entities),p->script_component,&local);
+        const cJSON *entities=cJSON_GetObjectItemCaseSensitive(document,"entities");
+        for (const cJSON *e=entities ? entities->child : NULL;e;e=e->next) {
+            const cJSON *components=cJSON_GetObjectItemCaseSensitive(e,"components");
+            for (const cJSON *component=components ? components->child : NULL;component;component=component->next) {
+                uint64_t id=0; if (fl_json_uint(&binding_context,cJSON_GetObjectItemCaseSensitive(component,"id"),&id) && id==local)
+                    p->binding_draft=cJSON_Duplicate(cJSON_GetObjectItemCaseSensitive(component,"bindings"),true);
+            }
+        }
+        cJSON_Delete(document);
+    } else if (has_script) p->binding_draft=fl_json_parse(&binding_context,script.bindings,script.bindings_size);
+    if (!p->binding_draft) p->binding_draft=cJSON_CreateObject();
+    cJSON_Delete(p->event_draft); p->event_draft=fl_events_read(fl_entity_component(entity,FL_COMPONENT_EVENTS)); p->event_dirty=false;
     for (size_t i=0;i<FIELD_COUNT;++i) p->fields[i].dirty=false;
     p->visible=entity->visible;p->scene=scene->id;p->entity=entity->id;p->revision=scene->revision;p->refresh=false;return true;
 }
@@ -503,16 +821,20 @@ static bool load(Fl_Inspector *p,const Fl_Scene *scene,const Fl_Entity *entity)
 static void field(Fl_Inspector *p,int index,const char *label,bool numeric)
 {
     static const int animated[FIELD_COUNT]={-1,FL_PROP_X,FL_PROP_Y,FL_PROP_WIDTH,FL_PROP_HEIGHT,FL_PROP_ROTATION,FL_PROP_SCALE_X,
-        FL_PROP_SCALE_Y,FL_PROP_FILL,FL_PROP_STROKE,FL_PROP_STROKE_WIDTH,FL_PROP_FONT_SIZE,-1,-1,FL_PROP_OPACITY,-1,-1,-1,-1,-1,-1,-1,
-        FL_PROP_CROP_X,FL_PROP_CROP_Y,FL_PROP_CROP_W,FL_PROP_CROP_H,-1,-1,-1,-1};
-    const Fl_Scene *scene=fl_project_scene(fl_scene_edit_project(p->edit),p->scene);
+        FL_PROP_SCALE_Y,FL_PROP_FILL,FL_PROP_STROKE,FL_PROP_STROKE_WIDTH,FL_PROP_FONT_SIZE,-1,-1,FL_PROP_OPACITY,FL_PROP_RADIUS,FL_PROP_SHADOW_BLUR,FL_PROP_SHADOW_X,FL_PROP_SHADOW_Y,FL_PROP_SHADOW_COLOR,FL_PROP_GRADIENT_TO,FL_PROP_GRADIENT_ANGLE,
+        FL_PROP_CROP_X,FL_PROP_CROP_Y,FL_PROP_CROP_W,FL_PROP_CROP_H,-1,-1,-1,FL_PROP_BLUR};
+    const Fl_Scene *scene=inspector_scene(p);
     bool keyed=animated[index]>=0&&fl_scene_track(scene,p->entity,(Fl_AnimProperty)animated[index]);
+    const Fl_SceneState *state=fl_scene_edit_state(p->edit); const Fl_Scene *flat=state ? fl_scene_state_scene(state,scene) : NULL;
+    const Fl_Entity *entity=fl_scene_entity(flat,p->entity);
+    int property=index==CONTENT ? FL_PROP_COUNT : animated[index];
+    bool driven=entity && property>=0 && fl_scene_state_writer(state,(size_t)(entity-flat->entities),property,NULL,NULL);
     char text[64];snprintf(text,sizeof(text),keyed ? "%s " CA_ICON_NF_FA_DIAMOND : "%s",label);
     ca_div_begin(&(Ca_DivDesc){.direction=CA_HORIZONTAL,.style=FL_CLASS_PROPERTY_ROW});
     ca_text(&(Ca_TextDesc){.text=text,.style=keyed ? FL_CLASS_PROPERTY_LABEL_KEYED : FL_CLASS_PROPERTY_LABEL});
     char id[32];snprintf(id,sizeof(id),"property-%d",index);
     ca_input(&(Ca_InputDesc){.text=p->fields[index].value,.id=id,.style=FL_CLASS_PROPERTY_INPUT,
-        .input_mode=numeric ? CA_INPUT_FLOAT : CA_INPUT_TEXT,.on_change=edited,.change_data=&p->fields[index]});
+        .input_mode=numeric ? CA_INPUT_FLOAT : CA_INPUT_TEXT,.on_change=edited,.change_data=&p->fields[index],.disabled=driven || (property>=0 && fl_entity_component(entity,FL_COMPONENT_SAMPLED))});
     ca_div_end();
 }
 /* Refresh the family list and missing-font notice without disturbing drafts. */
@@ -536,8 +858,10 @@ Fl_Inspector *fl_inspector_create(Fl_SceneEdit *edit,Fl_Fonts *fonts,Fl_Playback
 {
     if (!edit||!fonts||!playback||!bus) return NULL;
     Fl_Inspector *p=calloc(1,sizeof(*p));if (!p) return NULL;
+    p->binding_name.owner=p; p->event_name.owner=p; p->event_value.owner=p;
     p->edit=edit;p->fonts=fonts;p->playback=playback;p->bus=bus;p->refresh=true;
     for (int i=0;i<FIELD_COUNT;++i) p->fields[i].owner=p;
+    for (unsigned i=0;i<4;++i) p->bake_fields[i].owner=p;
     for (size_t i=0;i<FL_STYLE_FONT_LIST_LIMIT;++i) p->choices[i].owner=p;
     p->project_event=fl_event_type_find(bus,FL_EVENT_PROJECT_CHANGED);
     p->time_event=fl_event_type_find(bus,FL_EVENT_TIME_CHANGED);
@@ -549,15 +873,21 @@ Fl_Inspector *fl_inspector_create(Fl_SceneEdit *edit,Fl_Fonts *fonts,Fl_Playback
         .fn=changed,.user_data=p,.owner=p}).generation) {fl_inspector_destroy(p);return NULL;}
     if (!fl_event_subscribe(bus,&(Fl_SubscribeDesc){.type=fl_event_type_find(bus,FL_EVENT_FONTS_CHANGED),
         .fn=fonts_changed,.user_data=p,.owner=p}).generation) {fl_inspector_destroy(p);return NULL;}
+    Fl_JobSystem *jobs=fl_scene_edit_jobs(edit);
+    if (jobs && !fl_event_subscribe(bus,&(Fl_SubscribeDesc){.type=fl_jobs_done_event(jobs),.fn=bake_done,.user_data=p,.owner=p}).generation) {fl_inspector_destroy(p); return NULL;}
     return p;
 }
 void fl_inspector_teardown(void *data) {Fl_Inspector *p=data;p->dock=NULL;p->status=NULL;p->window=NULL;}
 void fl_inspector_destroy(Fl_Inspector *p)
 {
     if (!p) return;
-    fl_event_unsubscribe_owner(p->bus,p);for (int i=0;i<FIELD_COUNT;++i) free(p->fields[i].value);
-    for (size_t i=0;i<4;++i) free(p->clock_fields[i].value);
-    free(p->clock_beats);clear_parameters(p);free(p->image_options);free(p->script_options);free(p);
+    fl_event_unsubscribe_owner(p->bus,p); fl_bake_destroy(p->bake);
+    for (unsigned i=0;i<4;++i) free(p->bake_fields[i].value);
+    for (int i=0;i<FIELD_COUNT;++i) free(p->fields[i].value);
+    for (size_t i=0;i<5;++i) free(p->clock_fields[i].value);
+    free(p->event_name.value); free(p->event_value.value); cJSON_Delete(p->event_draft);
+    free(p->binding_name.value); free(p->binding_options); cJSON_Delete(p->binding_draft);
+    free(p->scope_options);free(p->clock_beats);clear_parameters(p);free(p->image_options);free(p->script_options);free(p);
 }
 /* Describe a CSS weight with its conventional name. */
 static void weight_label(unsigned weight,const char *style,char *out,size_t capacity)
@@ -781,7 +1111,11 @@ static void script_section(Fl_Inspector *p, const Fl_Scene *scene)
     ca_div_end();
     free(options);
     if (!p->script) return;
-    clock_controls(p,scene);
+    const Fl_Scene *clock_scene=inspector_clock_scene(p);
+    if (clock_scene) clock_controls(p,clock_scene);
+    ca_div_begin(&(Ca_DivDesc){.direction=CA_HORIZONTAL,.style=FL_CLASS_PROPERTY_ROW});
+    ca_text(&(Ca_TextDesc){.text="Output layer",.style=FL_CLASS_PROPERTY_LABEL});
+    ca_input(&(Ca_InputDesc){.text=p->clock_fields[4].value,.id="script-output-layer",.style=FL_CLASS_PROPERTY_INPUT,.on_change=edited,.change_data=&p->clock_fields[4]}); ca_div_end();
     for (size_t i=0;i<p->parameter_count;++i) {
         Fl_ParameterField *field=&p->parameters[i]; char id[128];
         snprintf(id,sizeof(id),"script-param-%llu-%s",(unsigned long long)p->script_component,field->name);
@@ -791,10 +1125,11 @@ static void script_section(Fl_Inspector *p, const Fl_Scene *scene)
         else ca_input(&(Ca_InputDesc){.text=field->input.value,.id=id,.style=FL_CLASS_PROPERTY_INPUT,.on_change=edited,.change_data=&field->input});
         ca_div_end();
     }
+    binding_controls(p);
     ca_checkbox(&(Ca_CheckboxDesc){.text="Enabled",.checked=p->script_enabled,.on_change=script_enabled,.change_data=p,.id="inspector-script-enabled"});
     const Fl_SceneState *state=fl_scene_edit_state(p->edit);
     const Fl_Entity *entity=fl_scene_entity(scene,p->entity);
-    const char *error=state&&entity ? fl_script_runtime_component_error(fl_scene_state_scripts(state),p->script_component) : "";
+    const char *error=state&&entity ? fl_script_runtime_component_error(inspector_scripts(p,state),p->script_component) : "";
     if (*error) ca_text(&(Ca_TextDesc){.text=error,.style=FL_CLASS_WARNING,.wrap=true});
     fl_button(&(Fl_ButtonDesc){.text="Edit script",.id="inspector-script-edit",.on_click=script_edit,.click_data=p,.disabled=p->dirty});
 }
@@ -802,14 +1137,19 @@ static void script_section(Fl_Inspector *p, const Fl_Scene *scene)
 void fl_inspector_build(Ca_Dock *dock,Ca_Window *window,void *data)
 {
     Fl_Inspector *p=data;p->dock=dock;p->window=window;
-    const Fl_Scene *scene=fl_project_scene(fl_scene_edit_project(p->edit),fl_scene_edit_scene(p->edit));
-    const Fl_Entity *entity=fl_scene_entity(scene,fl_scene_edit_primary(p->edit));
+    const Fl_Scene *authored=fl_project_scene(fl_scene_edit_project(p->edit),fl_scene_edit_scene(p->edit));
+    const Fl_Entity *owner=fl_scene_entity(authored,fl_scene_edit_primary(p->edit));
+    const Fl_Scene *scene=authored; const Fl_Entity *entity=owner;
     p->selection_count=fl_scene_edit_count(p->edit);
     ca_div_begin(&(Ca_DivDesc){.direction=CA_VERTICAL,.style=FL_CLASS_INSPECTOR});
+    bake_controls(p,authored);
     if (!entity||fl_scene_edit_count(p->edit)!=1) {
         ca_text(&(Ca_TextDesc){.text=entity ? "Multiple selected" : "Nothing selected",.style=FL_CLASS_MUTED,.wrap=true});
         ca_div_end();return;
     }
+    scope_controls(p,authored,owner);
+    if (p->scoped_entity) {scene=inspector_scene(p); entity=fl_scene_entity(scene,p->scoped_entity);}
+    if (!entity) {ca_text(&(Ca_TextDesc){.text="Updating contents…",.style=FL_CLASS_MUTED}); ca_div_end(); return;}
     if ((p->refresh||p->entity!=entity->id||p->scene!=scene->id)&&!load(p,scene,entity)) {
         ca_text(&(Ca_TextDesc){.text="Could not load properties.",.style=FL_CLASS_MUTED});ca_div_end();return;
     }
@@ -833,6 +1173,7 @@ void fl_inspector_build(Ca_Dock *dock,Ca_Window *window,void *data)
         ca_text(&(Ca_TextDesc){.text="Animation",.style=FL_CLASS_HEADING});
         ca_text(&(Ca_TextDesc){.text=summary,.style=FL_CLASS_MUTED});
     }
+    event_controls(p);
     script_section(p,scene);
     ca_div_begin(&(Ca_DivDesc){.direction=CA_HORIZONTAL,.style=FL_CLASS_TOOLBAR});
     fl_button(&(Fl_ButtonDesc){.text="Apply",.id="inspector-apply",.on_click=apply,.click_data=p});

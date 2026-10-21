@@ -12,12 +12,13 @@ bool fl_prototype_overrides_valid(Fl_Json *c, const cJSON *operations)
         if (!kind || !path || cJSON_GetArraySize(path)>32 || !fl_json_uint(c,fl_json_member(c,op,"entity",0),&entity) || !entity) return fl_json_fail(c,"Invalid prototype override address");
         for (const cJSON *v=path->child;v;v=v->next) {uint64_t id; if (!fl_json_uint(c,v,&id) || !id) return fl_json_fail(c,"Invalid nested prototype path");}
         bool component=!strcmp(kind->valuestring,"component.patch") || !strcmp(kind->valuestring,"component.remove");
-        bool value=!strcmp(kind->valuestring,"entity.patch") || !strcmp(kind->valuestring,"entity.add") || !strcmp(kind->valuestring,"component.patch") || !strcmp(kind->valuestring,"component.set");
+        bool value=!strcmp(kind->valuestring,"timeline.patch") || !strcmp(kind->valuestring,"entity.patch") || !strcmp(kind->valuestring,"entity.add") || !strcmp(kind->valuestring,"component.patch") || !strcmp(kind->valuestring,"component.set");
         if (!component && !value && strcmp(kind->valuestring,"entity.remove")) return fl_json_fail(c,"Unknown prototype override operation");
         const cJSON *target=cJSON_GetObjectItemCaseSensitive(op,"component"), *body=cJSON_GetObjectItemCaseSensitive(op,"value");
         uint64_t id;
         if (component ? (!fl_json_uint(c,target,&id) || !id) : target!=NULL) return fl_json_fail(c,"Invalid component override address");
         if (value ? !cJSON_IsObject(body) : body!=NULL) return fl_json_fail(c,"Invalid prototype override value");
+        if (!strcmp(kind->valuestring,"timeline.patch") && !fl_json_object(c,body,"duration beats clips")) return false;
         if (!strcmp(kind->valuestring,"entity.patch") && !fl_json_object(c,body,"name visible parent")) return false;
     }
     return true;

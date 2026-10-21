@@ -1,5 +1,7 @@
 #include "fl_render_host.h"
 #include "fl_mcp_service.h"
+#include "doc/fl_json.h"
+#include "time/fl_composition.h"
 #include "render/gpu/fl_exporter.h"
 #include "render/gpu/fl_scene_renderer.h"
 #include "agent/fl_agent.h"
@@ -10,6 +12,7 @@
 #include "platform/fl_paths.h"
 #include "platform/fl_random.h"
 #include <stdio.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -177,14 +180,15 @@ static void tool_export_video(Fl_McpCall *call, const cJSON *args, void *data)
     if (!cJSON_IsString(path) || !path->valuestring[0]) {fl_mcp_return_error(call, "missing_field", "\"path\" is required (a file name goes to the project's exports folder)"); return;}
     if (!number_arg(call, args, "width", false, &width, NULL) || !number_arg(call, args, "fps", false, &fps, NULL) || !number_arg(call, args, "crf", false, &crf, NULL) ||
         !number_arg(call, args, "crossfade", false, &crossfade, NULL)) return;
-    if (width < 2 || width > 16384 || width != (uint32_t)width || fps != (uint32_t)fps || crf != (uint32_t)crf || crf < 0) {fl_mcp_return_error(call, "invalid_argument", "width, fps and crf are whole numbers"); return;}
+    if (width < 2 || width > 16384 || width != floor(width) || fps<1 || fps>120 || fps!=floor(fps) || crf<0 || crf>51 || crf!=floor(crf)) {fl_mcp_return_error(call, "invalid_argument", "width, fps and crf are whole numbers"); return;}
     Fl_Id ids[256];
     size_t count = 0;
     if (scenes) {
         if (!cJSON_IsArray(scenes) || !cJSON_GetArraySize(scenes) || cJSON_GetArraySize(scenes) > 256) {fl_mcp_return_error(call, "invalid_argument", "\"scenes\" is 1..256 scene ids"); return;}
         for (const cJSON *id = scenes->child; id; id = id->next) {
-            if (!cJSON_IsNumber(id)) {fl_mcp_return_error(call, "invalid_argument", "scene ids are numbers"); return;}
-            ids[count++] = (Fl_Id)id->valuedouble;
+            Fl_Json context={0};
+            if (!fl_json_uint(&context,id,&ids[count]) || !ids[count]) {fl_mcp_return_error(call,"invalid_argument","Scene IDs must be exact nonzero integers or decimal strings"); return;}
+            ++count;
         }
     }
     char full[FL_PATH_MAX], error[256];
@@ -232,11 +236,12 @@ static void tool_get_editor_state(Fl_McpCall *call, const cJSON *args, void *dat
     const Fl_Scene *scene = fl_project_scene(s->project, fl_scene_edit_scene(edit));
     cJSON *o = cJSON_CreateObject(), *selected = o ? cJSON_AddArrayToObject(o, "selected") : NULL;
     if (!selected) {cJSON_Delete(o); fl_mcp_return_error(call, "internal", "out of memory"); return;}
-    cJSON_AddNumberToObject(o, "scene", (double)fl_scene_edit_scene(edit));
+    cJSON_AddItemToObject(o,"scene",fl_json_u64(fl_scene_edit_scene(edit)));
     cJSON_AddNumberToObject(o, "time", (double)fl_scene_edit_time(edit) / FL_TICKS_PER_SECOND);
     cJSON_AddBoolToObject(o, "playing", fl_playback_playing(fl_workspace_playback(s->workspace)));
-    for (size_t i = 0; scene && i < scene->entity_count; ++i)
-        if (fl_scene_edit_contains(edit, scene->entities[i].id)) cJSON_AddItemToArray(selected, cJSON_CreateNumber((double)scene->entities[i].id));
+    Fl_Id focus=fl_scene_edit_focus(edit),owner=fl_scene_edit_primary(edit);
+    if (focus && focus!=owner) {cJSON_AddItemToArray(selected,fl_json_u64(focus)); cJSON_AddItemToObject(o,"selection_owner",fl_json_u64(owner));}
+    else for (size_t i=0;scene && i<scene->entity_count;++i) if (fl_scene_edit_contains(edit,scene->entities[i].id)) cJSON_AddItemToArray(selected,fl_json_u64(scene->entities[i].id));
     fl_mcp_return_json(call, o);
 }
 
@@ -246,21 +251,32 @@ static void tool_set_editor_state(Fl_McpCall *call, const cJSON *args, void *dat
     Fl_McpService *s = data;
     if (!only_keys(call, args, keys) || !require_editor(s, call)) return;
     Fl_SceneEdit *edit = edit_of(s);
-    double scene_id = (double)fl_scene_edit_scene(edit), seconds = 0;
-    bool has_scene, has_time;
-    if (!number_arg(call, args, "scene", false, &scene_id, &has_scene) || !number_arg(call, args, "time", false, &seconds, &has_time)) return;
-    const cJSON *select = cJSON_GetObjectItemCaseSensitive(args, "select");
-    if (select && !cJSON_IsArray(select)) {fl_mcp_return_error(call, "invalid_argument", "\"select\" must be an array of entity ids"); return;}
-    const Fl_Scene *scene = fl_project_scene(s->project, (Fl_Id)scene_id);
-    if (!scene) {fl_mcp_return_error(call, "not_found", "No scene with id %.0f", scene_id); return;}
-    if (has_scene || select) fl_scene_edit_select(edit, scene->id, 0, false);
-    const cJSON *id;
-    cJSON_ArrayForEach(id, select) {
-        if (!cJSON_IsNumber(id) || !fl_scene_edit_select(edit, scene->id, (Fl_Id)id->valuedouble, true)) {
-            fl_mcp_return_error(call, "not_found", "Entity %.0f is not in scene %llu", cJSON_IsNumber(id) ? id->valuedouble : 0, (unsigned long long)scene->id); return;
+    Fl_Json context={0}; Fl_Id scene_id=fl_scene_edit_scene(edit); double seconds=0; bool has_time=false;
+    const cJSON *scene_value=cJSON_GetObjectItemCaseSensitive(args,"scene"), *select=cJSON_GetObjectItemCaseSensitive(args,"select");
+    if (scene_value && !fl_json_uint(&context,scene_value,&scene_id)) {fl_mcp_return_error(call,"invalid_argument","Scene must be an exact ID"); return;}
+    if (!number_arg(call,args,"time",false,&seconds,&has_time)) return;
+    Fl_Tick tick=0;
+    if (has_time && !fl_time_from_seconds(seconds,&tick)) {fl_mcp_return_error(call,"invalid_argument","Time exceeds native tick range"); return;}
+    if (select && (!cJSON_IsArray(select) || cJSON_GetArraySize(select)>100000)) {fl_mcp_return_error(call,"invalid_argument","select must be a bounded array of exact entity IDs"); return;}
+    const Fl_Scene *scene=fl_project_scene(s->project,scene_id);
+    if (!scene) {fl_mcp_return_error(call,"not_found","Scene is missing"); return;}
+    Fl_SceneState candidate={0}; const Fl_Scene *flat=scene;
+    for (const cJSON *item=select ? select->child : NULL;item;item=item->next) {
+        Fl_Id id;
+        if (!fl_json_uint(&context,item,&id) || !id) {fl_scene_state_clear(&candidate); fl_mcp_return_error(call,"invalid_argument","Selection requires exact nonzero IDs"); return;}
+        if (!fl_scene_entity(scene,id) && !candidate.valid) {
+            if (!fl_scene_state_update(&candidate,scene,has_time ? tick : fl_scene_edit_time(edit))) {fl_scene_state_clear(&candidate); fl_mcp_return_error(call,"evaluation_failed","Cannot resolve generated selection"); return;}
+            flat=fl_scene_state_scene(&candidate,scene);
         }
+        if (!fl_scene_entity(flat,id) || (!fl_scene_entity(scene,id) && cJSON_GetArraySize(select)!=1)) {fl_scene_state_clear(&candidate); fl_mcp_return_error(call,"not_found","Generated selection requires one valid displayed object"); return;}
     }
-    if (has_time) fl_scene_edit_set_time(edit, (Fl_Tick)(seconds * FL_TICKS_PER_SECOND + (seconds < 0 ? -.5 : .5)));
+    fl_scene_state_clear(&candidate);
+    if (scene_value || select) fl_scene_edit_select(edit,scene->id,0,false);
+    if (has_time) fl_scene_edit_set_time(edit,tick);
+    for (const cJSON *item=select ? select->child : NULL;item;item=item->next) {
+        Fl_Id id=0; fl_json_uint(&context,item,&id);
+        if (!fl_scene_edit_select(edit,scene->id,id,true)) {fl_mcp_return_error(call,"evaluation_failed","Cannot publish the requested selection"); return;}
+    }
     tool_get_editor_state(call, NULL, data);
 }
 
@@ -304,13 +320,13 @@ static bool register_editor_tools(Fl_McpService *s)
         {"export_video", "Render the project's scenes in order to an H.264 MP4 with ffmpeg. path may be a file name (written to the project's exports folder) or an absolute path. "
          "width defaults to 1920 (height follows the aspect; both must be even), fps to 60, crf 0..51 (default 16, lower is better). scenes optionally lists scene ids. crossfade (seconds, default 0) dissolves each scene into the next by overlapping them. "
          "It runs in the background: poll get_export_status.",
-         "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"width\":{\"type\":\"integer\"},\"fps\":{\"type\":\"integer\"},\"crf\":{\"type\":\"integer\"},\"crossfade\":{\"type\":\"number\"},\"scenes\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"}}},\"required\":[\"path\"],\"additionalProperties\":false}",
+         "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"width\":{\"type\":\"integer\"},\"fps\":{\"type\":\"integer\"},\"crf\":{\"type\":\"integer\"},\"crossfade\":{\"type\":\"number\"},\"scenes\":{\"type\":\"array\",\"items\":{\"type\":[\"integer\",\"string\"]}}},\"required\":[\"path\"],\"additionalProperties\":false}",
          false, tool_export_video, s},
         {"get_export_status", "Progress of the latest video export: state, frames done and total, elapsed time and output path.", empty, true, tool_get_export_status, s},
         {"cancel_export", "Stop the running video export.", empty, false, tool_cancel_export, s},
         {"get_editor_state", "The scene, time and selection currently shown in the editor.", empty, true, tool_get_editor_state, s},
         {"set_editor_state", "Show a scene, move the playhead (seconds) or select entities in the editor so the user can follow along.",
-         "{\"type\":\"object\",\"properties\":{\"scene\":{\"type\":\"integer\"},\"time\":{\"type\":\"number\"},\"select\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"}}},\"additionalProperties\":false}",
+         "{\"type\":\"object\",\"properties\":{\"scene\":{\"type\":[\"integer\",\"string\"]},\"time\":{\"type\":\"number\"},\"select\":{\"type\":\"array\",\"items\":{\"type\":[\"integer\",\"string\"]}}},\"additionalProperties\":false}",
          false, tool_set_editor_state, s},
     };
     for (size_t i = 0; i < sizeof(tools) / sizeof(*tools); ++i) if (!fl_mcp_register(s->mcp, &tools[i])) return false;

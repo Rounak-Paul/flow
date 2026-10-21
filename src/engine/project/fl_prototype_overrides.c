@@ -73,7 +73,9 @@ static bool apply_override(Fl_Json *c, const Fl_Prototype *prototype, cJSON *roo
     cJSON *entities=cJSON_GetObjectItemCaseSensitive(root,"entities");
     if (!entities || c->error[0]) return false;
     cJSON *target=record(c,entities,entity); bool ok=true;
-    if (!strcmp(kind->valuestring,"entity.add")) {
+    if (!strcmp(kind->valuestring,"timeline.patch")) {
+        ok=patch(c,root,value);
+    } else if (!strcmp(kind->valuestring,"entity.add")) {
         uint64_t id=0;
         if (target || !(entity>>63) || !fl_json_uint(c,fl_json_member(c,value,"id",0),&id) || id!=entity) ok=fl_json_fail(c,"Added prototype entities require unique extension IDs (high bit set)");
         else {
@@ -122,7 +124,8 @@ bool fl_prototype_apply_overrides(Fl_Json *c, Fl_Prototype *prototype, const cJS
         if (cancel && atomic_load_explicit(cancel,memory_order_relaxed)) ok=fl_json_fail(c,"Evaluation cancelled");
         else ok=apply_override(c,prototype,root,operations[i],&missing);
     }
-    Fl_Prototype next={.root=prototype->root,.next_id=UINT64_MAX,.next_component_id=UINT64_MAX,.scope={.duration=prototype->scope.duration,.project=prototype->scope.project}};
+    Fl_Prototype next={.root=prototype->root,.next_id=UINT64_MAX,.next_component_id=UINT64_MAX,.scope={.project=prototype->scope.project}};
+    if (ok) ok=fl_json_uint(c,cJSON_GetObjectItemCaseSensitive(root,"duration"),&next.scope.duration);
     if (ok) ok=fl_document_content_read(c,root,&next.scope) && fl_prototype_local_valid(c,&next);
     cJSON_Delete(root);
     if (!ok) {fl_prototype_clear(&next); return false;}

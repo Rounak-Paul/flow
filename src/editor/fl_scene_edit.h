@@ -52,3 +52,16 @@ bool fl_scene_edit_insert_media(Fl_SceneEdit *edit, Fl_Id asset, Fl_Id parent, d
 
 /* Hit-test evaluated content and resolve generated children to their persistent instance owner. */
 Fl_Id fl_scene_edit_pick(Fl_SceneEdit *edit, double x, double y, double tolerance);
+
+/* Borrow the editor's notification-enabled worker pool for document tools. */
+Fl_JobSystem *fl_scene_edit_jobs(const Fl_SceneEdit *edit);
+
+/* Focus a displayed generated child while retaining its persistent owner for hierarchy operations. */
+Fl_Id fl_scene_edit_focus(const Fl_SceneEdit *edit);
+/* Borrow the focused native local timeline, or the authored root timeline. */
+const Fl_Scene *fl_scene_edit_timeline(Fl_SceneEdit *edit);
+/* Read focused scope time or translate a local seek back through its parent clocks. */
+Fl_Tick fl_scene_edit_local_time(Fl_SceneEdit *edit);
+bool fl_scene_edit_root_time(Fl_SceneEdit *edit, Fl_Tick local_tick, Fl_Tick *root_tick);
+/* Apply a root or scoped native timeline operation through shared document history. */
+bool fl_scene_edit_timeline_apply(Fl_SceneEdit *edit, const Fl_Op *operation, Fl_Id *created);

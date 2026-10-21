@@ -1,7 +1,9 @@
 #include "project/fl_source_asset.h"
 #include "fl_script_runtime.h"
+#include "components/fl_events.h"
 #include "fl_lua_value.h"
 #include "fl_lua_document.h"
+#include "fl_script_outputs.h"
 #include "time/fl_scene_state.h"
 #include "core/fl_log.h"
 #include "doc/fl_json.h"
@@ -31,8 +33,14 @@ typedef struct Fl_ImportChunk {Fl_Id asset; int ref;} Fl_ImportChunk;
 typedef struct Fl_ScriptSnapshot {unsigned char *bytes; size_t size; int64_t step;} Fl_ScriptSnapshot;
 
 /* Compiled chunk and latest diagnostic for one entity and document revision. */
+typedef struct Fl_ScriptEvent {Fl_Tick tick; Fl_Id id; const cJSON *event;} Fl_ScriptEvent;
 typedef struct Fl_ScriptProgram {
     int ref;
+    size_t entity;
+    int32_t layer;
+    bool enabled;
+    Fl_ScriptTarget *targets, *reads;
+    size_t target_count, read_count;
     Fl_Id component, asset;
     cJSON *parameters, *parameter_schema, *effective_parameters, *bindings;
     bool schema_ready, compile_failed;
@@ -41,9 +49,16 @@ typedef struct Fl_ScriptProgram {
     int64_t simulation_cycle;
     Fl_ScriptSnapshot latest, checkpoints[SCRIPT_CHECKPOINTS];
     size_t checkpoint_cursor;
+    cJSON *event_source;
+    Fl_ScriptEvent *events;
+    size_t event_count;
     Fl_Binary scratch;
     char error[256];
 } Fl_ScriptProgram;
+typedef struct Fl_OutputOwner {size_t entity; int32_t layer; int property; Fl_Id component;} Fl_OutputOwner;
+
+typedef struct Fl_ScriptOrder {size_t program; int32_t layer; Fl_Id owner, component;} Fl_ScriptOrder;
+
 struct Fl_ScriptRuntime {
     lua_State *lua;
     size_t memory, count, entity_count, program_index;
@@ -62,6 +77,15 @@ struct Fl_ScriptRuntime {
     Fl_EntityState *state;
     const Fl_Asset *script;
     cJSON *build_output, *binding_output;
+    Fl_EntityState *inputs;
+    uint32_t *failed;
+    Fl_ScriptOrder *order;
+    Fl_OutputOwner *owners;
+    size_t owner_count;
+    bool plan_ready, frame_active;
+    char plan_error[256];
+    Fl_ScriptTarget captured[FL_SCRIPT_TARGET_LIMIT];
+    Fl_EntityState patches[FL_SCRIPT_TARGET_LIMIT];
     Fl_ImportChunk imports[SCRIPT_IMPORT_LIMIT];
     size_t import_count;
 };
@@ -69,6 +93,7 @@ struct Fl_ScriptRuntime {
 typedef union Fl_LuaAllocation { max_align_t alignment; size_t size; } Fl_LuaAllocation;
 
 static void validate_bindings(lua_State *lua, int module, const Fl_ScriptProgram *program);
+static bool prepare_plan(Fl_ScriptRuntime *runtime, const Fl_Scene *scene, char *error, size_t capacity);
 
 /* Account for actual allocation sizes; shrinking never fails or undercounts retained memory. */
 static void *script_allocate(void *data, void *pointer, size_t old_size, size_t size)
@@ -178,20 +203,10 @@ static void environment(lua_State *L, Fl_Id entity)
     lua_call(L, 2, 0); lua_pop(L, 1);
 }
 
-/* Read an entity's numeric channels without exposing native pointers to Lua. */
-static void state_values(const Fl_EntityState *s, double values[FL_PROP_COUNT][4])
-{
-    const double channels[] = {s->transform.x, s->transform.y, s->transform.width, s->transform.height,
-        s->transform.rotation, s->transform.scale_x, s->transform.scale_y, s->opacity, 0, 0,
-        s->appearance.stroke_width, s->appearance.font_size, s->crop[0], s->crop[1], s->crop[2], s->crop[3]};
-    for (int p = 0; p < FL_PROP_COUNT; ++p) values[p][0] = channels[p];
-    for (int c = 0; c < 4; ++c) {values[FL_PROP_FILL][c] = s->appearance.fill[c]; values[FL_PROP_STROKE][c] = s->appearance.stroke[c];}
-}
-
 /* Add a scalar or RGBA array to a Lua table. */
 static void push_value(lua_State *L, int property, const double value[4])
 {
-    if (property != FL_PROP_FILL && property != FL_PROP_STROKE) lua_pushnumber(L, value[0]);
+    if (fl_property_definition((Fl_AnimProperty)property)->channels!=4) lua_pushnumber(L, value[0]);
     else {
         lua_createtable(L, 4, 0);
         for (int c = 0; c < 4; ++c) {lua_pushnumber(L, value[c]); lua_rawseti(L, -2, c + 1);}
@@ -202,7 +217,7 @@ static void push_value(lua_State *L, int property, const double value[4])
 static void push_entity(lua_State *L, Fl_ScriptRuntime *r, size_t entity, const Fl_EntityState *state, const double values[FL_PROP_COUNT][4])
 {
     lua_createtable(L, 0, 6); int self = lua_gettop(L);
-    static const char *const groups[] = {"transform", "appearance", "crop"};
+    static const char *const groups[] = {"transform", "appearance", "crop", "style", "media"};
     for (size_t i = 0; i < sizeof(groups) / sizeof(*groups); ++i) {
         lua_newtable(L); lua_setfield(L, self, groups[i]);
     }
@@ -243,43 +258,50 @@ static const char *retain_text(lua_State *L, const char *text, size_t size)
     return copy;
 }
 
-/* Read all outputs first so invalid/undeclared writes cannot partially affect the frame. */
-static void read_self(lua_State *L, int self, Fl_EntityState *output, const Fl_Component *original_text)
+/* Read and blend one target into private storage; undeclared writes never reach the frame. */
+static void read_target(lua_State *lua, int table, Fl_ScriptRuntime *runtime, const Fl_ScriptTarget *target,
+                          const Fl_EntityState *base, Fl_EntityState *output)
 {
-    double after[FL_PROP_COUNT][4] = {{0}};
-    for (int p = 0; p < FL_PROP_COUNT; ++p) {
-        const Fl_PropertyDef *definition = fl_property_definition((Fl_AnimProperty)p);
-        bool nested = definition->lua_group != NULL;
-        if (nested) {
-            lua_getfield(L, self, definition->lua_group);
-            luaL_checktype(L, -1, LUA_TTABLE);
+    luaL_checktype(lua,table,LUA_TTABLE); table=lua_absindex(lua,table);
+    double before[FL_PROP_COUNT][4]={{0}}; fl_entity_state_values(base,before); *output=*base;
+    for (int p=0;p<FL_PROP_COUNT;++p) {
+        const Fl_PropertyDef *definition=fl_property_definition((Fl_AnimProperty)p);
+        if (definition->lua_group) {lua_getfield(lua,table,definition->lua_group); luaL_checktype(lua,-1,LUA_TTABLE);}
+        lua_getfield(lua,definition->lua_group ? -1 : table,definition->lua_field);
+        if (definition->channels==4) luaL_checktype(lua,-1,LUA_TTABLE);
+        double value[4]={0}; Fl_OutputMode mode=target->modes[p];
+        for (unsigned i=0;i<definition->channels;++i) {
+            if (definition->channels==4) lua_rawgeti(lua,-1,i+1);
+            if (lua_type(lua,-1)!=LUA_TNUMBER) luaL_error(lua,"%s must contain numbers",definition->name);
+            double v=lua_tonumber(lua,-1);
+            if (definition->channels==4) lua_pop(lua,1);
+            if (!isfinite(v)) luaL_error(lua,"invalid %s output",definition->name);
+            if (!mode && v!=before[p][i]) luaL_error(lua,"undeclared output: %s.%s",target->name,definition->name);
+            value[i]=mode==FL_OUTPUT_ADD ? before[p][i]+v : mode==FL_OUTPUT_MULTIPLY ? before[p][i]*v : v;
         }
-        lua_getfield(L, nested ? -1 : self, definition->lua_field);
-        bool colour = p == FL_PROP_FILL || p == FL_PROP_STROKE;
-        if (colour) luaL_checktype(L, -1, LUA_TTABLE);
-        for (int c = 0; c < (colour ? 4 : 1); ++c) {
-            if (colour) lua_rawgeti(L, -1, c + 1);
-            if (lua_type(L, -1) != LUA_TNUMBER) luaL_error(L, "%s must contain numbers", fl_property_name((Fl_AnimProperty)p));
-            after[p][c] = lua_tonumber(L, -1);
-            if (colour) lua_pop(L, 1);
-        }
-        lua_pop(L, nested ? 2 : 1);
-        if (!fl_property_value_valid((Fl_AnimProperty)p, after[p])) luaL_error(L, "invalid %s output", fl_property_name((Fl_AnimProperty)p));
+        lua_pop(lua,definition->lua_group ? 2 : 1);
+        if (!fl_property_value_valid((Fl_AnimProperty)p,value)) luaL_error(lua,"invalid %s output",definition->name);
+        if (mode) fl_entity_state_apply(output,(Fl_AnimProperty)p,value);
     }
-    bool replace_text = false;
-    size_t text_size = 0;
-    const char *text = NULL;
-    if (original_text) {
-        lua_getfield(L, self, "text");
-        if (lua_type(L, -1) != LUA_TSTRING) luaL_error(L, "text must be a string");
-        text = lua_tolstring(L, -1, &text_size);
-        replace_text = text_size != original_text->size || (text_size && memcmp(text, original_text->data, text_size));
+    const Fl_Component *text=fl_entity_component(&runtime->scene->entities[target->entity],FL_COMPONENT_TEXT);
+    if (text) {
+        size_t before_size=base->text_override ? base->text_size : text->size;
+        const char *before_text=base->text_override ? base->text : text->size ? (const char *)text->data : "";
+        lua_getfield(lua,table,"text");
+        if (lua_type(lua,-1)!=LUA_TSTRING) luaL_error(lua,"text must be a string");
+        size_t size; const char *bytes=lua_tolstring(lua,-1,&size);
+        bool changed=size!=before_size || (size && memcmp(bytes,before_text,size));
+        if (changed && !target->modes[FL_SCRIPT_TEXT_PROPERTY]) luaL_error(lua,"undeclared output: %s.text",target->name);
+        if (changed) {output->text=retain_text(lua,bytes,size); output->text_size=size; output->text_override=true;}
+        lua_pop(lua,1);
     }
-    const char *retained = replace_text ? retain_text(L, text, text_size) : NULL;
-    for (int p=0;p<FL_PROP_COUNT;++p) fl_entity_state_apply(output,(Fl_AnimProperty)p,after[p]);
-    output->text_override = replace_text;
-    output->text = retained; output->text_size = replace_text ? text_size : 0;
-    if (original_text) lua_pop(L, 1);
+}
+
+/* Add and multiply channels begin at their type's identity; replacement channels retain the coherent layer input. */
+static void output_values(const Fl_ScriptTarget *target, double values[FL_PROP_COUNT][4])
+{
+    for (int p=0;p<FL_PROP_COUNT;++p) if (target->modes[p]==FL_OUTPUT_ADD || target->modes[p]==FL_OUTPUT_MULTIPLY)
+        for (unsigned i=0;i<fl_property_definition((Fl_AnimProperty)p)->channels;++i) values[p][i]=target->modes[p]==FL_OUTPUT_ADD ? 0 : 1;
 }
 
 /* Push bounded JSON values into a fresh Lua context; no native pointers cross the boundary. */
@@ -511,6 +533,18 @@ static int load_module(lua_State *lua, Fl_ScriptRuntime *runtime)
     lua_newtable(lua); int cache=lua_gettop(lua); Fl_Id path[SCRIPT_IMPORT_DEPTH];
     resolve_imports(lua,runtime,module,runtime->script,cache,path,0); lua_pop(lua,1);
     capture_parameter_schema(lua,module,program); capture_lifecycle(lua,module,program); validate_bindings(lua,module,program);
+    if (!program->targets) {
+        size_t count=fl_script_outputs_capture(lua,module,runtime->scene,runtime->entity,program->bindings,program->has_sample,runtime->captured);
+        program->targets=malloc(count*sizeof(*program->targets));
+        if (!program->targets) luaL_error(lua,"cannot allocate output declarations");
+        memcpy(program->targets,runtime->captured,count*sizeof(*program->targets)); program->target_count=count;
+    }
+    if (!program->reads) {
+        size_t count=fl_script_reads_capture(lua,module,runtime->scene,runtime->entity,program->bindings,program->has_sample,runtime->captured);
+        program->reads=malloc(count*sizeof(*program->reads));
+        if (!program->reads) luaL_error(lua,"cannot allocate input declarations");
+        memcpy(program->reads,runtime->captured,count*sizeof(*program->reads)); program->read_count=count;
+    }
     return module;
 }
 
@@ -563,7 +597,7 @@ static void push_bindings(lua_State *lua, Fl_ScriptRuntime *runtime, Fl_Tick tic
             const Fl_Entity *entity=fl_scene_entity(runtime->scene,id); Fl_EntityState native;
             if (!entity || !fl_entity_state_sample(runtime->scene,(size_t)(entity-runtime->scene->entities),tick,&native))
                 luaL_error(lua,"unresolved entity binding: %s",binding->string);
-            double values[FL_PROP_COUNT][4]={{0}}; state_values(&native,values);
+            double values[FL_PROP_COUNT][4]={{0}}; fl_entity_state_values(&native,values);
             push_entity(lua,runtime,(size_t)(entity-runtime->scene->entities),&native,values);
         } else if (!strcmp(type,"component")) {
             fl_json_uint(&context,cJSON_GetObjectItemCaseSensitive(binding,"entity"),&owner);
@@ -601,6 +635,52 @@ static void push_bindings(lua_State *lua, Fl_ScriptRuntime *runtime, Fl_Tick tic
     }
 }
 
+/* Order simultaneous events by stable local ID, independent of serialized row order. */
+static int event_order(const void *left, const void *right)
+{
+    const Fl_ScriptEvent *a=left,*b=right;
+    if (a->tick!=b->tick) return (a->tick>b->tick)-(a->tick<b->tick);
+    return (a->id>b->id)-(a->id<b->id);
+}
+
+/* Resolve authored anchors once per behavior plan; unresolved events remain inactive. */
+static bool compile_events(Fl_ScriptProgram *program, const Fl_Scene *scene)
+{
+    const Fl_Component *component=fl_entity_component(&scene->entities[program->entity],FL_COMPONENT_EVENTS);
+    if (!component) return true;
+    program->event_source=fl_events_read(component); if (!program->event_source) return false;
+    const cJSON *points=cJSON_GetObjectItemCaseSensitive(program->event_source,"points");
+    size_t count=(size_t)cJSON_GetArraySize(points); program->events=count ? calloc(count,sizeof(*program->events)) : NULL;
+    if (count && !program->events) return false;
+    Fl_Json context={0};
+    for (const cJSON *event=points->child;event;event=event->next) {
+        Fl_TimeAnchor at; Fl_Tick tick; uint64_t id;
+        if (!fl_document_anchor_read(&context,cJSON_GetObjectItemCaseSensitive(event,"at"),&at) || !fl_json_uint(&context,cJSON_GetObjectItemCaseSensitive(event,"id"),&id)) return false;
+        if (fl_anchor_sample(scene,&at,&tick)) program->events[program->event_count++]=(Fl_ScriptEvent){tick,id,event};
+    }
+    if (program->event_count>1) qsort(program->events,program->event_count,sizeof(*program->events),event_order);
+    return true;
+}
+
+/* Deliver deterministic events in (previous,current], with time-zero events delivered to initialize only. */
+static void push_events(lua_State *lua, Fl_ScriptRuntime *runtime, Fl_CallbackPhase phase, Fl_Tick local_tick, Fl_Tick composition)
+{
+    Fl_ScriptProgram *program=&runtime->programs[runtime->program_index]; lua_newtable(lua);
+    if (phase==CALLBACK_SAMPLE) return;
+    Fl_Tick previous=composition;
+    if (phase==CALLBACK_STEP && !fl_time_mapping_composition(runtime->scene,&runtime->mapping,local_tick-program->step_ticks,runtime->time.cycle,&previous)) luaL_error(lua,"cannot resolve event interval");
+    size_t lo=0,hi=program->event_count;
+    while (lo<hi) {size_t mid=lo+(hi-lo)/2; if (phase==CALLBACK_INITIALIZE ? program->events[mid].tick<previous : program->events[mid].tick<=previous) lo=mid+1; else hi=mid;}
+    lua_Integer index=0;
+    for (size_t i=lo;i<program->event_count && program->events[i].tick<=composition;++i) {
+        const cJSON *event=program->events[i].event; lua_newtable(lua);
+        push_json(lua,cJSON_GetObjectItemCaseSensitive(event,"id"),0); lua_setfield(lua,-2,"id");
+        push_json(lua,cJSON_GetObjectItemCaseSensitive(event,"name"),0); lua_setfield(lua,-2,"name");
+        push_json(lua,cJSON_GetObjectItemCaseSensitive(event,"value"),0); lua_setfield(lua,-2,"value");
+        lua_pushinteger(lua,program->events[i].tick); lua_setfield(lua,-2,"tick"); lua_rawseti(lua,-2,++index);
+    }
+}
+
 /* Build inputs at this callback's actual media time; only sampling sees previous evaluated layers. */
 static int push_context(lua_State *lua, Fl_ScriptRuntime *runtime, Fl_CallbackPhase phase, Fl_Tick local_tick, int64_t step)
 {
@@ -612,10 +692,38 @@ static int push_context(lua_State *lua, Fl_ScriptRuntime *runtime, Fl_CallbackPh
             !fl_entity_state_sample(runtime->scene,runtime->entity,composition,&native)) luaL_error(lua,"cannot resolve fixed-step inputs");
         runtime->state=&native;
     }
-    double values[FL_PROP_COUNT][4]={{0}}; state_values(runtime->state,values);
+    double values[FL_PROP_COUNT][4]={{0}}; fl_entity_state_values(runtime->state,values);
+    if (phase==CALLBACK_SAMPLE && runtime->frame_active) output_values(&program->targets[0],values);
     push_entity(lua,runtime,runtime->entity,runtime->state,values); int self=lua_gettop(lua); runtime->state=requested;
     lua_newtable(lua); int context=lua_gettop(lua);
     lua_pushvalue(lua,self); lua_setfield(lua,context,"entity");
+    if (phase==CALLBACK_SAMPLE && runtime->frame_active) {
+        lua_newtable(lua); int outputs=lua_gettop(lua);
+        lua_pushvalue(lua,self); lua_setfield(lua,outputs,"self");
+        for (size_t i=1;i<program->target_count;++i) {
+            const Fl_ScriptTarget *target=&program->targets[i];
+            if (target->entity==SIZE_MAX || !runtime->inputs) luaL_error(lua,"unresolved output target: %s",target->name);
+            double fields[FL_PROP_COUNT][4]={{0}}; fl_entity_state_values(&runtime->inputs[target->entity],fields); output_values(target,fields);
+            push_entity(lua,runtime,target->entity,&runtime->inputs[target->entity],fields); lua_setfield(lua,outputs,target->name);
+        }
+        lua_setfield(lua,context,"outputs");
+        lua_newtable(lua); int inputs=lua_gettop(lua);
+        for (size_t t=0;t<program->read_count;++t) {
+            const Fl_ScriptTarget *target=&program->reads[t];
+            if (target->entity==SIZE_MAX) luaL_error(lua,"unresolved sampled input: %s",target->name);
+            double fields[FL_PROP_COUNT][4]={{0}}; fl_entity_state_values(&runtime->inputs[target->entity],fields);
+            push_entity(lua,runtime,target->entity,&runtime->inputs[target->entity],fields); int value=lua_gettop(lua);
+            for (int p=0;p<FL_PROP_COUNT;++p) if (!target->modes[p]) {
+                const Fl_PropertyDef *definition=fl_property_definition((Fl_AnimProperty)p);
+                if (definition->lua_group) lua_getfield(lua,value,definition->lua_group);
+                lua_pushnil(lua); lua_setfield(lua,definition->lua_group ? -2 : value,definition->lua_field);
+                if (definition->lua_group) lua_pop(lua,1);
+            }
+            if (!target->modes[FL_SCRIPT_TEXT_PROPERTY]) {lua_pushnil(lua); lua_setfield(lua,value,"text");}
+            lua_setfield(lua,inputs,target->name);
+        }
+        lua_setfield(lua,context,"inputs");
+    }
     lua_newtable(lua); int time=lua_gettop(lua);
     lua_pushinteger(lua,local_tick); lua_setfield(lua,time,"tick");
     lua_pushnumber(lua,(double)local_tick/FL_TICKS_PER_SECOND); lua_setfield(lua,time,"seconds");
@@ -629,6 +737,7 @@ static int push_context(lua_State *lua, Fl_ScriptRuntime *runtime, Fl_CallbackPh
     lua_setfield(lua,time,"alpha");
     lua_pushstring(lua,phase==CALLBACK_SAMPLE ? runtime->time.phase==FL_TIME_BEFORE ? "before" : runtime->time.phase==FL_TIME_AFTER ? "after" : "active" : "active");
     lua_setfield(lua,time,"phase"); lua_setfield(lua,context,"time");
+    push_events(lua,runtime,phase,local_tick,composition); lua_setfield(lua,context,"events");
     push_parameters(lua,program); lua_setfield(lua,context,"params");
     push_bindings(lua,runtime,composition); lua_setfield(lua,context,"bindings");
     if (program->latest.bytes) {
@@ -681,10 +790,14 @@ static void invoke_callback(lua_State *lua, Fl_ScriptRuntime *runtime, Fl_Callba
         lua_pushvalue(lua,context); lua_call(lua,1,0);
     } else lua_pop(lua,1);
     if (phase==CALLBACK_SAMPLE) {
-        lua_getfield(lua,context,"entity"); int self=lua_gettop(lua);
-        Fl_EntityState result=*runtime->state;
-        read_self(lua,self,&result,fl_entity_component(&runtime->scene->entities[runtime->entity],FL_COMPONENT_TEXT));
-        *runtime->state=result;
+        lua_getfield(lua,context,"entity");
+        read_target(lua,-1,runtime,&program->targets[0],runtime->state,&runtime->patches[0]); lua_pop(lua,1);
+        lua_getfield(lua,context,"outputs"); luaL_checktype(lua,-1,LUA_TTABLE); int outputs=lua_gettop(lua);
+        for (size_t i=1;i<program->target_count;++i) {
+            const Fl_ScriptTarget *target=&program->targets[i]; lua_getfield(lua,outputs,target->name);
+            read_target(lua,-1,runtime,target,&runtime->inputs[target->entity],&runtime->patches[i]); lua_pop(lua,1);
+        }
+        *runtime->state=runtime->patches[0];
     } else {
         lua_getfield(lua,context,"state"); char error[256];
         if (!fl_lua_value_capture(lua,-1,&program->scratch,error)) luaL_error(lua,"%s",error);
@@ -740,6 +853,15 @@ static int evaluate(lua_State *lua)
 /* Initialize the base function template under allocation protection. */
 static int initialize(lua_State *L) {luaopen_base(L); return 0;}
 
+/* Stable identity breaks ties only for disjoint writers; layer conflicts are rejected separately. */
+static int compare_program_order(const void *a, const void *b)
+{
+    const Fl_ScriptOrder *x=a,*y=b;
+    if (x->layer!=y->layer) return (x->layer>y->layer)-(x->layer<y->layer);
+    if (x->owner!=y->owner) return (x->owner>y->owner)-(x->owner<y->owner);
+    return (x->component>y->component)-(x->component<y->component);
+}
+
 Fl_ScriptRuntime *fl_script_runtime_create(const Fl_Scene *s)
 {
     if (!s || s->entity_count > SIZE_MAX / sizeof(Fl_ScriptProgram)) return NULL;
@@ -762,12 +884,19 @@ Fl_ScriptRuntime *fl_script_runtime_create(const Fl_Scene *s)
         if (c->type==FL_COMPONENT_SCRIPT) {
             Fl_Script script; Fl_Json context={0};
             if (!fl_script_decode(c,&script)) {fl_script_runtime_destroy(r); return NULL;}
-            Fl_ScriptProgram *p=&r->programs[program++]; p->ref=LUA_NOREF; p->component=c->id; p->asset=script.script;
+            Fl_ScriptProgram *p=&r->programs[program++]; p->ref=LUA_NOREF; p->component=c->id; p->asset=script.script; p->layer=script.layer; p->entity=i; p->enabled=script.enabled;
             p->parameters=fl_json_parse(&context,script.parameters,script.parameters_size);
+            if (!compile_events(p,s)) {fl_script_runtime_destroy(r); return NULL;}
             p->bindings=fl_json_parse(&context,script.bindings,script.bindings_size);
             if (!cJSON_IsObject(p->parameters) || !fl_script_bindings_valid(&context,p->bindings)) {fl_script_runtime_destroy(r); return NULL;}
         }
     }
+    r->inputs=s->entity_count ? malloc(s->entity_count*sizeof(*r->inputs)) : NULL;
+    r->failed=s->entity_count ? calloc(s->entity_count,sizeof(*r->failed)) : NULL;
+    r->order=r->count ? malloc(r->count*sizeof(*r->order)) : NULL;
+    if ((s->entity_count && (!r->inputs || !r->failed)) || (r->count && !r->order)) {fl_script_runtime_destroy(r); return NULL;}
+    for (size_t i=0;i<r->count;++i) r->order[i]=(Fl_ScriptOrder){.program=i,.layer=r->programs[i].layer,.owner=s->entities[r->programs[i].entity].id,.component=r->programs[i].component};
+    if (r->count) qsort(r->order,r->count,sizeof(*r->order),compare_program_order);
     r->lua = lua_newstate(script_allocate, r);
     if (!r->lua) {fl_script_runtime_destroy(r); return NULL;}
     *(Fl_ScriptRuntime **)lua_getextraspace(r->lua) = r;
@@ -781,9 +910,9 @@ void fl_script_runtime_destroy(Fl_ScriptRuntime *r)
     if (!r) return;
     cJSON_Delete(r->build_output); cJSON_Delete(r->binding_output);
     if (r->lua) lua_close(r->lua);
-    if (r->programs) for (size_t i=0;i<r->count;++i) {clear_simulation(r,&r->programs[i]); free(r->programs[i].scratch.data); cJSON_Delete(r->programs[i].parameters); cJSON_Delete(r->programs[i].bindings); cJSON_Delete(r->programs[i].parameter_schema); cJSON_Delete(r->programs[i].effective_parameters);}
+    if (r->programs) for (size_t i=0;i<r->count;++i) {clear_simulation(r,&r->programs[i]); free(r->programs[i].scratch.data); free(r->programs[i].targets); free(r->programs[i].reads); cJSON_Delete(r->programs[i].parameters); cJSON_Delete(r->programs[i].bindings); cJSON_Delete(r->programs[i].parameter_schema); cJSON_Delete(r->programs[i].effective_parameters); cJSON_Delete(r->programs[i].event_source); free(r->programs[i].events);}
     fl_script_runtime_begin_frame(r); free(r->texts);
-    free(r->starts); free(r->programs); free(r);
+    free(r->starts); free(r->programs); free(r->inputs); free(r->failed); free(r->order); free(r->owners); free(r);
 }
 
 void fl_script_runtime_set_cancel(Fl_ScriptRuntime *runtime, const atomic_bool *cancel)
@@ -837,13 +966,52 @@ static bool evaluate_attachment(Fl_ScriptRuntime *r, const Fl_Scene *s, size_t e
     return ok && bound;
 }
 
-bool fl_script_runtime_evaluate(Fl_ScriptRuntime *r, const Fl_Scene *s, size_t entity, Fl_Tick tick, Fl_EntityState *state)
+bool fl_script_runtime_evaluate_scene(Fl_ScriptRuntime *r, const Fl_Scene *scene, Fl_Tick tick, Fl_EntityState *states)
 {
-    if (!r || !s || !state || entity>=r->entity_count || entity>=s->entity_count) return false;
-    Fl_EntityState candidate=*state;
-    for (size_t i=r->starts[entity];i<r->starts[entity+1];++i)
-        if (!evaluate_attachment(r,s,entity,i,tick,&candidate)) return false;
-    *state=candidate; return true;
+    if (!r || !scene || (!states && scene->entity_count) || scene->entity_count!=r->entity_count) return false;
+    if (!r->plan_ready && !prepare_plan(r,scene,r->plan_error,sizeof(r->plan_error))) return false;
+    if (scene->entity_count) memcpy(r->inputs,states,scene->entity_count*sizeof(*states));
+    if (scene->entity_count) memset(r->failed,0,scene->entity_count*sizeof(*r->failed));
+    r->frame_active=true; bool valid=true;
+    for (size_t begin=0;begin<r->count;) {
+        size_t end=begin+1;
+        while (end<r->count && r->order[end].layer==r->order[begin].layer) ++end;
+        for (size_t at=begin;at<end;++at) {
+            if (r->cancel && atomic_load_explicit(r->cancel,memory_order_relaxed)) {r->frame_active=false; return false;}
+            size_t index=r->order[at].program; Fl_ScriptProgram *program=&r->programs[index];
+            if (!program->enabled) continue;
+            bool blocked=false;
+            for (size_t t=0;t<program->target_count;++t) if (program->targets[t].entity!=SIZE_MAX)
+                for (int p=0;p<FL_SCRIPT_OUTPUT_COUNT;++p) if (program->targets[t].modes[p] && (r->failed[program->targets[t].entity]&(UINT32_C(1)<<p))) blocked=true;
+            for (size_t t=0;t<program->read_count;++t) if (program->reads[t].entity!=SIZE_MAX)
+                for (int p=0;p<FL_SCRIPT_OUTPUT_COUNT;++p) if (program->reads[t].modes[p] && (r->failed[program->reads[t].entity]&(UINT32_C(1)<<p))) blocked=true;
+            Fl_EntityState own=r->inputs[program->entity];
+            if (blocked) snprintf(program->error,sizeof(program->error),"Upstream property writer failed");
+            if (blocked || !evaluate_attachment(r,scene,program->entity,index,tick,&own)) {
+                for (size_t t=0;t<program->target_count;++t) if (program->targets[t].entity!=SIZE_MAX)
+                    for (int p=0;p<FL_SCRIPT_OUTPUT_COUNT;++p) if (program->targets[t].modes[p]) r->failed[program->targets[t].entity]|=UINT32_C(1)<<p;
+                valid=false; continue;
+            }
+            if (!program->has_sample || !r->time.active) continue;
+            for (size_t i=0;i<program->target_count;++i) {
+                const Fl_ScriptTarget *target=&program->targets[i];
+                if (target->entity==SIZE_MAX) continue;
+                double values[FL_PROP_COUNT][4]={{0}}; fl_entity_state_values(&r->patches[i],values);
+                for (int p=0;p<FL_PROP_COUNT;++p) if (target->modes[p]) fl_entity_state_apply(&states[target->entity],(Fl_AnimProperty)p,values[p]);
+                if (target->modes[FL_SCRIPT_TEXT_PROPERTY]) {
+                    states[target->entity].text_override=r->patches[i].text_override;
+                    states[target->entity].text=r->patches[i].text; states[target->entity].text_size=r->patches[i].text_size;
+                }
+            }
+        }
+        for (size_t at=begin;at<end;++at) {
+            const Fl_ScriptProgram *program=&r->programs[r->order[at].program];
+            for (size_t i=0;i<program->target_count;++i) if (program->targets[i].entity!=SIZE_MAX)
+                r->inputs[program->targets[i].entity]=states[program->targets[i].entity];
+        }
+        begin=end;
+    }
+    r->frame_active=false; return valid;
 }
 
 bool fl_script_check(const char *source, size_t size, char *error, size_t error_size)
@@ -859,12 +1027,12 @@ bool fl_script_check(const char *source, size_t size, char *error, size_t error_
 const char *fl_script_runtime_error(const Fl_ScriptRuntime *r, size_t entity)
 {
     if (r && entity<r->entity_count) for (size_t i=r->starts[entity];i<r->starts[entity+1];++i) if (r->programs[i].error[0]) return r->programs[i].error;
-    return "";
+    return r ? r->plan_error : "";
 }
 
 const char *fl_script_runtime_component_error(const Fl_ScriptRuntime *r, Fl_Id component)
 {
-    for (size_t i=0;r && component && i<r->count;++i) if (r->programs[i].component==component) return r->programs[i].error;
+    for (size_t i=0;r && component && i<r->count;++i) if (r->programs[i].component==component) return r->programs[i].error[0] ? r->programs[i].error : r->plan_error;
     return "";
 }
 
@@ -884,23 +1052,22 @@ static int validate_module(lua_State *lua)
     return 0;
 }
 
-bool fl_script_validate_scene(const Fl_Scene *scene, const atomic_bool *cancel, char *error, size_t error_size)
+/* Group ownership by property address and explicit layer in O(writers log writers). */
+static int compare_output_owner(const void *a, const void *b)
 {
-    if (error && error_size) error[0]=0;
-    if (!scene) return false;
-    bool attached=false;
-    for (size_t i=0; !attached && i<scene->entity_count; ++i)
-        for (size_t j=0;j<scene->entities[i].component_count;++j) {
-            Fl_Script script;
-            if (fl_script_decode(&scene->entities[i].components[j],&script) && script.enabled) {attached=true; break;}
-        }
-    if (!attached) return true;
-    Fl_ScriptRuntime *runtime=fl_script_runtime_create(scene);
-    if (!runtime) {if (error && error_size) snprintf(error,error_size,"Cannot allocate behavior validation"); return false;}
-    runtime->cancel=cancel;
+    const Fl_OutputOwner *x=a,*y=b;
+    if (x->entity!=y->entity) return (x->entity>y->entity)-(x->entity<y->entity);
+    if (x->property!=y->property) return (x->property>y->property)-(x->property<y->property);
+    if (x->layer!=y->layer) return (x->layer>y->layer)-(x->layer<y->layer);
+    return (x->component>y->component)-(x->component<y->component);
+}
+
+/* Compile all declarations without executing lifecycle callbacks, then reject ambiguous writer ownership. */
+static bool prepare_plan(Fl_ScriptRuntime *runtime, const Fl_Scene *scene, char *error, size_t error_size)
+{
     lua_State *lua=runtime->lua; bool ok=true;
     for (size_t i=0;ok && i<scene->entity_count;++i) for (size_t j=runtime->starts[i];ok && j<runtime->starts[i+1];++j) {
-        if (cancel && atomic_load_explicit(cancel,memory_order_relaxed)) {if (error && error_size) snprintf(error,error_size,"Evaluation cancelled"); ok=false; break;}
+        if (runtime->cancel && atomic_load_explicit(runtime->cancel,memory_order_relaxed)) {if (error && error_size) snprintf(error,error_size,"Evaluation cancelled"); ok=false; break;}
         const Fl_Component *component=fl_entity_component_instance(&scene->entities[i],runtime->programs[j].component);
         Fl_Script script;
         if (!fl_script_decode(component,&script) || !script.enabled) continue;
@@ -918,6 +1085,64 @@ bool fl_script_validate_scene(const Fl_Scene *scene, const atomic_bool *cancel, 
         }
         lua_settop(lua,0); lua_gc(lua,LUA_GCCOLLECT);
     }
+    if (!ok) return false;
+    size_t count=0;
+    for (size_t i=0;i<runtime->count;++i) if (runtime->programs[i].enabled)
+        for (size_t t=0;t<runtime->programs[i].target_count;++t)
+            for (int p=0;p<FL_SCRIPT_OUTPUT_COUNT;++p) count+=runtime->programs[i].targets[t].modes[p]!=0;
+    if (count>262144) {snprintf(error,error_size,"Behavior writer budget exceeded"); return false;}
+    Fl_OutputOwner *owners=count ? malloc(count*sizeof(*owners)) : NULL;
+    if (count && !owners) {snprintf(error,error_size,"Cannot allocate behavior writer plan"); return false;}
+    size_t at=0;
+    for (size_t i=0;i<runtime->count;++i) {
+        const Fl_ScriptProgram *program=&runtime->programs[i]; if (!program->enabled) continue;
+        for (size_t t=0;t<program->target_count;++t) for (int p=0;p<FL_SCRIPT_OUTPUT_COUNT;++p)
+            if (program->targets[t].modes[p]) owners[at++]=(Fl_OutputOwner){program->targets[t].entity,program->layer,p,program->component};
+    }
+    if (count) qsort(owners,count,sizeof(*owners),compare_output_owner);
+    for (size_t i=1;i<count;++i) {
+        const Fl_OutputOwner *a=&owners[i-1],*b=&owners[i];
+        if (a->entity!=SIZE_MAX && a->entity==b->entity && a->property==b->property && a->layer==b->layer) {
+            snprintf(error,error_size,"Ambiguous writers %llu and %llu: entity %llu, %s, layer %d",(unsigned long long)a->component,(unsigned long long)b->component,(unsigned long long)scene->entities[a->entity].id,a->property==FL_SCRIPT_TEXT_PROPERTY ? "text" : fl_property_name((Fl_AnimProperty)a->property),a->layer);
+            free(owners); return false;
+        }
+    }
+    size_t edges=0;
+    for (size_t i=0;i<runtime->count;++i) {
+        const Fl_ScriptProgram *program=&runtime->programs[i]; if (!program->enabled) continue;
+        for (size_t t=0;t<program->read_count;++t) {
+            const Fl_ScriptTarget *target=&program->reads[t]; if (target->entity==SIZE_MAX) continue;
+            for (int p=0;p<FL_SCRIPT_OUTPUT_COUNT;++p) if (target->modes[p]) {
+                size_t lo=0,hi=count;
+                while (lo<hi) {
+                    size_t mid=lo+(hi-lo)/2;
+                    if (owners[mid].entity<target->entity || (owners[mid].entity==target->entity && owners[mid].property<p)) lo=mid+1; else hi=mid;
+                }
+                for (size_t w=lo;w<count && owners[w].entity==target->entity && owners[w].property==p;++w) {
+                    if (owners[w].component==program->component) continue;
+                    if (++edges>262144 || owners[w].layer>=program->layer) {
+                        snprintf(error,error_size,"Sample dependency cycle or forward layer: writer %llu, reader %llu, %s.%s",(unsigned long long)owners[w].component,(unsigned long long)program->component,target->name,p==FL_SCRIPT_TEXT_PROPERTY ? "text" : fl_property_name((Fl_AnimProperty)p));
+                        free(owners); return false;
+                    }
+                }
+            }
+        }
+    }
+    runtime->owners=owners; runtime->owner_count=count; runtime->scene=NULL; runtime->script=NULL; runtime->plan_ready=true; return true;
+}
+
+bool fl_script_validate_scene(const Fl_Scene *scene, const atomic_bool *cancel, char *error, size_t error_size)
+{
+    char local[256]; if (!error || !error_size) {error=local; error_size=sizeof(local);} error[0]=0;
+    if (!scene) return false;
+    bool attached=false;
+    for (size_t i=0;i<scene->entity_count && !attached;++i) for (size_t j=0;j<scene->entities[i].component_count;++j) {
+        Fl_Script script; if (fl_script_decode(&scene->entities[i].components[j],&script) && script.enabled) {attached=true; break;}
+    }
+    if (!attached) return true;
+    Fl_ScriptRuntime *runtime=fl_script_runtime_create(scene);
+    if (!runtime) {snprintf(error,error_size,"Cannot allocate behavior validation"); return false;}
+    runtime->cancel=cancel; bool ok=prepare_plan(runtime,scene,error,error_size);
     fl_script_runtime_destroy(runtime); return ok;
 }
 
@@ -1017,4 +1242,19 @@ bool fl_script_dependencies(const char *source, size_t size, Fl_Id **references,
         memcpy(*references,discovery.ids,discovery.count*sizeof(**references)); *count=discovery.count;
     }
     return ok;
+}
+
+bool fl_script_runtime_writer(const Fl_ScriptRuntime *runtime, size_t entity, int property, Fl_Id *component, int32_t *layer)
+{
+    if (!runtime || !runtime->plan_ready || property<0 || property>=FL_SCRIPT_OUTPUT_COUNT) return false;
+    size_t lo=0,hi=runtime->owner_count;
+    while (lo<hi) {
+        size_t mid=lo+(hi-lo)/2; const Fl_OutputOwner *owner=&runtime->owners[mid];
+        if (owner->entity<entity || (owner->entity==entity && owner->property<=property)) lo=mid+1; else hi=mid;
+    }
+    if (!lo || runtime->owners[lo-1].entity!=entity || runtime->owners[lo-1].property!=property) return false;
+    const Fl_OutputOwner *writer=&runtime->owners[lo-1];
+    if (component) *component=writer->component;
+    if (layer) *layer=writer->layer;
+    return true;
 }

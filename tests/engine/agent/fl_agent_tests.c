@@ -579,7 +579,16 @@ static void test_asset_sources(Fl_Agent *agent)
     const cJSON *results=result ? cJSON_GetObjectItemCaseSensitive(result,"results") : NULL;
     uint64_t test_scene=0; Fl_Json ids={0};
     CHECK(results && fl_json_uint(&ids,cJSON_GetObjectItemCaseSensitive(results->child,"id"),&test_scene));
+    Fl_Id instance=0; CHECK(results && fl_json_uint(&ids,cJSON_GetObjectItemCaseSensitive(results->child->next,"id"),&instance));
     cJSON_Delete(result);
+    const Fl_Component *generator=fl_entity_component(fl_scene_entity(fl_project_scene(g_project,test_scene),instance),FL_COMPONENT_PROTOTYPE);
+    CHECK(generator); Fl_Id generator_id=generator ? generator->id : 0;
+    char scoped[1024]; snprintf(scoped,sizeof(scoped),"{\"dry_run\":true,\"ops\":[{\"op\":\"prototype.detach\",\"entity\":\"%llu\"}]}",(unsigned long long)instance);
+    result=call(agent,"apply_ops",scoped,&error); CHECK(result && !error); cJSON_Delete(result);
+    CHECK(fl_entity_component(fl_scene_entity(fl_project_scene(g_project,test_scene),instance),FL_COMPONENT_PROTOTYPE));
+    snprintf(scoped,sizeof(scoped),"{\"ops\":[{\"op\":\"scope.edit\",\"entity\":\"%llu\",\"component\":\"%llu\",\"target\":\"1\",\"path\":[],\"value\":{\"op\":\"component.patch\",\"component\":\"1\",\"value\":{\"height\":55}}},{\"op\":\"prototype.detach\",\"entity\":\"%llu\"}]}",(unsigned long long)instance,(unsigned long long)generator_id,(unsigned long long)instance);
+    result=call(agent,"apply_ops",scoped,&error); CHECK(result && !error); cJSON_Delete(result);
+    CHECK(fl_entity_component(fl_scene_entity(fl_project_scene(g_project,test_scene),instance),FL_COMPONENT_COMPOSITION));
     char cleanup[256];
     const Fl_Asset *captured=fl_project_asset_named(g_project,FL_ASSET_PROTOTYPE,"Captured instance");
     CHECK(captured);
@@ -635,6 +644,25 @@ static void test_project_assets_and_exact_ids(Fl_Agent *agent, const char *root)
     g_project=previous;
 }
 
+/* Async bake uses stable tokens and the same undoable native application as the editor. */
+static void test_bake(Fl_Agent *agent)
+{
+    Fl_Id scene=0; CHECK(fl_project_apply(g_project,&(Fl_Op){.kind=FL_OP_SCENE_ADD,.name="Agent bake"},&scene));
+    char args[256]; snprintf(args,sizeof(args),"{\"action\":\"start\",\"scene\":\"%llu\",\"start\":0,\"end\":1,\"step\":0.1,\"tolerance\":0.01}",(unsigned long long)scene);
+    cJSON *error=NULL,*result=call(agent,"bake_scene",args,&error); CHECK(result && !error); cJSON_Delete(result);
+    Fl_Mutex mutex; Fl_CondVar condition; CHECK(fl_mutex_init(&mutex)); CHECK(fl_cond_init(&condition)); fl_mutex_lock(&mutex);
+    for (unsigned i=0;i<5000;++i) {
+        result=call(agent,"bake_scene","{\"action\":\"status\",\"token\":1}",&error); CHECK(result && !error);
+        const cJSON *status=cJSON_GetObjectItemCaseSensitive(result,"status"); bool running=cJSON_IsString(status) && !strcmp(status->valuestring,"running");
+        if (!running) {CHECK(cJSON_IsString(status) && !strcmp(status->valuestring,"ready")); cJSON_Delete(result); break;}
+        cJSON_Delete(result); fl_cond_wait_ms(&condition,&mutex,1);
+    }
+    fl_mutex_unlock(&mutex); fl_cond_destroy(&condition); fl_mutex_destroy(&mutex);
+    result=call(agent,"bake_scene","{\"action\":\"apply\",\"token\":1}",&error); CHECK(result && !error); cJSON_Delete(result);
+    CHECK(fl_project_scene(g_project,scene)->entity_count==1);
+    result=call(agent,"bake_scene","{\"action\":\"cancel\",\"token\":2}",&error); CHECK(!result && error && error_code(error,"stale_job")); cJSON_Delete(error);
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 2) return 2;
@@ -651,6 +679,7 @@ int main(int argc, char **argv)
     test_scripts(agent, scene);
     test_asset_sources(agent);
     test_scene_history(agent, directory);
+    test_bake(agent);
     test_protocol(agent);
     Fl_Agent *http_agent = fl_agent_create(&(Fl_AgentHost){host_project, fake_render, NULL});
     CHECK(http_agent != NULL);

@@ -2,6 +2,8 @@
 #include "components/fl_animation.h"
 #include "components/fl_component.h"
 #include "components/fl_script.h"
+#include "components/fl_events.h"
+#include "components/fl_local_composition.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -181,31 +183,49 @@ static void split_anchor(Fl_TimeAnchor *at, Fl_Id beat, Fl_Id right, Fl_Tick lef
     }
 }
 
-/* One staged behavior clock replacement, allocated before a beat split changes anything. */
-typedef struct Fl_SplitScript { Fl_Component *target; Fl_Component value; } Fl_SplitScript;
+/* One staged native clock/event replacement, allocated before a beat split changes anything. */
+typedef struct Fl_SplitComponent { Fl_Component *target; Fl_Component value; } Fl_SplitComponent;
 
 /* Prepare every affected attachment so an allocation failure cannot publish a partial split. */
-static bool prepare_split_scripts(Fl_Scene *scene, Fl_Id beat, Fl_Id right, Fl_Tick left_duration, Fl_Tick right_duration,
-                                  Fl_SplitScript **out, size_t *count)
+static bool prepare_split_components(Fl_Scene *scene, Fl_Id beat, Fl_Id right, Fl_Tick left_duration, Fl_Tick right_duration,
+                                  Fl_SplitComponent **out, size_t *count)
 {
     *out=NULL; *count=0; size_t capacity=0;
     for (size_t i=0;i<scene->entity_count;++i) for (size_t j=0;j<scene->entities[i].component_count;++j) {
-        Fl_Component *component=(Fl_Component *)&scene->entities[i].components[j]; Fl_Script script;
-        if (!fl_script_decode(component,&script) || !script.time.explicit_range) continue;
-        bool start=script.time.start.kind!=FL_ANCHOR_ABSOLUTE && script.time.start.beat==beat;
-        bool end=script.time.end.kind!=FL_ANCHOR_ABSOLUTE && script.time.end.beat==beat;
-        if (!start && !end) continue;
+        Fl_Component *component=(Fl_Component *)&scene->entities[i].components[j];
+        Fl_Script script={0}; Fl_PrototypeInstance instance={0}; Fl_LocalComposition owned={0}; Fl_TimeMapping *mapping=NULL;
+        Fl_Component value={0};
+        if (component->type==FL_COMPONENT_EVENTS) {
+            cJSON *events=fl_events_read(component); Fl_Json context={0}; bool ok=events!=NULL,changed=false;
+            cJSON *points=cJSON_GetObjectItemCaseSensitive(events,"points");
+            for (cJSON *event=points ? points->child : NULL;event && ok;event=event->next) {
+                Fl_TimeAnchor at; ok=fl_document_anchor_read(&context,cJSON_GetObjectItemCaseSensitive(event,"at"),&at);
+                if (ok && at.kind!=FL_ANCHOR_ABSOLUTE && at.beat==beat) {
+                    changed=true; split_anchor(&at,beat,right,left_duration,right_duration);
+                    ok=cJSON_ReplaceItemInObjectCaseSensitive(event,"at",fl_document_anchor_write(&context,&at));
+                }
+            }
+            if (ok && changed) ok=fl_events_encode(events,&value);
+            cJSON_Delete(events); if (!ok) goto fail; if (!changed) continue;
+        } else {
+            if (fl_script_decode(component,&script)) mapping=&script.time;
+            else if (fl_prototype_instance_decode(component,&instance)) mapping=&instance.time;
+            else if (fl_local_composition_decode(component,&owned)) mapping=&owned.time;
+            if (!mapping || !mapping->explicit_range) continue;
+            bool start=mapping->start.kind!=FL_ANCHOR_ABSOLUTE && mapping->start.beat==beat;
+            bool end=mapping->end.kind!=FL_ANCHOR_ABSOLUTE && mapping->end.beat==beat;
+            if (!start && !end) continue;
+            split_anchor(&mapping->start,beat,right,left_duration,right_duration); split_anchor(&mapping->end,beat,right,left_duration,right_duration);
+            bool ok=component->type==FL_COMPONENT_SCRIPT ? fl_script_encode(&script,&value) : component->type==FL_COMPONENT_PROTOTYPE ? fl_prototype_instance_encode(&instance,&value) : fl_local_composition_encode(&owned,&value);
+            if (!ok) goto fail;
+        }
         if (*count==capacity) {
             size_t next=capacity ? capacity*2 : 8;
-            Fl_SplitScript *storage=realloc(*out,next*sizeof(*storage));
-            if (!storage) goto fail;
+            Fl_SplitComponent *storage=realloc(*out,next*sizeof(*storage));
+            if (!storage) {fl_component_clear(&value); goto fail;}
             *out=storage; capacity=next;
         }
-        split_anchor(&script.time.start,beat,right,left_duration,right_duration);
-        split_anchor(&script.time.end,beat,right,left_duration,right_duration);
-        Fl_Component value={0};
-        if (!fl_script_encode(&script,&value)) goto fail;
-        value.id=component->id; (*out)[(*count)++]=(Fl_SplitScript){component,value};
+        value.id=component->id; (*out)[(*count)++]=(Fl_SplitComponent){component,value};
     }
     return true;
 fail:
@@ -306,8 +326,8 @@ bool fl_timeline_apply(const Fl_Project *p, Fl_Scene *s, const Fl_Op *op, uint64
         char *name = copy_text(op->name);
         if (!name || !reserve_beats(s, 1)) {free(name); return false;}
         Fl_Tick left = op->tick - start, right = end - op->tick;
-        Fl_SplitScript *scripts=NULL; size_t script_count=0;
-        if (!prepare_split_scripts(s,op->beat,*next_id,left,right,&scripts,&script_count)) {free(name); return false;}
+        Fl_SplitComponent *scripts=NULL; size_t script_count=0;
+        if (!prepare_split_components(s,op->beat,*next_id,left,right,&scripts,&script_count)) {free(name); return false;}
         Fl_Beat *beat = (Fl_Beat *)&s->beats[i];
         Fl_Id id = (*next_id)++;
         bool auto_advance = beat->auto_advance;

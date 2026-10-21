@@ -1,5 +1,8 @@
 #include "components/fl_prototype_instance.h"
 #include "fl_document.h"
+#include "components/fl_local_composition.h"
+#include "components/fl_sampled_animation.h"
+#include "components/fl_events.h"
 #include "components/fl_script.h"
 #include "components/fl_style.h"
 #include "schema/fl_widgets.h"
@@ -19,7 +22,7 @@ static const Field image[] = {{"asset",0,UNSIGNED},{0}};
 static const Field opacity[] = {{"value",0,NUMBER},{0}};
 static const Field style[] = {{"radius",0,NUMBER},{"gradient_angle",8,NUMBER},{"shadow_blur",16,NUMBER},{"shadow_x",24,NUMBER},{"shadow_y",32,NUMBER},{"gradient_to",40,COLOR},{"shadow_color",44,COLOR},{"gradient",48,FLAG},{"align",49,BYTE},{"crop_x",50,NUMBER},{"crop_y",58,NUMBER},{"crop_width",66,NUMBER},{"crop_height",74,NUMBER},{"clip",82,FLAG},{"blur",83,NUMBER},{0}};
 static const Field video[] = {{"asset",0,UNSIGNED},{"start",8,SIGNED},{"offset",16,SIGNED},{"rate",24,NUMBER},{"loop",32,FLAG},{0}};
-static const Schema schemas[] = {{0}, {"transform",56,transform},{"rectangle",4,rectangle},{"text",0,NULL},{"appearance",24,appearance},{"geometry",1,geometry},{"typography",0,NULL},{"image",8,image},{"opacity",8,opacity},{"animation",0,NULL},{"script",0,NULL},{"style",91,style},{"video",33,video},{"prototype",0,NULL}};
+static const Schema schemas[] = {{0}, {"transform",56,transform},{"rectangle",4,rectangle},{"text",0,NULL},{"appearance",24,appearance},{"geometry",1,geometry},{"typography",0,NULL},{"image",8,image},{"opacity",8,opacity},{"animation",0,NULL},{"script",0,NULL},{"style",91,style},{"video",33,video},{"prototype",0,NULL},{"composition",0,NULL},{"sampled",0,NULL},{"events",0,NULL}};
 static const char *const ease_names[] = {"linear","in","out","in_out","hold"};
 
 /* Read/write a canonical little-endian word without alignment assumptions. */
@@ -112,7 +115,17 @@ cJSON *fl_document_component_write(Fl_Json *c, const Fl_Component *component)
     fl_json_add(c,o,"id",fl_json_u64(component->id));
     fl_json_add(c,o,"type",s ? cJSON_CreateString(s->name) : fl_json_u64(component->type));
     fl_json_add(c,o,"version",fl_json_u64(component->version));
-    if (component->type==FL_COMPONENT_PROTOTYPE) {
+    if (component->type==FL_COMPONENT_EVENTS) fl_json_add(c,o,"events",fl_events_read(component));
+    else if (component->type==FL_COMPONENT_SAMPLED) fl_json_add(c,o,"samples",fl_sampled_animation_write(c,component));
+    else if (component->type==FL_COMPONENT_COMPOSITION) {
+        Fl_LocalComposition scope;
+        if (!fl_local_composition_decode(component,&scope)) fl_json_fail(c,"Invalid owned composition");
+        else {
+            fl_json_add(c,o,"time",fl_document_time_write(c,&scope.time));
+            fl_json_add(c,o,"document",fl_json_parse(c,scope.document,scope.document_size));
+            fl_json_add(c,o,"overrides",fl_json_parse(c,scope.overrides,scope.overrides_size));
+        }
+    } else if (component->type==FL_COMPONENT_PROTOTYPE) {
         Fl_PrototypeInstance instance;
         if (!fl_prototype_instance_decode(component,&instance)) fl_json_fail(c,"Invalid prototype instance");
         else {fl_json_add(c,o,"asset",fl_json_u64(instance.asset)); fl_json_add(c,o,"time",fl_document_time_write(c,&instance.time)); fl_json_add(c,o,"overrides",fl_json_parse(c,instance.overrides,instance.overrides_size));}
@@ -122,8 +135,10 @@ cJSON *fl_document_component_write(Fl_Json *c, const Fl_Component *component)
         else {
             fl_json_add(c,o,"asset",fl_json_u64(script.script)); fl_json_add(c,o,"enabled",cJSON_CreateBool(script.enabled));
             fl_json_add(c,o,"time",fl_document_time_write(c,&script.time));
+            fl_json_add(c,o,"layer",cJSON_CreateNumber(script.layer));
             fl_json_add(c,o,"parameters",fl_json_parse(c,script.parameters,script.parameters_size));
             fl_json_add(c,o,"bindings",fl_json_parse(c,script.bindings,script.bindings_size));
+            fl_json_add(c,o,"overrides",fl_json_parse(c,script.overrides,script.overrides_size));
         }
     } else if (component->type==FL_COMPONENT_ANIMATION) fl_json_add(c,o,"tracks",animation_write(c,(const Fl_Animation *)component->data));
     else if (component->type==FL_COMPONENT_TEXT) {
@@ -166,14 +181,35 @@ bool fl_document_component_read(Fl_Json *c, const cJSON *o, Fl_Id entity, Fl_Com
     if (!fl_json_uint(c,fl_json_member(c,o,"id",0),&out->id)) return false;
     if (!fl_json_uint(c,fl_json_member(c,o,"version",0),&out->version)) return false;
     char fields[512]="id type version";
-    if (out->type==FL_COMPONENT_PROTOTYPE) strcat(fields," asset time overrides");
-    else if (out->type==FL_COMPONENT_SCRIPT) strcat(fields," asset enabled time parameters bindings");
+    if (out->type==FL_COMPONENT_EVENTS) strcat(fields," events");
+    else if (out->type==FL_COMPONENT_SAMPLED) strcat(fields," samples");
+    else if (out->type==FL_COMPONENT_COMPOSITION) strcat(fields," time document overrides");
+    else if (out->type==FL_COMPONENT_PROTOTYPE) strcat(fields," asset time overrides");
+    else if (out->type==FL_COMPONENT_SCRIPT) strcat(fields," asset enabled layer time parameters bindings overrides");
     else if (out->type==FL_COMPONENT_ANIMATION) strcat(fields," tracks");
     else if (out->type==FL_COMPONENT_TEXT) strcat(fields," text");
     else if (out->type==FL_COMPONENT_TYPOGRAPHY) strcat(fields," family weight italic");
     else if (s && s->fields) for (const Field *f=s->fields;f->name;++f) {strcat(fields," "); strcat(fields,f->name);}
     else strcat(fields," bytes");
     if (!fl_json_object(c,o,fields)) return false;
+    if (out->type==FL_COMPONENT_EVENTS) {
+        Fl_Id id=out->id; bool valid=out->version==1 && fl_events_encode(cJSON_GetObjectItemCaseSensitive(o,"events"),out); out->id=id;
+        return valid || fl_json_fail(c,"Invalid simulation event track");
+    }
+    if (out->type==FL_COMPONENT_SAMPLED) {
+        Fl_Id id=out->id;
+        bool valid=out->version==FL_SAMPLED_ANIMATION_VERSION && fl_sampled_animation_read(c,fl_json_member(c,o,"samples",cJSON_Array),out);
+        out->id=id; return valid || fl_json_fail(c,"Invalid sampled animation schema");
+    }
+    if (out->type==FL_COMPONENT_COMPOSITION) {
+        Fl_LocalComposition scope={0};
+        const cJSON *document=fl_json_member(c,o,"document",cJSON_Object), *overrides=fl_json_member(c,o,"overrides",cJSON_Array);
+        if (!document || !overrides || !fl_document_time_read(c,fl_json_member(c,o,"time",cJSON_Object),&scope.time)) return false;
+        char *text=cJSON_PrintUnformatted(document), *operations=cJSON_PrintUnformatted(overrides);
+        scope.document=text; scope.document_size=text ? strlen(text) : 0; scope.overrides=operations; scope.overrides_size=operations ? strlen(operations) : 0;
+        Fl_Id id=out->id; bool ok=text && operations && out->version==FL_LOCAL_COMPOSITION_VERSION && fl_local_composition_encode(&scope,out);
+        cJSON_free(text); cJSON_free(operations); out->id=id; return ok || fl_json_fail(c,"Invalid owned composition document");
+    }
     if (out->type==FL_COMPONENT_PROTOTYPE) {
         Fl_PrototypeInstance instance={0}; const cJSON *overrides=fl_json_member(c,o,"overrides",cJSON_Array);
         if (!overrides || !fl_json_uint(c,fl_json_member(c,o,"asset",0),&instance.asset) || !fl_document_time_read(c,fl_json_member(c,o,"time",cJSON_Object),&instance.time)) return false;
@@ -188,13 +224,19 @@ bool fl_document_component_read(Fl_Json *c, const cJSON *o, Fl_Id entity, Fl_Com
             !fl_document_time_read(c,fl_json_member(c,o,"time",cJSON_Object),&script.time)) return fl_json_fail(c,"Invalid Script configuration");
         const cJSON *bindings=fl_json_member(c,o,"bindings",cJSON_Object);
         if (!bindings || !fl_script_bindings_valid(c,bindings)) return false;
-        script.enabled=cJSON_IsTrue(enabled);
+        int64_t layer;
+        if (!fl_json_int(c,fl_json_member(c,o,"layer",0),&layer) || layer < -1000000 || layer > 1000000) return fl_json_fail(c,"Invalid behavior layer");
+        script.layer=(int32_t)layer; script.enabled=cJSON_IsTrue(enabled);
         char *text=cJSON_PrintUnformatted(parameters); if (!text) return fl_json_fail(c,"Cannot encode parameters");
         char *binding_text=cJSON_PrintUnformatted(bindings);
         if (!binding_text) {cJSON_free(text); return fl_json_fail(c,"Cannot encode bindings");}
+        const cJSON *overrides=fl_json_member(c,o,"overrides",cJSON_Array);
+        char *override_text=overrides ? cJSON_PrintUnformatted(overrides) : NULL;
+        if (!override_text) {cJSON_free(text); cJSON_free(binding_text); return fl_json_fail(c,"Cannot encode structural overrides");}
+        script.overrides=override_text; script.overrides_size=strlen(override_text);
         script.bindings=binding_text; script.bindings_size=strlen(binding_text);
         script.parameters=text; script.parameters_size=strlen(text); Fl_Id id=out->id; uint64_t version=out->version;
-        bool ok=version==FL_SCRIPT_VERSION && fl_script_encode(&script,out); cJSON_free(text); cJSON_free(binding_text); out->id=id;
+        bool ok=version==FL_SCRIPT_VERSION && fl_script_encode(&script,out); cJSON_free(text); cJSON_free(binding_text); cJSON_free(override_text); out->id=id;
         return ok || fl_json_fail(c,"Invalid Script schema or parameter budget");
     }
     if (out->type==FL_COMPONENT_ANIMATION) return animation_read(c,fl_json_member(c,o,"tracks",cJSON_Array),entity,out) && fl_widget_component_valid(out);

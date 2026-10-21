@@ -19,6 +19,15 @@ static const Fl_PropertyDef properties[FL_PROP_COUNT] = {
     [FL_PROP_CROP_Y] = {"crop_y", "Crop Y", "crop", "y", 1, 0, 1},
     [FL_PROP_CROP_W] = {"crop_w", "Crop width", "crop", "width", 1, 0.001, 1},
     [FL_PROP_CROP_H] = {"crop_h", "Crop height", "crop", "height", 1, 0.001, 1},
+    [FL_PROP_RADIUS] = {"radius", "Corner radius", "style", "radius", 1, 0, 65536},
+    [FL_PROP_BLUR] = {"blur", "Blur", "style", "blur", 1, 0, 512},
+    [FL_PROP_GRADIENT_ANGLE] = {"gradient_angle", "Gradient angle", "style", "gradient_angle", 1, -1000, 1000},
+    [FL_PROP_SHADOW_BLUR] = {"shadow_blur", "Shadow blur", "style", "shadow_blur", 1, 0, 4096},
+    [FL_PROP_SHADOW_X] = {"shadow_x", "Shadow X", "style", "shadow_x", 1, -65536, 65536},
+    [FL_PROP_SHADOW_Y] = {"shadow_y", "Shadow Y", "style", "shadow_y", 1, -65536, 65536},
+    [FL_PROP_GRADIENT_TO] = {"gradient_to", "Gradient colour", "style", "gradient_to", 4, 0, 255},
+    [FL_PROP_SHADOW_COLOR] = {"shadow_color", "Shadow colour", "style", "shadow_color", 4, 0, 255},
+    [FL_PROP_MEDIA_TIME] = {"media_time", "Video source time", "media", "seconds", 1, -1, 1e9},
 };
 
 const Fl_PropertyDef *fl_property_definition(Fl_AnimProperty property)
@@ -51,6 +60,8 @@ bool fl_property_supported(const Fl_Entity *entity, Fl_AnimProperty property)
     if (!definition) return false;
     if (property == FL_PROP_FILL) return definition->has_fill;
     if (property == FL_PROP_STROKE || property == FL_PROP_STROKE_WIDTH) return definition->has_stroke;
-    if (property >= FL_PROP_CROP_X) return definition->has_image || definition->has_video;
+    if (property>=FL_PROP_RADIUS && property<FL_PROP_MEDIA_TIME) return true;
+    if (property==FL_PROP_MEDIA_TIME) return definition->has_video;
+    if (property >= FL_PROP_CROP_X && property<=FL_PROP_CROP_H) return definition->has_image || definition->has_video;
     return property == FL_PROP_FONT_SIZE && definition->has_text;
 }

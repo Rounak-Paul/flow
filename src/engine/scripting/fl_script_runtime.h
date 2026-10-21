@@ -17,9 +17,9 @@ void fl_script_runtime_begin_frame(Fl_ScriptRuntime *runtime);
 /* Borrow a cancellation token during evaluation only; clear it before the caller releases token storage. */
 void fl_script_runtime_set_cancel(Fl_ScriptRuntime *runtime, const atomic_bool *cancel);
 
-/* Restore/step explicit simulation state and sample each attached module at tick. Errors preserve outputs and retain diagnostics. */
-bool fl_script_runtime_evaluate(Fl_ScriptRuntime *runtime, const Fl_Scene *scene, size_t entity,
-                                Fl_Tick tick, Fl_EntityState *state);
+/* Evaluate the scene's declared writer plan with coherent per-layer inputs and atomic per-behavior patches.
+   Invalid behavior outputs preserve that behavior's previous layer inputs and retain diagnostics. */
+bool fl_script_runtime_evaluate_scene(Fl_ScriptRuntime *runtime, const Fl_Scene *scene, Fl_Tick tick, Fl_EntityState *states);
 /* Compile source without running it. False with the Lua diagnostic (chunk name "script") in error on a syntax error. */
 bool fl_script_check(const char *source, size_t size, char *error, size_t error_size);
 /* Borrow the most recent diagnostic for entity, or an empty string when none. */
@@ -44,3 +44,6 @@ bool fl_script_runtime_build(Fl_ScriptRuntime *runtime, const Fl_Scene *scene, s
    Does not resolve assets or execute callbacks. Top-level declarations use the runtime sandbox and budgets. */
 bool fl_script_dependencies(const char *source, size_t size, Fl_Id **references, size_t *count,
                              char *error, size_t capacity);
+
+/* Resolve the highest declared behavior writer for a scope-local property (FL_PROP_COUNT denotes text). */
+bool fl_script_runtime_writer(const Fl_ScriptRuntime *runtime, size_t entity, int property, Fl_Id *component, int32_t *layer);

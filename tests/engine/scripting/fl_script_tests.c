@@ -123,7 +123,7 @@ static void instances(const char *directory)
     Fl_Project *project=fl_project_create(dir,"Instances",NULL); CHECK(project); if (!project) return;
     Fl_Id scene_id=fl_project_scene_at(project,0)->id, entity=0, x=0, y=0, first=0, second=0;
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_ADD,.scene=scene_id,.name="Object"},&entity));
-    const char *sx="return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.transform.x=10*t end }", *sy="return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.transform.y=20*t end }";
+    const char *sx="return { outputs={self={x='replace'}}, sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.transform.x=10*t end }", *sy="return { outputs={self={y='replace'}}, sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.transform.y=20*t end }";
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET, .source_kind=FL_ASSET_LUA,.name="X",.source=sx,.source_size=strlen(sx)},&x));
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET, .source_kind=FL_ASSET_LUA,.name="Y",.source=sy,.source_size=strlen(sy)},&y));
     Fl_Component component={0};
@@ -477,7 +477,7 @@ int main(int argc, char **argv)
     const char *suffix_source = "return {sample=function(ctx) ctx.entity.text=ctx.entity.text..'!' end}";
     CHECK(fl_project_apply(project, &(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET, .source_kind=FL_ASSET_LUA,.name="Suffix",.source=suffix_source,.source_size=strlen(suffix_source)}, &suffix));
     Fl_Component suffix_component = {0};
-    CHECK(fl_script_encode(&(Fl_Script){.script=suffix,.enabled=true}, &suffix_component));
+    CHECK(fl_script_encode(&(Fl_Script){.script=suffix,.enabled=true,.layer=1}, &suffix_component));
     CHECK(fl_project_apply(project, &(Fl_Op){.kind=FL_OP_COMPONENT_SET,.scene=scene_id,.entity=label,.component=suffix_component}, NULL));
     fl_component_clear(&suffix_component);
     sample(&state, scene, label, SECOND);

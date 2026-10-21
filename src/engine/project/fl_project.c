@@ -306,72 +306,6 @@ static bool descendant(const Fl_Scene *s, Fl_Id candidate, Fl_Id ancestor)
     return false;
 }
 
-/* Compare a proposed channel with its evaluated value at tick, ignoring numerical roundoff. */
-static bool value_changed(const Fl_Scene *scene, const Fl_Track *track, Fl_Tick tick, const double value[4])
-{
-    double current[4];
-    if (!fl_track_sample(scene, track, tick, current)) return true;
-    int channels = track->property == FL_PROP_FILL || track->property == FL_PROP_STROKE ? 4 : 1;
-    for (int c = 0; c < channels; ++c) {
-        if (channels == 4) current[c] = lround(current[c]);
-        if (fabs(current[c] - value[c]) > 1e-12 * fmax(1, fmax(fabs(current[c]), fabs(value[c])))) return true;
-    }
-    return false;
-}
-
-/* Split keyed configure components: animated channels become key writes and keep their base values.
-   Rewritten components point at the caller's scratch buffers. Returns the number of writes. */
-static size_t keyed_components(const Fl_Scene *s, const Fl_Entity *e, Fl_Component *components, size_t count,
-                               unsigned char transform[56], unsigned char appearance[24], unsigned char opacity[8],
-                               Fl_KeyWrite *writes, Fl_Tick tick)
-{
-    size_t n = 0;
-    for (size_t i = 0; i < count; ++i) {
-        Fl_Component *c = &components[i];
-        if (c->type == FL_COMPONENT_TRANSFORM) {
-            Fl_Transform next, base;
-            if (!fl_transform_decode(c, &next) || !fl_transform_decode(fl_entity_component(e, FL_COMPONENT_TRANSFORM), &base)) continue;
-            double *value[7] = {&next.x, &next.y, &next.width, &next.height, &next.rotation, &next.scale_x, &next.scale_y};
-            const double kept[7] = {base.x, base.y, base.width, base.height, base.rotation, base.scale_x, base.scale_y};
-            for (int k = 0; k < 7; ++k) {
-                if (fl_scene_track(s, e->id, (Fl_AnimProperty)(FL_PROP_X + k))) {
-                    writes[n++] = (Fl_KeyWrite){e->id, (Fl_AnimProperty)(FL_PROP_X + k), {*value[k], 0, 0, 0}};
-                    *value[k] = kept[k];
-                }
-            }
-            fl_transform_encode(&next, transform); c->data = transform;
-        } else if (c->type == FL_COMPONENT_APPEARANCE) {
-            Fl_Appearance next, base = fl_widget_appearance(e);
-            if (!fl_appearance_decode(c, &next)) continue;
-            if (fl_scene_track(s, e->id, FL_PROP_FILL)) {
-                writes[n++] = (Fl_KeyWrite){e->id, FL_PROP_FILL, {next.fill[0], next.fill[1], next.fill[2], next.fill[3]}};
-                memcpy(next.fill, base.fill, 4);
-            }
-            if (fl_scene_track(s, e->id, FL_PROP_STROKE)) {
-                writes[n++] = (Fl_KeyWrite){e->id, FL_PROP_STROKE, {next.stroke[0], next.stroke[1], next.stroke[2], next.stroke[3]}};
-                memcpy(next.stroke, base.stroke, 4);
-            }
-            if (fl_scene_track(s, e->id, FL_PROP_STROKE_WIDTH)) {
-                writes[n++] = (Fl_KeyWrite){e->id, FL_PROP_STROKE_WIDTH, {next.stroke_width, 0, 0, 0}}; next.stroke_width = base.stroke_width;
-            }
-            if (fl_scene_track(s, e->id, FL_PROP_FONT_SIZE)) {
-                writes[n++] = (Fl_KeyWrite){e->id, FL_PROP_FONT_SIZE, {next.font_size, 0, 0, 0}}; next.font_size = base.font_size;
-            }
-            fl_appearance_encode(&next, appearance); c->data = appearance;
-        } else if (c->type == FL_COMPONENT_OPACITY) {
-            double next;
-            if (!fl_opacity_decode(c, &next)) continue;
-            if (fl_scene_track(s, e->id, FL_PROP_OPACITY)) writes[n++] = (Fl_KeyWrite){e->id, FL_PROP_OPACITY, {next, 0, 0, 0}};
-            else continue;
-            fl_opacity_encode(fl_widget_opacity(e), opacity); c->data = opacity;
-        }
-    }
-    size_t kept = 0;
-    for (size_t i = 0; i < n; ++i) if (value_changed(s, fl_scene_track(s, e->id, writes[i].property), tick, writes[i].value))
-        writes[kept++] = writes[i];
-    return kept;
-}
-
 const Fl_Asset *fl_project_asset_named(const Fl_Project *p, Fl_AssetKind kind, const char *name)
 {
     for (size_t i=0;p && name && i<p->asset_count;++i) if (p->assets[i].kind==kind && !strcmp(p->assets[i].name,name)) return &p->assets[i];
@@ -561,7 +495,7 @@ static bool apply_operation(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
         Fl_Component copy = {0};
         if (!fl_component_clone(&op->component, &copy)) return false;
         Fl_Component *c=(Fl_Component *)(copy.id ? fl_entity_component_instance(e,copy.id) : copy.type==FL_COMPONENT_SCRIPT ? NULL : fl_entity_component(e,copy.type));
-        if (copy.id && (!c || c->type!=copy.type)) {fl_component_clear(&copy); return false;}
+        if (copy.id && (!c || (c->type!=copy.type && !(c->type==FL_COMPONENT_PROTOTYPE && copy.type==FL_COMPONENT_COMPOSITION)))) {fl_component_clear(&copy); return false;}
         if (!c) {
             if (e->component_count >= 64 || e->component_count >= SIZE_MAX / sizeof(*c) - 1) {fl_component_clear(&copy); return false;}
             Fl_Component *components = realloc((void *)e->components, (e->component_count + 1) * sizeof(*c));
@@ -577,14 +511,15 @@ static bool apply_operation(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
         if (!e || !op->name || !op->name[0] || !references_valid(p, s, op->components, op->component_count) ||
             op->component_count > 64) return false;
         Fl_Component keyed[64];
-        unsigned char transform_bytes[56], appearance_bytes[24], opacity_bytes[8];
+        unsigned char transform_bytes[56], appearance_bytes[24], opacity_bytes[8], style_bytes[91];
         Fl_KeyWrite writes[FL_PROP_COUNT];
         size_t write_count = 0;
         const Fl_Component *components = op->components;
         if (op->keyed && op->component_count) {
             memcpy(keyed, op->components, op->component_count * sizeof(*keyed));
             components = keyed;
-            write_count = keyed_components(s, e, keyed, op->component_count, transform_bytes, appearance_bytes, opacity_bytes, writes, op->tick);
+            write_count = fl_keyed_components(s, e, keyed, op->component_count, transform_bytes, appearance_bytes, opacity_bytes, style_bytes, writes, op->tick);
+            if (write_count==SIZE_MAX) return false;
         }
         Fl_Entity prepared = {.name = copy_string(op->name)};
         Fl_Component *merged = NULL;
@@ -622,7 +557,7 @@ static bool apply_operation(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
                 for (int c = 0; c < 7; ++c) {
                             if (!fl_scene_track(s, edit->entity, (Fl_AnimProperty)(FL_PROP_X + c))) continue;
                     Fl_KeyWrite write = {edit->entity, (Fl_AnimProperty)(FL_PROP_X + c), {*next[c], 0, 0, 0}};
-                    if (value_changed(s, fl_scene_track(s, edit->entity, write.property), op->tick, write.value))
+                    if (fl_keyed_value_changed(s, fl_scene_track(s, edit->entity, write.property), op->tick, write.value))
                         writes[write_count++] = write;
                     *next[c] = now[c];
                 }
@@ -908,9 +843,9 @@ bool fl_project_edit_validate(Fl_Project *project)
 static bool changes_behavior(const Fl_Op *operation)
 {
     if (operation->kind==FL_OP_ASSET_SOURCE_SET && operation->source) return true;
-    if (operation->kind==FL_OP_COMPONENT_SET && (operation->component.type==FL_COMPONENT_SCRIPT || operation->component.type==FL_COMPONENT_PROTOTYPE)) return true;
+    if (operation->kind==FL_OP_COMPONENT_SET && (operation->component.type==FL_COMPONENT_SCRIPT || operation->component.type==FL_COMPONENT_PROTOTYPE || operation->component.type==FL_COMPONENT_COMPOSITION)) return true;
     if ((operation->kind==FL_OP_ENTITY_ADD || operation->kind==FL_OP_ENTITY_CONFIGURE) && operation->components && operation->component_count<=64)
-        for (size_t i=0;i<operation->component_count;++i) if ((operation->components[i].type==FL_COMPONENT_SCRIPT || operation->components[i].type==FL_COMPONENT_PROTOTYPE)) return true;
+        for (size_t i=0;i<operation->component_count;++i) if ((operation->components[i].type==FL_COMPONENT_SCRIPT || operation->components[i].type==FL_COMPONENT_PROTOTYPE || operation->components[i].type==FL_COMPONENT_COMPOSITION)) return true;
     return false;
 }
 

@@ -2,6 +2,8 @@
 #include "project/fl_project.h"
 #include "project/fl_prototype.h"
 #include "project/fl_prototype_authoring.h"
+#include "project/fl_scope_authoring.h"
+#include "components/fl_local_composition.h"
 #include "components/fl_prototype_instance.h"
 #include "components/fl_script.h"
 #include "time/fl_composition.h"
@@ -98,9 +100,90 @@ static void test_build(const char *directory)
     CHECK(!fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET,.source_kind=FL_ASSET_LUA,.asset=asset,.source=unbounded,.source_size=strlen(unbounded)},NULL));
     CHECK(strstr(fl_project_diagnostic(project),"instruction limit"));
     CHECK(!strcmp(fl_project_asset(project,asset)->source,lua));
+    CHECK(fl_scene_state_update(&state,fl_project_scene(project,scene),24000));
+    Fl_Origin address=*fl_composition_origin(state.composition,1); Fl_Json edit_context={0};
+    const char *edit_text="{\"op\":\"component.patch\",\"component\":\"1\",\"value\":{\"width\":55}}";
+    cJSON *edit=fl_json_parse(&edit_context,edit_text,strlen(edit_text));
+    CHECK(edit && fl_scope_edit(project,scene,&address,edit)); cJSON_Delete(edit);
+    CHECK(fl_scene_state_update(&state,fl_project_scene(project,scene),24000) && state.entities[1].transform.width==55);
     CHECK(fl_project_save(project)); fl_scene_state_clear(&state); fl_project_destroy(project);
     project=fl_project_open(path,NULL); CHECK(project);
-    if (project) {CHECK(fl_scene_state_update(&state,fl_project_scene(project,scene),24000) && state.count==2 && state.entities[1].transform.width==64); fl_scene_state_clear(&state); fl_project_destroy(project);}
+    if (project) {CHECK(fl_scene_state_update(&state,fl_project_scene(project,scene),24000) && state.count==2 && state.entities[1].transform.width==55); fl_scene_state_clear(&state); fl_project_destroy(project);}
+}
+
+/* Detach retains native scopes, identities, clocks and deterministic Lua while removing source ownership. */
+static void test_detach(const char *directory)
+{
+    char path[FL_PATH_MAX]; CHECK(fl_fs_join(path,sizeof(path),directory,"detached"));
+    Fl_Project *project=fl_project_create(path,"Detached",NULL); CHECK(project); if (!project) return;
+    Fl_Id scene=fl_project_scene_at(project,0)->id,lua=0,asset=0,owner=0;
+    const char *behavior="return {sample=function(ctx) ctx.entity.transform.x=ctx.time.seconds*10+math.random() end}";
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET,.source_kind=FL_ASSET_LUA,.name="Motion",.source=behavior,.source_size=strlen(behavior)},&lua));
+    char *document=source(lua,0); asset=put(project,0,"Moving shape",document); free(document);
+    CHECK(fl_prototype_instantiate(project,scene,0,asset,10,20,&owner));
+    const Fl_Component *component=fl_entity_component(fl_scene_entity(fl_project_scene(project,scene),owner),FL_COMPONENT_PROTOTYPE);
+    Fl_Id generator=component->id; Fl_PrototypeInstance instance; CHECK(fl_prototype_instance_decode(component,&instance));
+    instance.time.mode=FL_RETIME_FIXED; instance.time.rate=2; instance.time.loop=true; instance.time.duration=120000;
+    Fl_Component mapped={0}; CHECK(fl_prototype_instance_encode(&instance,&mapped)); mapped.id=generator;
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_COMPONENT_SET,.scene=scene,.entity=owner,.component=mapped},NULL)); fl_component_clear(&mapped);
+    Fl_SceneState state={0}; Fl_Tick ticks[]={0,30000,90000,150000}; double values[4]; Fl_Id generated=0;
+    for (size_t i=0;i<4;++i) {
+        CHECK(fl_scene_state_update(&state,fl_project_scene(project,scene),ticks[i]));
+        size_t child=find(&state,owner,2,0); CHECK(child!=SIZE_MAX);
+        if (child!=SIZE_MAX) {values[i]=state.entities[child].transform.x; generated=fl_scene_state_scene(&state,fl_project_scene(project,scene))->entities[child].id;}
+    }
+    CHECK(fl_prototype_detach(project,scene,owner));
+    const Fl_Entity *entity=fl_scene_entity(fl_project_scene(project,scene),owner);
+    CHECK(!fl_entity_component(entity,FL_COMPONENT_PROTOTYPE));
+    component=fl_entity_component(entity,FL_COMPONENT_COMPOSITION); CHECK(component && component->id==generator);
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_REMOVE,.asset=asset},NULL));
+    for (size_t i=4;i-->0;) {
+        CHECK(fl_scene_state_update(&state,fl_project_scene(project,scene),ticks[i]));
+        size_t child=find(&state,owner,2,0); CHECK(child!=SIZE_MAX);
+        if (child!=SIZE_MAX) {
+            CHECK(state.entities[child].transform.x==values[i]);
+            CHECK(fl_scene_state_scene(&state,fl_project_scene(project,scene))->entities[child].id==generated);
+        }
+    }
+    size_t child=find(&state,owner,2,0);
+    if (child!=SIZE_MAX) {
+        Fl_Origin address=*fl_composition_origin(state.composition,child); Fl_Id local=0;
+        const Fl_Entity *shape=&fl_scene_state_scene(&state,fl_project_scene(project,scene))->entities[child];
+        CHECK(fl_composition_component_local(state.composition,child,fl_entity_component(shape,FL_COMPONENT_TRANSFORM)->id,&local) && local==2);
+        Fl_Json context={0}; const char *text="{\"op\":\"component.patch\",\"component\":\"2\",\"value\":{\"height\":77}}";
+        cJSON *edit=fl_json_parse(&context,text,strlen(text)); CHECK(edit && fl_scope_edit(project,scene,&address,edit)); cJSON_Delete(edit);
+        CHECK(fl_scene_state_update(&state,fl_project_scene(project,scene),0)); child=find(&state,owner,2,0);
+        CHECK(child!=SIZE_MAX && state.entities[child].transform.height==77);
+        unsigned char opacity_bytes[8]; fl_opacity_encode(0.75,opacity_bytes);
+        Fl_Component opacity={.type=FL_COMPONENT_OPACITY,.version=1,.data=opacity_bytes,.size=8};
+        for (size_t i=0;i<16;++i) {
+            CHECK(fl_scope_configure(project,scene,state.composition,child,"Detached shape",true,&opacity,1,0,0));
+            CHECK(fl_scene_state_update(&state,fl_project_scene(project,scene),0)); child=find(&state,owner,2,0);
+            CHECK(child!=SIZE_MAX && state.entities[child].opacity==0.75);
+        }
+        Fl_LocalComposition owned; CHECK(fl_local_composition_decode(fl_entity_component(fl_scene_entity(fl_project_scene(project,scene),owner),FL_COMPONENT_COMPOSITION),&owned));
+        cJSON *operations=fl_json_parse(&context,owned.overrides,owned.overrides_size);
+        CHECK(operations && cJSON_GetArraySize(operations)<=6); cJSON_Delete(operations);
+    }
+    child=find(&state,owner,2,0);
+    if (child!=SIZE_MAX) {
+        const Fl_Scene *flat=fl_composition_scene(state.composition); Fl_Id target=flat->entities[child].id,key=0;
+        CHECK(fl_scope_timeline(project,scene,state.composition,child,&(Fl_Op){.kind=FL_OP_KEY_SET,.entity=target,.property=FL_PROP_Y,.anchor={.kind=FL_ANCHOR_ABSOLUTE,.offset=30000},.value={45}},&key));
+        CHECK(key>>63); CHECK(fl_scene_state_update(&state,fl_project_scene(project,scene),15000)); child=find(&state,owner,2,0);
+        CHECK(child!=SIZE_MAX && state.entities[child].transform.y==45);
+        Fl_Tick root_tick=0; CHECK(fl_composition_entity_root_tick(state.composition,child,30000,15000,&root_tick) && root_tick==15000);
+        Fl_Id beat=0;
+        CHECK(fl_scope_timeline(project,scene,state.composition,child,&(Fl_Op){.kind=FL_OP_BEAT_ADD,.name="Extra",.beat_duration=12000},&beat));
+        CHECK(beat>>63); CHECK(fl_scene_state_update(&state,fl_project_scene(project,scene),15000)); child=find(&state,owner,2,0);
+        CHECK(fl_composition_entity_scope(state.composition,child)->beat_count==2);
+    }
+    CHECK(fl_project_save(project)); fl_scene_state_clear(&state); fl_project_destroy(project);
+    project=fl_project_open(path,NULL); CHECK(project);
+    if (project) {
+        CHECK(fl_scene_state_update(&state,fl_project_scene(project,scene),30000)); child=find(&state,owner,2,0);
+        CHECK(child!=SIZE_MAX && state.entities[child].transform.height==77 && state.entities[child].transform.x==values[1]);
+        fl_scene_state_clear(&state); fl_project_destroy(project);
+    }
 }
 
 int main(int argc, char **argv)
@@ -232,5 +315,6 @@ int main(int argc, char **argv)
     }
     free(cycle); free(outer_source); free(base);
     test_build(argv[1]);
+    test_detach(argv[1]);
     return FLOW_TEST_RESULT("fl_composition_tests");
 }

@@ -3,6 +3,7 @@
 #include "fl_scene_storage.h"
 #include "fl_timeline_internal.h"
 #include "components/fl_prototype_instance.h"
+#include "components/fl_local_composition.h"
 #include "doc/fl_document.h"
 #include <stdlib.h>
 #include <string.h>
@@ -105,4 +106,18 @@ bool fl_prototype_set_overrides(Fl_Project *project, Fl_Id scene_id, Fl_Id entit
     replacement.id=component->id;
     bool ok=fl_project_apply(project,&(Fl_Op){.kind=FL_OP_COMPONENT_SET,.scene=scene_id,.entity=entity_id,.component=replacement},NULL);
     fl_component_clear(&replacement); return ok;
+}
+
+bool fl_prototype_detach(Fl_Project *project, Fl_Id scene_id, Fl_Id entity_id)
+{
+    const Fl_Entity *entity=fl_scene_entity(fl_project_scene(project,scene_id),entity_id);
+    const Fl_Component *component=fl_entity_component(entity,FL_COMPONENT_PROTOTYPE);
+    Fl_PrototypeInstance instance; if (!fl_prototype_instance_decode(component,&instance)) return false;
+    const Fl_Asset *asset=fl_project_asset(project,instance.asset);
+    if (!asset || asset->kind!=FL_ASSET_PROTOTYPE || fl_entity_component(entity,FL_COMPONENT_COMPOSITION)) return false;
+    Fl_Component owned={0};
+    if (!fl_local_composition_encode(&(Fl_LocalComposition){.time=instance.time,.document=asset->source,.document_size=(size_t)asset->size,.overrides=instance.overrides,.overrides_size=instance.overrides_size},&owned)) return false;
+    owned.id=component->id;
+    bool ok=fl_project_apply(project,&(Fl_Op){.kind=FL_OP_COMPONENT_SET,.scene=scene_id,.entity=entity_id,.component=owned},NULL);
+    fl_component_clear(&owned); return ok;
 }

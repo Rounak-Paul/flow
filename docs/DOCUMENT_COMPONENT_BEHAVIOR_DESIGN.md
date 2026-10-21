@@ -1,6 +1,6 @@
 # Flow media engine: final architecture
 
-Status: implementation design, 2026-10-20. This specifies the target architecture; it does not describe completed implementation. It supersedes the earlier Lua media engine proposal and conflicting binary-document, automation-first and module-first composition directions.
+Status: architecture contract, 2026-10-20. Current native 2D/media refactor acceptance is recorded in `.context/refactor-acceptance.md` (2026-10-21). Specialized future engines and effects remain extensions under section 14. It supersedes the earlier Lua media engine proposal and conflicting binary-document, automation-first and module-first composition directions.
 
 ## 1. Product and architectural decisions
 

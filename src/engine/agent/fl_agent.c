@@ -1,6 +1,7 @@
 #include "fl_agent_internal.h"
 #include "time/fl_composition.h"
 #include "doc/fl_json.h"
+#include "schema/fl_properties.h"
 #include "core/fl_log.h"
 #include "media/fl_png.h"
 #include "platform/fl_fs.h"
@@ -47,6 +48,7 @@ void fl_agent_destroy(Fl_Agent *a)
 {
     if (!a) return;
     drop_frames(a);
+    fl_bake_destroy(a->bake);
     free(a->bindings); free(a);
 }
 
@@ -254,12 +256,33 @@ static cJSON *tool_evaluate_scene(Fl_Agent *a, const cJSON *args, cJSON **error)
             cJSON *provenance=cJSON_AddObjectToObject(item,"origin"), *path=cJSON_AddArrayToObject(provenance,"path");
             cJSON_AddItemToObject(provenance,"owner",agent_id_json(origin->owner)); cJSON_AddItemToObject(provenance,"component",agent_id_json(origin->component)); cJSON_AddItemToObject(provenance,"entity",agent_id_json(origin->entity));
             for (size_t j=0;j<origin->depth;++j) cJSON_AddItemToArray(path,agent_id_json(origin->path[j]));
+            cJSON *components=cJSON_AddArrayToObject(provenance,"components");
+            for (size_t j=0;components && j<e->component_count;++j) {
+                Fl_Id local;
+                if (!fl_composition_component_local(state.composition,i,e->components[j].id,&local)) continue;
+                cJSON *address=cJSON_CreateObject();
+                if (!address) break;
+                cJSON_AddItemToObject(address,"runtime",agent_id_json(e->components[j].id)); cJSON_AddItemToObject(address,"local",agent_id_json(local)); cJSON_AddItemToArray(components,address);
+            }
+        }
+        cJSON *writers=cJSON_AddObjectToObject(item,"writers");
+        for (int property=0;writers && property<=FL_PROP_COUNT;++property) {
+            Fl_Id component; int32_t layer;
+            if (!fl_scene_state_writer(&state,i,property,&component,&layer)) continue;
+            cJSON *writer=cJSON_AddObjectToObject(writers,property==FL_PROP_COUNT ? "text" : fl_property_name((Fl_AnimProperty)property));
+            if (writer) {cJSON_AddItemToObject(writer,"component",agent_id_json(component)); cJSON_AddNumberToObject(writer,"layer",layer);}
         }
         cJSON_AddNumberToObject(item, "x", v->transform.x); cJSON_AddNumberToObject(item, "y", v->transform.y);
         cJSON_AddNumberToObject(item, "width", v->transform.width); cJSON_AddNumberToObject(item, "height", v->transform.height);
         cJSON_AddNumberToObject(item, "rotation", v->transform.rotation * 180.0 / 3.14159265358979323846);
         cJSON_AddNumberToObject(item, "scale_x", v->transform.scale_x); cJSON_AddNumberToObject(item, "scale_y", v->transform.scale_y);
         cJSON_AddNumberToObject(item, "opacity", v->opacity);
+        double values[FL_PROP_COUNT][4]; fl_entity_state_values(v,values);
+        cJSON *properties=cJSON_AddObjectToObject(item,"properties");
+        for (int property=0;properties && property<FL_PROP_COUNT;++property) {
+            const Fl_PropertyDef *definition=fl_property_definition((Fl_AnimProperty)property);
+            cJSON_AddItemToObject(properties,definition->name,definition->channels==1 ? cJSON_CreateNumber(values[property][0]) : cJSON_CreateDoubleArray(values[property],(int)definition->channels));
+        }
         if (def && def->has_fill) agent_color_json(item, "fill", v->appearance.fill);
         if (def && def->has_stroke) {agent_color_json(item, "stroke", v->appearance.stroke); cJSON_AddNumberToObject(item, "stroke_width", v->appearance.stroke_width);}
         if (def && def->has_text) {
@@ -428,7 +451,42 @@ static cJSON *tool_render_frame(Fl_Agent *a, const cJSON *args, cJSON **error)
 }
 
 #define NO_ARGS "{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}"
+/* Start, inspect, cancel or apply the shared native bake job without blocking the editor owner thread. */
+static cJSON *tool_bake_scene(Fl_Agent *a, const cJSON *args, cJSON **error)
+{
+    static const char *const keys[]={"action","scene","start","end","step","tolerance","token",NULL};
+    Fl_Fail fail={0}; const char *action=NULL; Fl_Project *project=project_or_fail(a,error);
+    if (!project) return NULL;
+    if (!agent_only_keys(args,&fail,"bake_scene",keys) || !agent_get_string(args,"action",true,&action,&fail,"bake_scene")) goto failed;
+    if (!strcmp(action,"start")) {
+        Fl_Id scene=0; Fl_BakeOptions options={0};
+        if (!agent_get_id(args,"scene",NULL,true,&scene,&fail,"bake_scene") ||
+            !agent_get_seconds(args,"start",true,&options.start,NULL,&fail,"bake_scene") ||
+            !agent_get_seconds(args,"end",true,&options.end,NULL,&fail,"bake_scene") ||
+            !agent_get_seconds(args,"step",true,&options.step,NULL,&fail,"bake_scene") ||
+            !agent_get_number(args,"tolerance",true,&options.tolerance,NULL,&fail,"bake_scene")) goto failed;
+        if (!a->bake) a->bake=fl_bake_create(NULL);
+        if (a->bake_token==UINT64_MAX || !fl_bake_start(a->bake,project,scene,&options)) {fl_fail(&fail,"rejected","Bake cannot start: invalid interval, active edit or running job"); goto failed;}
+        ++a->bake_token;
+    } else {
+        Fl_Id token=0;
+        if (!agent_get_id(args,"token",NULL,true,&token,&fail,"bake_scene")) goto failed;
+        if (!a->bake || token!=a->bake_token) {fl_fail(&fail,"stale_job","Unknown bake token"); goto failed;}
+        if (!strcmp(action,"cancel")) fl_bake_cancel(a->bake);
+        else if (!strcmp(action,"apply")) {
+            if (!fl_bake_apply(a->bake,project,NULL)) {fl_fail(&fail,"rejected","Bake is not ready or the project changed since capture"); goto failed;}
+        } else if (strcmp(action,"status")) {fl_fail(&fail,"invalid_argument","Unknown bake action"); goto failed;}
+    }
+    cJSON *result=cJSON_CreateObject(); static const char *const statuses[]={"idle","running","ready","failed","cancelled","applied"};
+    cJSON_AddItemToObject(result,"token",agent_id_json(a->bake_token));
+    cJSON_AddStringToObject(result,"status",statuses[fl_bake_status(a->bake)]);
+    cJSON_AddStringToObject(result,"diagnostic",fl_bake_error(a->bake)); return result;
+failed:
+    *error=fl_fail_json(&fail); return NULL;
+}
+
 static const ToolDef TOOLS[] = {
+    {"bake_scene","Capture Lua and native animation into editable native sampled data. Start with explicit seconds interval, maximum step and numeric tolerance; poll token, then apply atomically. Nested scope clocks/media are preserved; changed projects reject stale output.","{\"type\":\"object\",\"properties\":{\"action\":{\"type\":\"string\",\"enum\":[\"start\",\"status\",\"cancel\",\"apply\"]},\"scene\":{},\"token\":{},\"start\":{\"type\":\"number\"},\"end\":{\"type\":\"number\"},\"step\":{\"type\":\"number\"},\"tolerance\":{\"type\":\"number\"}},\"required\":[\"action\"],\"additionalProperties\":false}",false,tool_bake_scene},
     {"get_reference", "Manual for authoring in Flow: units, operation vocabulary, animation model and the Lua scripting API. Read this first.",
      NO_ARGS, true, tool_get_reference},
     {"get_project", "List the project's scenes (id, revision, size, length), assets and undo history.", NO_ARGS, true, tool_get_project},
@@ -454,7 +512,7 @@ static const ToolDef TOOLS[] = {
      true, tool_evaluate_scene},
     {"apply_ops", "Apply a batch of document operations atomically (all succeed or none do) as one undoable changeset. "
      "Operations: scene.add/remove/rename/move/set, entity.create/set/remove/reparent/reorder, key.set/remove, track.remove, beat.add/update/remove/move/split, "
-     "clip.add/update/remove, prototype.capture/instantiate/overrides, asset.source/rename/remove, script.create/update/remove/attach/detach. Name created objects with \"as\":\"$name\" and reuse \"$name\" as an id later in the batch. "
+     "clip.add/update/remove, prototype.capture/instantiate/overrides/detach, scope.edit, asset.source/rename/remove, script.create/update/remove/attach/detach. Name created objects with \"as\":\"$name\" and reuse \"$name\" as an id later in the batch. "
      "Pass expect:{\"<scene id>\": revision} to refuse the batch if a scene changed since you read it. Full field lists are in get_reference.",
      "{\"type\":\"object\",\"properties\":{\"ops\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"object\",\"properties\":{\"op\":{\"type\":\"string\"},\"as\":{\"type\":\"string\"}},\"required\":[\"op\"]}},"
      "\"label\":{\"type\":\"string\",\"description\":\"Short name shown for undo\"},\"expect\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"integer\"}},\"dry_run\":{\"type\":\"boolean\"}},\"required\":[\"ops\"],\"additionalProperties\":false}",

@@ -8,3 +8,7 @@ bool fl_prototype_capture(Fl_Project *project, Fl_Id scene, Fl_Id root, const ch
 bool fl_prototype_instantiate(Fl_Project *project, Fl_Id scene, Fl_Id parent, Fl_Id asset, double x, double y, Fl_Id *entity);
 /* Replace an instance's complete explicit override array atomically, retaining its asset, identity and clock. */
 bool fl_prototype_set_overrides(Fl_Project *project, Fl_Id scene, Fl_Id entity, const char *overrides, size_t size);
+
+/* Convert a live instance into a scene-owned native composition, preserving generator identity, local clocks,
+   hierarchy, keys, behavior and retained overrides. Nested resources remain explicit references. */
+bool fl_prototype_detach(Fl_Project *project, Fl_Id scene, Fl_Id entity);

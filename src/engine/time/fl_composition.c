@@ -1,6 +1,7 @@
 #include "fl_composition.h"
 #include "fl_scene_state.h"
 #include "components/fl_prototype_instance.h"
+#include "components/fl_local_composition.h"
 #include "project/fl_prototype.h"
 #include "project/fl_scene_storage.h"
 #include "doc/fl_document.h"
@@ -21,12 +22,13 @@ typedef struct Scope {
     Fl_Tick tick;
     bool active;
     Fl_Id key, asset;
-    cJSON *operations;
+    cJSON *operations, *canonical;
+    Fl_Id owner, generator;
     bool *seen;
     size_t *flat;
 } Scope;
 typedef struct Layer {size_t scope, offset; Fl_Id path[COMPOSITION_DEPTH];} Layer;
-typedef struct Entry {Fl_Origin origin; size_t scope,local;} Entry;
+typedef struct Entry {Fl_Origin origin; size_t scope,local; Fl_Id *components;} Entry;
 
 struct Fl_Composition {
     Fl_Scene scene;
@@ -47,7 +49,7 @@ static Fl_Id identity(Fl_Id scope, Fl_Id local, Fl_Id domain)
 
 bool fl_composition_required(const Fl_Scene *scene)
 {
-    for (size_t i=0;scene && i<scene->entity_count;++i) if (fl_entity_component(&scene->entities[i],FL_COMPONENT_PROTOTYPE) || fl_entity_component(&scene->entities[i],FL_COMPONENT_SCRIPT)) return true;
+    for (size_t i=0;scene && i<scene->entity_count;++i) if (fl_entity_component(&scene->entities[i],FL_COMPONENT_PROTOTYPE) || fl_entity_component(&scene->entities[i],FL_COMPONENT_COMPOSITION) || fl_entity_component(&scene->entities[i],FL_COMPONENT_SCRIPT)) return true;
     return false;
 }
 
@@ -66,12 +68,26 @@ static bool append(Fl_Composition *c, const Fl_Entity *entity, Fl_Id id, Fl_Id p
         c->entries=entries; s->entity_capacity=capacity;
     }
     if (!fl_scene_storage_reserve_index(s,s->entity_count+1)) return fl_json_fail(&c->context,"Cannot index evaluated topology");
+    Fl_Id *component_ids=scope && entity->component_count ? malloc(entity->component_count*sizeof(*component_ids)) : NULL;
+    if (scope && entity->component_count && !component_ids) return fl_json_fail(&c->context,"Cannot retain local component addresses");
+    for (size_t i=0;component_ids && i<entity->component_count;++i) component_ids[i]=entity->components[i].id;
     *out=s->entity_count;
     ((Fl_Entity *)s->entities)[s->entity_count]=*entity;
     ((Fl_Entity *)s->entities)[s->entity_count].id=id;
     ((Fl_Entity *)s->entities)[s->entity_count].parent=parent;
-    c->entries[s->entity_count]=(Entry){.origin=origin,.scope=scope,.local=local};
+    c->entries[s->entity_count]=(Entry){.origin=origin,.scope=scope,.local=local,.components=component_ids};
     ++s->entity_count; fl_scene_storage_index_entity(s,s->entity_count-1); return true;
+}
+
+/* Account retained canonical JSON storage separately from source bytes and entity/scope budgets. */
+static bool retain_document(Fl_Composition *c, const cJSON *document, unsigned depth)
+{
+    if (!document || depth>64) return fl_json_fail(&c->context,"Canonical scope document exceeds nesting budget");
+    size_t bytes=sizeof(*document)+(document->string ? strlen(document->string)+1 : 0)+(document->valuestring ? strlen(document->valuestring)+1 : 0);
+    if (bytes>FL_DOCUMENT_LIMIT-c->compiled_bytes) return fl_json_fail(&c->context,"Compiled scope document memory budget exceeded");
+    c->compiled_bytes+=bytes;
+    for (const cJSON *item=document->child;item;item=item->next) if (!retain_document(c,item,depth+1)) return false;
+    return true;
 }
 
 /* Compile one hierarchy and recursively expand child instances; layers preserve outer override precedence. */
@@ -123,7 +139,12 @@ static bool expand(Fl_Composition *c, size_t scope, Fl_Origin origin, Fl_Id anch
             const Fl_Component *component=&entity->components[component_index];
             Fl_PrototypeInstance instance={0}; Fl_Prototype generated={0};
             const char *source=NULL; size_t source_size=0; char *built_source=NULL;
-            if (component->type==FL_COMPONENT_PROTOTYPE) {
+            if (component->type==FL_COMPONENT_COMPOSITION) {
+                Fl_LocalComposition owned;
+                if (!fl_local_composition_decode(component,&owned)) return fl_json_fail(&c->context,"Invalid owned composition");
+                source=owned.document; source_size=owned.document_size;
+                instance.time=owned.time; instance.overrides=owned.overrides; instance.overrides_size=owned.overrides_size;
+            } else if (component->type==FL_COMPONENT_PROTOTYPE) {
                 if (!fl_prototype_instance_decode(component,&instance)) return fl_json_fail(&c->context,"Invalid prototype component");
                 const Fl_Asset *asset=fl_project_asset(c->scene.project,instance.asset);
                 if (!asset || asset->kind!=FL_ASSET_PROTOTYPE) return fl_json_fail(&c->context,"Missing Flow prototype resource");
@@ -139,17 +160,17 @@ static bool expand(Fl_Composition *c, size_t scope, Fl_Origin origin, Fl_Id anch
                 if (!document) continue;
                 built_source=cJSON_PrintUnformatted(document); cJSON_Delete(document);
                 if (!built_source) return fl_json_fail(&c->context,"Cannot allocate generated hierarchy");
-                source=built_source; source_size=strlen(source); instance.asset=script.script; instance.time=script.time;
+                source=built_source; source_size=strlen(source); instance.asset=script.script; instance.time=script.time; instance.overrides=script.overrides; instance.overrides_size=script.overrides_size;
             } else continue;
             bool allowed=origin.depth<COMPOSITION_DEPTH && c->count<COMPOSITION_SCOPES && source_size<=FL_DOCUMENT_LIMIT-c->compiled_bytes;
-            for (size_t walk=scope;allowed && walk!=SIZE_MAX;walk=c->scopes[walk].parent) if (c->scopes[walk].asset==instance.asset) allowed=false;
+            for (size_t walk=scope;allowed && walk!=SIZE_MAX;walk=c->scopes[walk].parent) if (instance.asset && c->scopes[walk].asset==instance.asset) allowed=false;
             if (!allowed) {free(built_source); return fl_json_fail(&c->context,"Recursive composition dependency or scope/source budget exceeded");}
-            bool parsed=fl_prototype_read(&c->context,source,source_size,&generated); free(built_source);
+            bool parsed=component->type==FL_COMPONENT_COMPOSITION ? fl_owned_document_read(&c->context,source,source_size,&generated) : fl_prototype_read(&c->context,source,source_size,&generated); free(built_source);
             if (!parsed) return false;
             c->compiled_bytes+=source_size;
             size_t child=c->count++; Scope *scopes=realloc(c->scopes,c->count*sizeof(*scopes));
             if (!scopes) {--c->count; fl_prototype_clear(&generated); return fl_json_fail(&c->context,"Cannot allocate prototype scope");}
-            c->scopes=scopes; scopes[child]=(Scope){.parent=scope,.asset=instance.asset,.mapping=instance.time,.key=identity(key ? key : id,component->id,2)};
+            c->scopes=scopes; scopes[child]=(Scope){.parent=scope,.owner=entity->id,.generator=component->id,.asset=instance.asset,.mapping=instance.time,.key=identity(key ? key : id,component->id,2)};
             scopes[child].prototype=generated;
             if (!scopes[child].mapping.duration) scopes[child].mapping.duration=(Fl_Tick)scopes[child].prototype.scope.duration;
             scopes[child].operations=fl_json_parse(&c->context,instance.overrides ? instance.overrides : "[]",instance.overrides ? instance.overrides_size : 2);
@@ -170,11 +191,14 @@ static bool expand(Fl_Composition *c, size_t scope, Fl_Origin origin, Fl_Id anch
             if (!expand(c,child,nested,id,inherited,inherited_count)) return false;
         }
     }
+    local=&c->scopes[scope].prototype.scope;
+    c->scopes[scope].canonical=scope ? fl_prototype_write(&c->context,&c->scopes[scope].prototype) : fl_document_scene_write(&c->context,local);
+    if (!c->scopes[scope].canonical || c->context.error[0] || !retain_document(c,c->scopes[scope].canonical,0)) return false;
     fl_script_runtime_destroy(c->scopes[scope].builder); c->scopes[scope].builder=NULL;
     if (scope) {
         /* Runtime addresses are scoped too; native tracks keep their scope-local beat clocks. */
         local=&c->scopes[scope].prototype.scope;
-        local->id=c->scopes[scope].key; local->revision=1;
+        local->id=c->scopes[scope].key; local->revision=c->scene.revision;
         for (size_t i=0;i<local->entity_count;++i) {
             Fl_Entity *entity=(Fl_Entity *)&local->entities[i]; Fl_Id old=entity->id;
             entity->id=identity(c->scopes[scope].key,old,1);
@@ -285,8 +309,9 @@ void fl_composition_destroy(Fl_Composition *c)
     for (size_t i=0;i<c->count;++i) {
         fl_script_runtime_destroy(c->scopes[i].builder);
         fl_scene_state_clear(&c->scopes[i].state); fl_prototype_clear(&c->scopes[i].prototype);
-        free(c->scopes[i].flat); free(c->scopes[i].seen); cJSON_Delete(c->scopes[i].operations);
+        free(c->scopes[i].flat); free(c->scopes[i].seen); cJSON_Delete(c->scopes[i].operations); cJSON_Delete(c->scopes[i].canonical);
     }
+    for (size_t i=0;i<c->scene.entity_count;++i) free(c->entries[i].components);
     free((void *)c->scene.entities); free((void *)c->scene.identity_index);
     free(c->scopes); free(c->entries); free(c);
 }
@@ -343,4 +368,61 @@ const char *fl_composition_entity_error(const Fl_Composition *composition, size_
     if (!composition || index>=composition->scene.entity_count) return "";
     const Entry *entry=&composition->entries[index];
     return fl_script_runtime_error(composition->scopes[entry->scope].state.scripts,entry->local);
+}
+
+bool fl_composition_component_local(const Fl_Composition *c, size_t entity, Fl_Id runtime, Fl_Id *local)
+{
+    if (!c || !local || entity>=c->scene.entity_count) return false;
+    const Fl_Entity *value=&c->scene.entities[entity];
+    for (size_t i=0;i<value->component_count;++i) if (value->components[i].id==runtime) {
+        *local=c->entries[entity].components ? c->entries[entity].components[i] : runtime; return true;
+    }
+    return false;
+}
+
+const Fl_ScriptRuntime *fl_composition_entity_scripts(const Fl_Composition *c, size_t entity, size_t *local)
+{
+    if (!c || entity>=c->scene.entity_count) return NULL;
+    const Entry *entry=&c->entries[entity]; if (local) *local=entry->local;
+    return c->scopes[entry->scope].state.scripts;
+}
+
+const Fl_Scene *fl_composition_entity_scope(const Fl_Composition *c, size_t entity)
+{
+    return c && entity<c->scene.entity_count ? &c->scopes[c->entries[entity].scope].prototype.scope : NULL;
+}
+
+cJSON *fl_composition_scope_document(const Fl_Composition *c, size_t index, Fl_Id *owner, Fl_Id *generator)
+{
+    if (!c || index>=c->count) return NULL;
+    if (owner) *owner=c->scopes[index].owner;
+    if (generator) *generator=c->scopes[index].generator;
+    return cJSON_Duplicate(c->scopes[index].canonical,true);
+}
+
+cJSON *fl_composition_entity_document(const Fl_Composition *c, size_t entity)
+{
+    return c && entity<c->scene.entity_count ? fl_composition_scope_document(c,c->entries[entity].scope,NULL,NULL) : NULL;
+}
+
+bool fl_composition_entity_root_tick(const Fl_Composition *c, size_t entity, Fl_Tick local_tick, Fl_Tick reference_root, Fl_Tick *root_tick)
+{
+    if (!c || entity>=c->scene.entity_count || !root_tick || local_tick<0) return false;
+    size_t chain[COMPOSITION_DEPTH],count=0,scope=c->entries[entity].scope;
+    while (scope) {
+        if (count==COMPOSITION_DEPTH) return false;
+        chain[count++]=scope; scope=c->scopes[scope].parent;
+    }
+    int64_t cycles[COMPOSITION_DEPTH]; Fl_Tick tick=reference_root;
+    for (size_t i=count;i>0;--i) {
+        const Scope *child=&c->scopes[chain[i-1]]; Fl_TimeSample time;
+        if (!fl_time_mapping_sample(&c->scopes[child->parent].prototype.scope,&child->mapping,tick,&time)) return false;
+        cycles[i-1]=time.cycle; tick=time.tick;
+    }
+    tick=local_tick;
+    for (size_t i=0;i<count;++i) {
+        const Scope *child=&c->scopes[chain[i]];
+        if (!fl_time_mapping_composition(&c->scopes[child->parent].prototype.scope,&child->mapping,tick,cycles[i],&tick)) return false;
+    }
+    *root_tick=tick; return true;
 }

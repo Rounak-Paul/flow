@@ -42,7 +42,7 @@ Tools need an open project. With the project launcher showing they return `no_pr
 | `import_asset` | Copy a local image, audio, video, font or Lua file (absolute path) into the project through shared undo history |
 | `save_project` | Write now; Flow also autosaves after changes |
 
-Look properties beyond fill and stroke: `radius`, a two-colour gradient (`fill2`, `gradient_angle`), a soft drop shadow (`shadow_blur`, `shadow_x`, `shadow_y`, `shadow_color`), text `align`, a `crop` window and animatable `crop_x/y/w/h` for images and videos (zoom and pan inside a fixed frame), and scene `background`. Video entities (`kind: "video"`, asset from `import_asset`) play from `start` at source `offset` and `rate`; the current decoder caches extracted frames with ffmpeg. Lua scripts can replace a text entity's content through `ctx.entity.text`, for example to count up a number.
+Look properties beyond fill and stroke: `radius`, a two-colour gradient (`fill2`, `gradient_angle`), a soft drop shadow (`shadow_blur`, `shadow_x`, `shadow_y`, `shadow_color`), text `align`, a `crop` window and animatable `crop_x/y/w/h` for images and videos (zoom and pan inside a fixed frame), and scene `background`. Video entities (`kind: "video"`, asset from `import_asset`) play from `start` at source `offset` and `rate`; the decoder uses a bounded timestamp-based ffmpeg frame cache. Lua scripts can replace a text entity's content through `ctx.entity.text`, for example to count up a number.
 
 Units: times in seconds, rotation in degrees, colours `#RRGGBB[AA]`, positions in scene pixels. Operations: `scene.add/remove/rename/move/set`, `entity.create/set/remove/reparent/reorder`, `key.set/remove`, `track.remove`, `beat.add/update/remove/move/split`, `clip.add/update/remove`, `script.create/update/remove/attach/detach`, `component.set/remove`.
 
@@ -73,3 +73,15 @@ Units: times in seconds, rotation in degrees, colours `#RRGGBB[AA]`, positions i
 `apply_ops` accepts `asset.source {asset?, kind: "lua" | "flproto", name?, source?}`. Creating requires name and source; updating requires the matching kind and preserves omitted name/source. The returned ID supports the same batch aliases as entities. `asset.rename {asset, name}` and `asset.remove {asset}` operate on ordinary assets. Deleting a referenced asset is rejected; detach or remove its references explicitly in the same batch first. Script convenience operations use these same engine owners.
 
 `get_asset {asset}` returns metadata, a project-relative source path and current accepted source bytes. Flow prototype sources live at `assets/prototypes/<id>.flproto.json`. They contain a rooted native component hierarchy, local identity cursors, canonical duration, beats and clips. Referenced Lua/media asset IDs are project-wide. Source edits, watcher reload, imports and history validate resource references and enabled behavior declarations before accepting the candidate. Live prototype instances and overrides remain under implementation.
+
+## Scoped content and native bake
+
+`evaluate_scene` includes generated origins (`owner`, root generator `component`, local `entity`, nested `path` and runtime/local component mappings), `writers` per channel and a complete numeric `properties` map in native units. Lua and native style/media output match the engine renderer.
+
+`scope.edit` in `apply_ops` addresses `{entity: persistentOwner, component: rootGenerator, target: localEntity, path?: localGeneratorIds, value: editOrArray}`. Edits support entity.add/patch/remove, component.set/patch/remove and timeline.patch (duration/beats/clips). A component.set ID of zero allocates a reserved extension identity. Retained unresolved operations keep their resource dependencies. Missing targets remain unresolved rather than rebinding to another object.
+
+`prototype.detach {entity}` materializes an owned native scope with its generator identity, clocks, behaviors and media intact. Lua assets remain ordinary catalog resources. Script schema8 stores `layer`, native `bindings` and structural `overrides` alongside parameters and time.
+
+`bake_scene` takes `action: start` with scene, start/end/step in seconds and numeric tolerance. It returns a token and running/ready/failed/cancelled/applied status. Use action status/cancel/apply with that token. Application is an atomic undoable edit and rejects intervening document changes. Work never mutates the live document from a worker. See LUA_RUNTIME.md for capture accuracy and budgets.
+
+Native `events` component1 contains events={next_id,points:[{id,at,name,value}]}; anchors use the regular document anchor schema. Fixed-step behaviors consume deterministic ctx.events. Inspector, files and MCP configure the same component.

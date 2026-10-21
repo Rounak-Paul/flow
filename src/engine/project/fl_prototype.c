@@ -71,9 +71,9 @@ bool fl_prototype_local_valid(Fl_Json *c, Fl_Prototype *p)
     return fl_timeline_valid(NULL,&native,p->next_id) || fl_json_fail(c,"Invalid prototype timeline");
 }
 
-bool fl_prototype_read(Fl_Json *c, const char *source, size_t size, Fl_Prototype *out)
+static bool document_read(Fl_Json *c, const char *source, size_t size, Fl_Prototype *out, bool owned)
 {
-    if (!out || !source || !size || size>FL_PROTOTYPE_SOURCE_LIMIT) return fl_json_fail(c,"Invalid prototype source size");
+    if (!out || !source || !size || size>(owned ? FL_DOCUMENT_LIMIT : FL_PROTOTYPE_SOURCE_LIMIT)) return fl_json_fail(c,"Invalid prototype source size");
     Fl_Prototype value={0};
     cJSON *root=fl_json_parse(c,source,size); uint64_t version=0;
     bool ok=root && fl_json_object(c,root,"version root next_id next_component_id duration entities beats clips") &&
@@ -82,10 +82,21 @@ bool fl_prototype_read(Fl_Json *c, const char *source, size_t size, Fl_Prototype
         fl_json_uint(c,fl_json_member(c,root,"next_id",0),&value.next_id) &&
         fl_json_uint(c,fl_json_member(c,root,"next_component_id",0),&value.next_component_id) &&
         fl_json_uint(c,fl_json_member(c,root,"duration",0),&value.scope.duration) &&
-        value.next_id<=INT64_MAX && value.next_component_id<=INT64_MAX && value.scope.duration && value.scope.duration<=INT64_MAX && fl_document_content_read(c,root,&value.scope) && fl_prototype_local_valid(c,&value);
+        (owned || (value.next_id<=INT64_MAX && value.next_component_id<=INT64_MAX)) && value.scope.duration && value.scope.duration<=INT64_MAX && fl_document_content_read(c,root,&value.scope) && fl_prototype_local_valid(c,&value);
     cJSON_Delete(root);
     if (!ok) {fl_prototype_clear(&value); return fl_json_fail(c,"Invalid Flow prototype document");}
     *out=value; return true;
+}
+
+/* Reusable sources reserve the high identity range for instance extensions. */
+bool fl_prototype_read(Fl_Json *c, const char *source, size_t size, Fl_Prototype *out)
+{
+    return document_read(c,source,size,out,false);
+}
+
+bool fl_owned_document_read(Fl_Json *c, const char *source, size_t size, Fl_Prototype *out)
+{
+    return document_read(c,source,size,out,true);
 }
 
 cJSON *fl_prototype_write(Fl_Json *c, const Fl_Prototype *p)

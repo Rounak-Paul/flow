@@ -1,5 +1,6 @@
 #pragma once
 #include "schema/fl_widgets.h"
+#include "components/fl_style.h"
 #include <stdatomic.h>
 #include "scripting/fl_script_runtime.h"
 
@@ -8,6 +9,8 @@ typedef struct Fl_EntityState {
     Fl_Tick local_tick;         /* source scope tick, used by native media */
     Fl_Transform transform;
     Fl_Appearance appearance;
+    Fl_Style style;
+    double media_seconds;       /* -1 follows the native video placement clock */
     double opacity;             /* own opacity, 0..1; geometry multiplies ancestors */
     double crop[4];             /* visible source region of an image or video: x, y, width, height as fractions */
     bool text_override;         /* a script replaced the text content */
@@ -59,3 +62,9 @@ const Fl_ScriptRuntime *fl_scene_state_scripts(const Fl_SceneState *state);
 
 /* Borrow a behavior diagnostic using evaluated hierarchy indexing, including generated scopes. */
 const char *fl_scene_state_entity_error(const Fl_SceneState *state, size_t entity);
+
+/* Resolve a behavior's declared writer using evaluated hierarchy indexing; FL_PROP_COUNT denotes text. */
+bool fl_scene_state_writer(const Fl_SceneState *state, size_t entity, int property, Fl_Id *component, int32_t *layer);
+
+/* Read all native numeric channels into four-channel storage, zeroing unused channels. */
+void fl_entity_state_values(const Fl_EntityState *state, double values[FL_PROP_COUNT][4]);

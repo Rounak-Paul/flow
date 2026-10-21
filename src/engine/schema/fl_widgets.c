@@ -1,4 +1,7 @@
 #include "components/fl_prototype_instance.h"
+#include "components/fl_local_composition.h"
+#include "components/fl_sampled_animation.h"
+#include "components/fl_events.h"
 #include "fl_widgets.h"
 #include "doc/fl_json.h"
 #include "components/fl_animation.h"
@@ -137,12 +140,15 @@ Fl_Appearance fl_widget_appearance(const Fl_Entity *e)
 
 bool fl_widget_component_valid(const Fl_Component *c)
 {
+    if (c && c->type==FL_COMPONENT_EVENTS) {cJSON *events=fl_events_read(c); bool valid=events!=NULL; cJSON_Delete(events); return valid;}
     if (!c || !c->type || !c->version || (c->size && !c->data)) return false;
     if (c->type <= FL_COMPONENT_SCRIPT && c->version != (c->type == FL_COMPONENT_ANIMATION ? FL_ANIMATION_VERSION : c->type == FL_COMPONENT_SCRIPT ? FL_SCRIPT_VERSION : 1u)) return false;
     switch (c->type) {
     case FL_COMPONENT_ANIMATION: return c->size == sizeof(Fl_Animation) && fl_animation_valid((const Fl_Animation *)c->data);
     case FL_COMPONENT_SCRIPT: return fl_script_component_valid(c);
     case FL_COMPONENT_PROTOTYPE: return fl_prototype_instance_valid(c);
+    case FL_COMPONENT_COMPOSITION: return fl_local_composition_valid(c);
+    case FL_COMPONENT_SAMPLED: return fl_sampled_animation_valid(c);
     case FL_COMPONENT_TRANSFORM: { Fl_Transform t; return fl_transform_decode(c, &t); }
     case FL_COMPONENT_RECTANGLE: return c->size == 4;
     case FL_COMPONENT_TEXT: return !c->size || fl_json_utf8_valid((const char *)c->data,c->size);

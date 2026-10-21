@@ -2,6 +2,7 @@
 #include "project/fl_project.h"
 #include "fl_time_mapping.h"
 #include <stdatomic.h>
+#include <cJSON.h>
 
 typedef struct Fl_Composition Fl_Composition;
 typedef struct Fl_SceneState Fl_SceneState;
@@ -37,3 +38,21 @@ const Fl_ScriptRuntime *fl_composition_scripts(const Fl_Composition *composition
 
 /* Borrow the behavior diagnostic for a flat authored/generated entity address. */
 const char *fl_composition_entity_error(const Fl_Composition *composition, size_t index);
+
+/* Resolve a displayed component to its persistent local identity for scoped authoring. */
+bool fl_composition_component_local(const Fl_Composition *composition, size_t entity, Fl_Id runtime, Fl_Id *local);
+
+/* Borrow the selected scope runtime and its local entity index for native authoring/provenance. */
+const Fl_ScriptRuntime *fl_composition_entity_scripts(const Fl_Composition *composition, size_t entity, size_t *local);
+
+/* Borrow the native scope clock/timeline containing a displayed entity. */
+const Fl_Scene *fl_composition_entity_scope(const Fl_Composition *composition, size_t entity);
+
+/* Copy compiled native content before runtime address remapping; owner/generator are parent-local IDs. */
+cJSON *fl_composition_scope_document(const Fl_Composition *composition, size_t index, Fl_Id *owner, Fl_Id *generator);
+
+/* Copy the canonical local document containing a displayed entity; caller owns the tree. */
+cJSON *fl_composition_entity_document(const Fl_Composition *composition, size_t entity);
+/* Translate a scope-local edit/seek to root time, using the loop cycle at reference_root. */
+bool fl_composition_entity_root_tick(const Fl_Composition *composition, size_t entity,
+                                      Fl_Tick local_tick, Fl_Tick reference_root, Fl_Tick *root_tick);

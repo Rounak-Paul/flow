@@ -8,6 +8,14 @@ const char *const FL_AGENT_REFERENCE[] = {
 "entities (shapes, text, images) arranged in a hierarchy, a timeline of beats, keyframe animation, audio clips and\n"
 "optional Lua scripts. Everything is edited with `apply_ops`: atomic, undoable batches of typed operations.\n"
 "\n",
+"## Native composition and behavior ownership\n"
+"Script schema8 stores ordinary Lua asset references, typed bindings, layer, parameters, time and build overrides.\n"
+"outputs={self={x='replace'},target={y='add'}} declares numeric replace/add/multiply or text replacement; reads={target={x=true}} exposes evaluated ctx.inputs.target from strictly lower layers. ctx.bindings remains native input.\n"
+"scope.edit {entity:owner,component:generator,target:localEntity,path?:[localGeneratorIds],value:editOrArray} edits generated native content. Edits: entity.add/patch/remove, component.set/patch/remove, timeline.patch {duration?,beats?,clips?}. Component ID0 allocates a reserved extension ID. prototype.detach {entity} preserves an owned scope with clocks and behaviors.\n"
+"bake_scene {action:'start',scene,start,end,step,tolerance} captures native data asynchronously; poll/status/cancel/apply with returned token. Times are seconds. Apply rejects a changed project and is undoable. Tolerance is checked at captured ticks; nested clocks/media are preserved.\n"
+"Native events component version1 has events={next_id,points:[{id,at,name,value}]}. ctx.events delivers ordered step inputs and time-zero initialize events; sample receives no events.\n"
+"Native properties also include radius, blur, gradient_angle, shadow_blur/x/y, gradient_to, shadow_color, media_time. Lua uses style fields and media.seconds; -1 follows video placement. Native angles use radians. evaluate_scene includes native properties and writer provenance.\n"
+"\n",
 "## Units and conventions\n"
 "- Times and durations are SECONDS (decimals allowed). Rotation is DEGREES. Positions and sizes are scene pixels,\n"
 "  local to the parent; the origin is the top-left corner of the canvas and y grows downward.\n"
