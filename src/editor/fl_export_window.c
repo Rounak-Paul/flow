@@ -7,11 +7,23 @@
 #include "platform/fl_process.h"
 #include "render/fl_frame.h"
 #include "time/fl_time.h"
+#include "core/fl_clock.h"
 #include <errno.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#define FL_EXPORT_CARDS 16
+#define FL_EXPORT_STRIP_H 96.f
+#define FL_EXPORT_CARD_H 62.f
+
+/* One captured frame. The glass and the picture are the same box; the strip moves them together. */
+typedef struct Fl_ExportCard {
+    Ca_Image *image;
+    uint32_t src_w, src_h;
+    uint64_t id;
+} Fl_ExportCard;
 
 typedef struct Fl_ExportScene {
     struct Fl_ExportWindow *window;
@@ -29,9 +41,11 @@ struct Fl_ExportWindow {
     Ca_Dock *dock;
     Ca_Div *stage;
     Ca_Effect *watch;
-    Ca_Image *image;
-    float stage_w, stage_h;
-    uint32_t image_w, image_h;
+    Fl_ExportCard cards[FL_EXPORT_CARDS];
+    int card_count;
+    uint64_t next_card_id;
+    uint64_t last_preview_ns, interval_ns;
+    float stage_w, stage_h, layout_w;
     uint64_t image_sequence;
     char file_name[256];
     char folder[FL_PATH_MAX];
@@ -319,23 +333,113 @@ static void browse_clicked(Ca_Button *button, void *data)
     }
 }
 
-/* Upload a new display image only when the exporter has a newer frame. */
+static float stage_logical_w(const Fl_ExportWindow *w)
+{
+    if (w->layout_w > 16.f) return w->layout_w;
+    if (w->stage_h > 16.f && w->stage_w > 16.f) return w->stage_w * (FL_EXPORT_STRIP_H / w->stage_h);
+    return 360.f;
+}
+
+static void clear_cards(Fl_ExportWindow *w)
+{
+    for (int i = 0; i < w->card_count; ++i)
+        if (w->cards[i].image) ca_image_destroy(w->instance, w->cards[i].image);
+    memset(w->cards, 0, sizeof(w->cards));
+    w->card_count = 0;
+    w->last_preview_ns = 0;
+    w->interval_ns = 0;
+}
+
+/* 0 when the newest frame has just arrived, 1 when the next one is due. */
+static float card_travel(const Fl_ExportWindow *w)
+{
+    if (!w->card_count || !w->last_preview_ns || !w->interval_ns) return 1.f;
+    uint64_t elapsed = fl_clock_monotonic_ns() - w->last_preview_ns;
+    float travel = (float)elapsed / (float)w->interval_ns;
+    if (travel < 0.f) travel = 0.f;
+    if (travel > 1.f) travel = 1.f;
+    return travel;
+}
+
+/* Ease through the gap between encoded frames. Still 0 and 1 at the ends, so a new card continues the last one's motion. */
+static float card_motion(const Fl_ExportWindow *w)
+{
+    float t = card_travel(w);
+    return t * t * (3.f - 2.f * t);
+}
+
+/* 1 sits on the right deck, 0 on the left. The step matches one encoded frame. */
+static float card_pos(const Fl_ExportWindow *w, int index)
+{
+    float pos = 1.f - ((float)index + card_motion(w)) / (float)FL_EXPORT_CARDS;
+    if (pos < 0.f) pos = 0.f;
+    if (pos > 1.f) pos = 1.f;
+    return pos;
+}
+
+/* Compress the ends into decks and let the cards crossing the middle spread out. */
+static void card_pose(float stage_w, float pos, float aspect, float *x, float *y, float *w, float *h, float *opacity, float *rotation)
+{
+    float signed_p = pos * 2.f - 1.f;
+    float compressed = copysignf(powf(fabsf(signed_p), 0.42f), signed_p);
+    float margin = stage_w * 0.055f;
+    if (margin < 34.f) margin = 34.f;
+    if (margin > stage_w * 0.18f) margin = stage_w * 0.18f;
+    float center_x = stage_w * 0.5f + compressed * (stage_w * 0.5f - margin);
+    float dist = fabsf(signed_p);
+    float scale = 1.f - dist * dist * 0.42f;
+    float center_h = FL_EXPORT_CARD_H;
+    float center_w = center_h * (aspect > 0.f ? aspect : 1.f);
+    float limit = stage_w * 0.20f;
+    if (limit < 56.f) limit = 56.f;
+    if (center_w > limit) center_w = limit;
+    *w = center_w * scale;
+    *h = center_h * scale;
+    *x = center_x - *w * 0.5f;
+    *y = (FL_EXPORT_STRIP_H - *h) * 0.5f + (1.f - sinf(pos * 3.14159265f)) * 3.f;
+    float tilt = signed_p * 10.f;
+    if (dist > 0.62f) tilt *= 1.f + (dist - 0.62f) * 0.8f;
+    if (tilt > 12.f) tilt = 12.f;
+    if (tilt < -12.f) tilt = -12.f;
+    *rotation = tilt;
+    *opacity = dist > 0.94f ? 0.62f + (1.f - dist) / 0.06f * 0.38f : 1.f;
+}
+
+/* Each new encoded frame enters from the right and the trail steps left with it. */
 static void present_preview(Fl_ExportWindow *w)
 {
     Fl_ExportPreview preview = {0};
     if (!fl_exporter_preview(w->exporter, &preview)) {
-        if (w->image) { ca_image_destroy(w->instance, w->image); w->image = NULL; }
+        clear_cards(w);
         w->image_sequence = 0;
         return;
     }
-    if (w->image && preview.sequence == w->image_sequence) return;
+    if (preview.sequence == w->image_sequence) return;
     Ca_Image *image = ca_image_create(w->instance, preview.rgba, (int)preview.width, (int)preview.height);
     if (!image) return;
-    if (w->image) ca_image_destroy(w->instance, w->image);
-    w->image = image;
-    w->image_w = preview.width;
-    w->image_h = preview.height;
     w->image_sequence = preview.sequence;
+    uint64_t now = fl_clock_monotonic_ns();
+    if (w->last_preview_ns && now > w->last_preview_ns) {
+        uint64_t gap = now - w->last_preview_ns;
+        if (gap >= 8000000ull && gap <= 1500000000ull)
+            w->interval_ns = w->interval_ns ? (w->interval_ns * 2ull + gap) / 3ull : gap;
+    }
+    if (!w->interval_ns) w->interval_ns = 120000000ull;
+    if (w->interval_ns < 16000000ull) w->interval_ns = 16000000ull;
+    if (w->interval_ns > 800000000ull) w->interval_ns = 800000000ull;
+    w->last_preview_ns = now;
+    if (w->card_count == FL_EXPORT_CARDS) {
+        if (w->cards[w->card_count - 1].image) ca_image_destroy(w->instance, w->cards[w->card_count - 1].image);
+        w->card_count--;
+    }
+    if (w->card_count > 0)
+        memmove(&w->cards[1], &w->cards[0], (size_t)w->card_count * sizeof(w->cards[0]));
+    memset(&w->cards[0], 0, sizeof(w->cards[0]));
+    w->cards[0].image = image;
+    w->cards[0].src_w = preview.width;
+    w->cards[0].src_h = preview.height;
+    w->cards[0].id = ++w->next_card_id;
+    w->card_count++;
 }
 
 static void format_clock(double seconds, char *out, size_t capacity)
@@ -398,16 +502,31 @@ static const char *head_style(Fl_ExportState state)
     return FL_CLASS_EXPORT_HEAD;
 }
 
-/* Letterbox the frame inside the fixed preview strip. */
-static void preview_size(const Fl_ExportWindow *w, float *out_w, float *out_h)
+static void emit_cards(Fl_ExportWindow *w)
 {
-    float box_w = w->stage_w > 16.f ? w->stage_w : 320.f;
-    float box_h = w->stage_h > 16.f ? w->stage_h : 96.f;
-    if (box_h > 96.f) box_h = 96.f;
-    float scale = fminf(box_w / (float)w->image_w, box_h / (float)w->image_h);
-    if (!(scale > 0.f)) scale = 1.f;
-    *out_w = (float)w->image_w * scale;
-    *out_h = (float)w->image_h * scale;
+    float stage_w = stage_logical_w(w);
+    for (int i = w->card_count - 1; i >= 0; --i) {
+        Fl_ExportCard *card = &w->cards[i];
+        if (!card->image || !card->src_w || !card->src_h) continue;
+        float pos = card_pos(w, i);
+        float x = 0, y = 0, width = 0, height = 0, opacity = 1.f, rotation = 0.f;
+        card_pose(stage_w, pos, (float)card->src_w / (float)card->src_h, &x, &y, &width, &height, &opacity, &rotation);
+        char id[40], image_id[48], fade[32];
+        snprintf(id, sizeof(id), "export-frame-%llu", (unsigned long long)card->id);
+        snprintf(image_id, sizeof(image_id), "export-frame-px-%llu", (unsigned long long)card->id);
+        snprintf(fade, sizeof(fade), "opacity: %.3f", opacity);
+        float focus = 1.f - fminf(fabsf(pos - 0.5f) * 4.f, 1.f);
+        ca_div_begin(&(Ca_DivDesc){
+            .id = id, .style = FL_CLASS_EXPORT_FRAME, .inline_style = fade,
+            .position = CA_POSITION_ABSOLUTE, .pos_x = x, .pos_y = y,
+            .width = width, .height = height,
+            .z_index = 12 + (int)(pos * 24.f + focus * 48.f),
+            .rotation = rotation, .clip_content = true, .corner_radius = 9.f, .no_hover = true,
+            .shadow_offset_y = 3.f, .shadow_blur = 12.f, .shadow_color = ca_color(0.f, 0.f, 0.f, 0.38f),
+        });
+        ca_image(&(Ca_ImageDesc){.image = card->image, .id = image_id, .width = width, .height = height});
+        ca_div_end();
+    }
 }
 
 static void begin_row(const char *label)
@@ -445,11 +564,7 @@ void fl_export_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
 
     ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_EXPORT});
     w->stage = ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .id = "export-stage", .style = FL_CLASS_EXPORT_STAGE});
-    if (w->image && w->image_w && w->image_h) {
-        float width = 0, height = 0;
-        preview_size(w, &width, &height);
-        ca_image(&(Ca_ImageDesc){.image = w->image, .id = "export-preview", .width = width, .height = height});
-    }
+    emit_cards(w);
     ca_div_end();
 
     ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .id = "export-track", .style = FL_CLASS_EXPORT_TRACK});
@@ -550,21 +665,28 @@ static void watch(void *data)
 {
     Fl_ExportWindow *w = data;
     if (!w->dock || !w->exporter) return;
+    bool resized = false;
     if (w->stage) {
         float x = 0, y = 0, width = 0, height = 0;
         ca_div_content_screen_rect(w->stage, &x, &y, &width, &height);
         if (width > 16.f && height > 16.f && (fabsf(width - w->stage_w) > 4.f || fabsf(height - w->stage_h) > 4.f)) {
             w->stage_w = width;
             w->stage_h = height;
-            refresh(w);
+            float logical = width * (FL_EXPORT_STRIP_H / height);
+            if (fabsf(logical - w->layout_w) > 4.f) {
+                w->layout_w = logical;
+                resized = true;
+            }
         }
     }
+    bool sliding = w->card_count && card_travel(w) < 0.999f;
     Fl_ExportStatus status = fl_exporter_status(w->exporter);
-    if (status.state == FL_EXPORT_RUNNING) ca_instance_request_frame_after(w->instance, 0.5);
+    if (sliding) ca_instance_request_frame_after(w->instance, 0);
+    else if (status.state == FL_EXPORT_RUNNING) ca_instance_request_frame_after(w->instance, 0.5);
     Fl_ExportPreview preview = {0};
     fl_exporter_preview(w->exporter, &preview);
     uint64_t generation = fl_project_generation(w->project);
-    bool changed = !w->seen_init || status.state != w->seen_state || status.frames_done != w->seen_frames ||
+    bool changed = sliding || resized || !w->seen_init || status.state != w->seen_state || status.frames_done != w->seen_frames ||
         (int)status.elapsed_seconds != (int)w->seen_elapsed || preview.sequence != w->seen_preview ||
         generation != w->seen_generation || strcmp(status.message, w->seen_message) != 0;
     w->seen_init = true;
@@ -607,7 +729,7 @@ void fl_export_window_destroy(Fl_ExportWindow *w)
     w->browser = NULL;
     w->dock = NULL;
     w->stage = NULL;
-    if (w->image) ca_image_destroy(w->instance, w->image);
+    clear_cards(w);
     free(w->scenes);
     free(w->selected);
     free(w);

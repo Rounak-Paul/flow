@@ -695,6 +695,7 @@
 /* Export panel: live frame, a full-width meter and the encoder parameters. */
 #define FL_CLASS_EXPORT "fl-export"
 #define FL_CLASS_EXPORT_STAGE "fl-export-stage"
+#define FL_CLASS_EXPORT_FRAME "fl-export-frame"
 #define FL_CLASS_EXPORT_TRACK "fl-export-track"
 #define FL_CLASS_EXPORT_BODY "fl-export-body"
 #define FL_CLASS_EXPORT_FORM "fl-export-form"
@@ -713,19 +714,20 @@
 #define FL_CLASS_EXPORT_NOTE_OK "fl-export-note ok"
 #define FL_CLASS_EXPORT_NOTE_WARN "fl-export-note warn"
 #define FL_STYLE_CSS_EXPORT \
-    ".fl-export { width: 100%; height: 100%; padding: 0px; gap: 0px; overflow: hidden; " FL_STYLE_BACKDROP " }" \
-    ".fl-export-stage { width: 100%; height: 96px; flex-shrink: 0; align-items: center; justify-content: center; overflow: hidden; background: " FL_COLOR_BG_VOID "; }" \
-    ".fl-export-track { width: 100%; height: 8px; flex-shrink: 0; gap: 0px; align-items: stretch; }" \
+    ".fl-export { width: 100%; height: 100%; padding: 0px; gap: 0px; overflow: hidden; background: transparent; }" \
+    ".fl-export-stage { width: 100%; height: 96px; flex-shrink: 0; overflow: hidden; background: transparent; border-bottom: 1px solid " FL_COLOR_GLASS_BORDER "; }" \
+    ".fl-export-frame { overflow: hidden; border-radius: " FL_RADIUS_MD "; background: transparent; border: 1px solid " FL_COLOR_GLASS_RIM "; }" \
+    ".fl-export-track { width: 100%; height: 8px; flex-shrink: 0; gap: 0px; align-items: stretch; background: transparent; }" \
     ".fl-export-progress { flex-grow: 1; flex-shrink: 1; height: 8px; min-width: 0px; }" \
-    ".fl-export-body { width: 100%; flex-grow: 1; flex-shrink: 1; min-height: 0px; gap: 8px; overflow-y: auto; padding: 10px 12px; }" \
-    ".fl-export-status { width: 100%; flex-shrink: 0; gap: 2px; }" \
-    ".fl-export-form { width: 100%; flex-shrink: 0; gap: 8px; }" \
+    ".fl-export-body { width: 100%; flex-grow: 1; flex-shrink: 1; min-height: 0px; gap: 10px; overflow-y: auto; padding: 10px; background: transparent; }" \
+    ".fl-export-status { width: 100%; flex-shrink: 0; gap: 2px; background: transparent; }" \
+    ".fl-export-form { width: 100%; flex-shrink: 0; gap: 10px; background: transparent; }" \
     ".fl-export-card { width: 100%; gap: 6px; flex-shrink: 0; padding: 10px; background: " FL_COLOR_FIELD "; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: " FL_RADIUS_MD "; }" \
-    ".fl-export-row { width: 100%; min-height: 28px; height: auto; flex-shrink: 0; gap: 8px; align-items: center; }" \
+    ".fl-export-row { width: 100%; min-height: 28px; height: auto; flex-shrink: 0; gap: 8px; align-items: center; background: transparent; }" \
     ".fl-export-label { width: 84px; flex-shrink: 0; font-size: " FL_FONT_SM "; color: " FL_COLOR_TEXT_MUTED "; }" \
-    ".fl-export-number { width: 72px; flex-shrink: 0; height: 28px; padding: 4px 8px; background: " FL_COLOR_BG_VOID "; color: " FL_COLOR_TEXT_BRIGHT "; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: " FL_RADIUS_SM "; }" \
+    ".fl-export-number { width: 72px; flex-shrink: 0; height: 28px; padding: 4px 8px; background: " FL_COLOR_FIELD "; color: " FL_COLOR_TEXT_BRIGHT "; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: " FL_RADIUS_SM "; }" \
     ".fl-export-slider { flex-grow: 1; flex-shrink: 1; min-width: 48px; height: 18px; }" \
-    ".fl-export-footer { width: 100%; height: 48px; flex-shrink: 0; gap: 8px; padding: 0px 12px; align-items: center; border-top: 1px solid " FL_COLOR_GLASS_BORDER "; }" \
+    ".fl-export-footer { width: 100%; height: 48px; flex-shrink: 0; gap: 8px; padding: 0px 12px; align-items: center; background: transparent; border-top: 1px solid " FL_COLOR_GLASS_BORDER "; }" \
     ".fl-export-head { width: 100%; color: " FL_COLOR_TEXT_BRIGHT "; font-size: " FL_FONT_MD "; }" \
     ".fl-export-head.ok { color: " FL_COLOR_SUCCESS "; }" \
     ".fl-export-head.warn { color: " FL_COLOR_WARNING "; }" \
