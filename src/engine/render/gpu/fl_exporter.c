@@ -9,6 +9,7 @@
 #include "time/fl_time.h"
 #include <math.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -74,13 +75,65 @@ struct Fl_Exporter {
     Fl_ExportMix *mix;
     char temporary[FL_PATH_MAX];
     Fl_ExportStatus status;
+    unsigned char *preview;
+    uint32_t preview_w, preview_h;
+    uint64_t preview_sequence;
 };
+
+#define PREVIEW_EDGE 480u
 
 static void set_message(Fl_Exporter *e, const char *format, ...)
 {
     va_list args; va_start(args, format);
     vsnprintf(e->status.message, sizeof(e->status.message), format, args);
     va_end(args);
+}
+
+/* Drop the display copy. The next encoded frame allocates a new one. */
+static void clear_preview(Fl_Exporter *e)
+{
+    free(e->preview);
+    e->preview = NULL;
+    e->preview_w = 0;
+    e->preview_h = 0;
+    e->preview_sequence = 0;
+}
+
+/* Keep a nearest-neighbour copy no larger than PREVIEW_EDGE for the export window. */
+static void store_preview(Fl_Exporter *e, const Fl_Frame *frame)
+{
+    if (!frame->rgba || !frame->width || !frame->height) return;
+    uint32_t w = frame->width, h = frame->height;
+    if (w > PREVIEW_EDGE || h > PREVIEW_EDGE) {
+        if (w >= h) {
+            h = (uint32_t)((uint64_t)frame->height * PREVIEW_EDGE / frame->width);
+            w = PREVIEW_EDGE;
+        } else {
+            w = (uint32_t)((uint64_t)frame->width * PREVIEW_EDGE / frame->height);
+            h = PREVIEW_EDGE;
+        }
+        if (!w) w = 1;
+        if (!h) h = 1;
+    }
+    size_t bytes = (size_t)w * h * 4;
+    if (!e->preview || w != e->preview_w || h != e->preview_h) {
+        unsigned char *pixels = malloc(bytes);
+        if (!pixels) return;
+        free(e->preview);
+        e->preview = pixels;
+        e->preview_w = w;
+        e->preview_h = h;
+    }
+    for (uint32_t y = 0; y < h; ++y) {
+        uint32_t sy = (uint32_t)((uint64_t)y * frame->height / h);
+        const unsigned char *src = frame->rgba + (size_t)sy * frame->width * 4;
+        unsigned char *dst = e->preview + (size_t)y * w * 4;
+        for (uint32_t x = 0; x < w; ++x) {
+            uint32_t sx = (uint32_t)((uint64_t)x * frame->width / w);
+            memcpy(dst + (size_t)x * 4, src + (size_t)sx * 4, 4);
+        }
+    }
+    e->preview_sequence = e->preview_sequence == UINT64_MAX ? 1 : e->preview_sequence + 1;
 }
 
 /* Frames needed to cover a scene at fps. */
@@ -243,6 +296,7 @@ static bool on_step(const Fl_Event *event, void *data)
             if (!ok) {fl_frame_free(&frame); finish(e, FL_EXPORT_FAILED, reason ? reason : "a scene was deleted during the export"); break;}
         }
         size_t bytes = (size_t)frame.width * frame.height * 4;
+        store_preview(e, &frame);
         bool written=fl_encoder_submit(e->encoder,frame.rgba,bytes);
         if (written) frame.rgba=NULL;
         fl_frame_free(&frame);
@@ -281,6 +335,7 @@ void fl_exporter_destroy(Fl_Exporter *e)
     if (!e) return;
     fl_event_unsubscribe_owner(e->bus, e);
     if (e->status.state == FL_EXPORT_RUNNING) finish(e, FL_EXPORT_CANCELLED, "the editor closed");
+    free(e->preview);
     free(e);
 }
 
@@ -357,7 +412,9 @@ bool fl_exporter_start(Fl_Exporter *e, Fl_Project *project, const Fl_ExportDesc 
     snprintf(e->temporary,sizeof(e->temporary),"%s",temporary);
     e->frames_in_scene = scene_frames(fl_project_scene(view, scenes[0]), d->fps);
     e->started_ns = fl_clock_monotonic_ns();
-    e->status = (Fl_ExportStatus){.state = FL_EXPORT_RUNNING, .frames_total = total, .width = width, .height = height, .fps = d->fps};
+    clear_preview(e);
+    e->status = (Fl_ExportStatus){.state = FL_EXPORT_RUNNING, .frames_total = total, .width = width, .height = height, .fps = d->fps,
+        .crf = d->crf ? d->crf : 16, .crossfade = overlap ? d->crossfade : 0, .scene_count = count};
     snprintf(e->status.path, sizeof(e->status.path), "%s", d->path);
     set_message(e,"Preparing resources");
     FL_LOG_INFO(LOG_TAG, "exporting %llu frames at %ux%u, %u fps to %s", (unsigned long long)total, width, height, d->fps, d->path);
@@ -378,5 +435,20 @@ void fl_exporter_abort(Fl_Exporter *e, const char *reason)
 
 Fl_ExportStatus fl_exporter_status(const Fl_Exporter *e)
 {
-    return e ? e->status : (Fl_ExportStatus){0};
+    if (!e) return (Fl_ExportStatus){0};
+    Fl_ExportStatus status = e->status;
+    if (status.state == FL_EXPORT_RUNNING && e->started_ns)
+        status.elapsed_seconds = (double)(fl_clock_monotonic_ns() - e->started_ns) / 1e9;
+    return status;
+}
+
+bool fl_exporter_preview(const Fl_Exporter *e, Fl_ExportPreview *out)
+{
+    if (out) *out = (Fl_ExportPreview){0};
+    if (!e || !out || !e->preview || !e->preview_w || !e->preview_h || !e->preview_sequence) return false;
+    out->rgba = e->preview;
+    out->width = e->preview_w;
+    out->height = e->preview_h;
+    out->sequence = e->preview_sequence;
+    return true;
 }

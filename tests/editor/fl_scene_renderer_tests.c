@@ -309,7 +309,10 @@ int main(int argc, char **argv)
         CHECK(!fl_exporter_start(exporter, p, &(Fl_ExportDesc){.path = output, .width = 320, .fps = 10, .scenes = &first_scene, .scene_count = 1}, error, sizeof(error)) && strstr(error, "already"));
         while (fl_exporter_status(exporter).state == FL_EXPORT_RUNNING) fl_event_bus_dispatch(bus);
         Fl_ExportStatus status = fl_exporter_status(exporter);
+        Fl_ExportPreview preview = {0};
         CHECK(status.state == FL_EXPORT_DONE && status.frames_done == 50 && status.frames_total == 50 && status.width == 320 && status.height == 320);
+        CHECK(status.crf == 16 && status.crossfade == 0 && status.scene_count == 1);
+        CHECK(fl_exporter_preview(exporter, &preview) && preview.rgba && preview.width == 320 && preview.height == 320 && preview.sequence);
         CHECK(fl_fs_file_size(output) > 1000);
         int64_t completed_size=fl_fs_file_size(output);
         CHECK(fl_exporter_start(exporter,p,&(Fl_ExportDesc){.path=output,.width=320,.fps=10,.scenes=&first_scene,.scene_count=1},error,sizeof(error)));
@@ -335,11 +338,14 @@ int main(int argc, char **argv)
         while (fl_exporter_status(exporter).state == FL_EXPORT_RUNNING) fl_event_bus_dispatch(bus);
         status = fl_exporter_status(exporter);
         CHECK(status.state == FL_EXPORT_DONE && status.frames_done == 90 && status.frames_total == 90);
+        CHECK(status.crf == 16 && status.crossfade == 1 && status.scene_count == 2);
+        CHECK(fl_exporter_preview(exporter, &preview) && preview.width == 320 && preview.height == 320 && preview.sequence);
         fl_fs_remove(output);
         CHECK(fl_exporter_start(exporter, p, &(Fl_ExportDesc){.path=output,.width=320,.fps=10,.scenes=&first_scene,.scene_count=1}, error, sizeof(error)));
         fl_exporter_destroy(exporter);
         exporter = fl_exporter_create(bus, renderer);
         CHECK(exporter);
+        CHECK(!fl_exporter_preview(exporter, &preview));
         fl_event_bus_dispatch(bus);
         CHECK(fl_exporter_status(exporter).state == FL_EXPORT_IDLE);
         CHECK(fl_exporter_start(exporter, p, &(Fl_ExportDesc){.path=output,.width=320,.fps=10,.scenes=&first_scene,.scene_count=1}, error, sizeof(error)));

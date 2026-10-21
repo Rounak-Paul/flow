@@ -111,6 +111,14 @@ static void request_projects(void *data)
     ca_instance_request_frame_after(editor->instance, 0);
 }
 
+/* Open the Export dock panel, or explain why video export cannot start. */
+static void show_export(void *data)
+{
+    Fl_Editor *editor = data;
+    if (!editor->workspace || !fl_workspace_show_panel(editor->workspace, "export"))
+        ca_popup_show(editor->instance, &(Ca_PopupDesc){.title = "Export", .message = "Video export is unavailable."});
+}
+
 /*
  * Termination watcher callback (watcher thread): forward the request to the
  * UI thread as an event.
@@ -225,6 +233,7 @@ static bool build_ui(Fl_Editor *editor)
     editor->workspace = fl_workspace_create(&(Fl_WorkspaceDesc){
         .window = editor->window, .bus = editor->bus, .jobs = editor->jobs, .fonts = editor->fonts,
         .project = editor->project, .layout_path = persist ? layout : NULL,
+        .exporter = fl_mcp_service_exporter(editor->mcp),
     });
     if (!editor->workspace) return false;
 
@@ -235,7 +244,7 @@ static bool build_ui(Fl_Editor *editor)
     const bool mounted = fl_workspace_mount(editor->workspace);
     ca_ui_end();
     if (!mounted) return false;
-    editor->menubar = fl_menubar_create(editor->window, editor->bus, editor->workspace, editor->project, request_projects, editor);
+    editor->menubar = fl_menubar_create(editor->window, editor->bus, editor->workspace, editor->project, request_projects, editor, show_export, editor);
     return editor->menubar != NULL;
 }
 
@@ -334,7 +343,7 @@ static bool start_jobs(Fl_Editor *editor)
 /* Assemble independent style sections without exceeding C's literal-size limit. */
 static Ca_Stylesheet *create_stylesheet(void)
 {
-    const char *parts[] = {FL_STYLE_CSS_PALETTE, FL_STYLE_CSS_BUTTONS, FL_STYLE_CSS_SYSTEM, FL_STYLE_CSS_COMPONENTS, FL_STYLE_CSS_SCENE, FL_STYLE_CSS_SCENE_PANES, FL_STYLE_CSS_TREE, FL_STYLE_CSS_AUTHORING, FL_STYLE_CSS_ASSETS, FL_STYLE_CSS_SCRIPTS, FL_STYLE_CSS_FILE_BROWSER, FL_STYLE_CSS_TIMELINE, FL_STYLE_CSS_TIMELINE_BEATS, FL_STYLE_CSS_MOTION};
+    const char *parts[] = {FL_STYLE_CSS_PALETTE, FL_STYLE_CSS_BUTTONS, FL_STYLE_CSS_SYSTEM, FL_STYLE_CSS_COMPONENTS, FL_STYLE_CSS_SCENE, FL_STYLE_CSS_SCENE_PANES, FL_STYLE_CSS_TREE, FL_STYLE_CSS_AUTHORING, FL_STYLE_CSS_ASSETS, FL_STYLE_CSS_SCRIPTS, FL_STYLE_CSS_FILE_BROWSER, FL_STYLE_CSS_TIMELINE, FL_STYLE_CSS_TIMELINE_BEATS, FL_STYLE_CSS_EXPORT, FL_STYLE_CSS_MOTION};
     size_t size = 1;
     for (size_t i = 0; i < sizeof(parts) / sizeof(parts[0]); ++i) size += strlen(parts[i]);
     char *css = malloc(size);

@@ -10,6 +10,7 @@
  * directory as mcp.json.
  */
 typedef struct Fl_McpService Fl_McpService;
+typedef struct Fl_Exporter Fl_Exporter;
 
 /* Start the endpoint; fonts and jobs (borrowed, outliving the service) serve the offscreen scene renderer behind render_frame. Returns NULL when the server cannot start; the editor then runs without MCP. */
 Fl_McpService *fl_mcp_service_create(Fl_EventBus *bus, Ca_Instance *instance, Fl_Fonts *fonts, Fl_JobSystem *jobs);
@@ -21,3 +22,5 @@ void fl_mcp_service_attach(Fl_McpService *service, Fl_Project *project, Ca_Windo
 void fl_mcp_service_detach(Fl_McpService *service);
 /* The bound loopback port, or zero. */
 unsigned fl_mcp_service_port(const Fl_McpService *service);
+/* Borrow the video exporter shared with export_video. NULL when the service is absent. */
+Fl_Exporter *fl_mcp_service_exporter(Fl_McpService *service);

@@ -25,6 +25,8 @@ struct Fl_MenuBar {
     Fl_Project *project;
     void (*projects)(void *);
     void *projects_data;
+    void (*export_video)(void *);
+    void *export_data;
     PanelToggle     *toggles;
     Ca_MenuItemDesc *items;
     char           (*labels)[LABEL_MAX];
@@ -72,6 +74,13 @@ static void show_projects(void *data)
     Fl_MenuBar *bar = data; bar->projects(bar->projects_data);
 }
 
+/* Open the Export panel. The shared exporter keeps running if that panel closes. */
+static void export_video(void *data)
+{
+    Fl_MenuBar *bar = data;
+    bar->export_video(bar->export_data);
+}
+
 /* Rebuild the menus from the workspace's current panel visibility. */
 static void install_menus(Fl_MenuBar *menubar)
 {
@@ -89,6 +98,7 @@ static void install_menus(Fl_MenuBar *menubar)
     }
     const Ca_MenuItemDesc file[] = {
         {.label = "Save project", .action = save_project, .action_data = menubar},
+        {.label = "Export Video...", .action = export_video, .action_data = menubar},
         {.label = "Projects...", .action = show_projects, .action_data = menubar},
     };
     const Ca_MenuItemDesc edit[]={
@@ -96,7 +106,7 @@ static void install_menus(Fl_MenuBar *menubar)
         {.label="Redo",.action=redo_project,.action_data=menubar},
     };
     const Ca_MenuDesc menus[] = {
-        {.label = "File", .items = file, .item_count = 2},
+        {.label = "File", .items = file, .item_count = 3},
         {.label="Edit",.items=edit,.item_count=2},
         { .label = "View", .items = menubar->items, .item_count = menubar->count },
     };
@@ -144,15 +154,17 @@ static bool observe(Fl_MenuBar *menubar, const char *name)
 }
 
 Fl_MenuBar *fl_menubar_create(Ca_Window *window, Fl_EventBus *bus, Fl_Workspace *workspace,
-                                 Fl_Project *project, void (*projects)(void *), void *data)
+                                 Fl_Project *project, void (*projects)(void *), void *data,
+                                 void (*export_video)(void *), void *export_data)
 {
-    if (!window || !bus || !workspace || !project || !projects) return NULL;
+    if (!window || !bus || !workspace || !project || !projects || !export_video) return NULL;
     Fl_MenuBar *menubar = calloc(1, sizeof(*menubar));
     if (!menubar) return NULL;
     menubar->window = window;
     menubar->bus = bus;
     menubar->workspace = workspace;
     menubar->project = project; menubar->projects = projects; menubar->projects_data = data;
+    menubar->export_video = export_video; menubar->export_data = export_data;
     menubar->count = fl_workspace_panel_count(workspace);
     if (menubar->count > 0) {
         const size_t n = (size_t)menubar->count;

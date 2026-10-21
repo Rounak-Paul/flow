@@ -12,11 +12,13 @@
 
 #include <stdbool.h>
 
+typedef struct Fl_Exporter Fl_Exporter;
+
 /*
  * Editor workspace — the dockable panel layout of the main window.
  *
  * Owns the causality dock and Flow's panels (Scene, the central group,
- * Widgets, Assets, Inspector and Console), the project's asset importer and
+ * Widgets, Assets, Scripts, Inspector, Timeline, Console and Export), the project's asset importer and
  * the OS file-drop handler; seeds the default arrangement and persists the
  * user's layout. Dock changes are published on
  * the application bus (FL_EVENT_DOCK_*), and persistence itself observes
@@ -41,6 +43,7 @@ typedef struct Fl_WorkspaceDesc {
     Fl_JobSystem *jobs;         /* worker pool for imports and decoding; required */
     Fl_Fonts    *fonts;         /* font service bound to project; required   */
     const char  *layout_path;   /* persisted layout file, or NULL to disable */
+    Fl_Exporter *exporter;      /* shared video exporter, or NULL to omit Export */
 } Fl_WorkspaceDesc;
 
 /*
@@ -91,6 +94,14 @@ bool fl_workspace_panel_visible(const Fl_Workspace *workspace, const char *id);
  * Returns  true when the panel is visible afterwards.
  */
 bool fl_workspace_toggle_panel(Fl_Workspace *workspace, const char *id);
+
+/*
+ * Show a panel in its group, or dock it beside its default neighbour, and focus it.
+ * Dragging its tab floats it into its own window.
+ *
+ * Returns  false when the workspace is not mounted or the panel is unknown.
+ */
+bool fl_workspace_show_panel(Fl_Workspace *workspace, const char *id);
 
 /* Borrow the workspace's shared scene edit controller (selection, active scene, time). */
 Fl_SceneEdit *fl_workspace_edit(const Fl_Workspace *workspace);

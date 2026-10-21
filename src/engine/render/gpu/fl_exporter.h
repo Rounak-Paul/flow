@@ -18,10 +18,21 @@ typedef struct Fl_ExportStatus {
     Fl_ExportState state;
     uint64_t frames_done, frames_total;
     uint32_t width, height, fps;
+    uint32_t crf;               /* value sent to the encoder; a request of 0 is reported as 16 */
+    double crossfade;           /* seconds applied between scenes; 0 when a single scene ignores it */
+    size_t scene_count;
     double elapsed_seconds;
     char path[FL_PATH_MAX];
     char message[256];          /* failure reason, or a summary when done */
 } Fl_ExportStatus;
+
+/* Latest encoded picture, downscaled for display. Pixels are borrowed and stay valid until the next
+   preview update, the next export start, or fl_exporter_destroy. */
+typedef struct Fl_ExportPreview {
+    const unsigned char *rgba;
+    uint32_t width, height;
+    uint64_t sequence;          /* increases whenever the pixels change; never 0 when rgba is set */
+} Fl_ExportPreview;
 
 typedef struct Fl_ExportDesc {
     const char *path;           /* output .mp4; its folder must exist */
@@ -43,5 +54,7 @@ bool fl_exporter_start(Fl_Exporter *exporter, Fl_Project *project, const Fl_Expo
 void fl_exporter_cancel(Fl_Exporter *exporter);
 /* Fail a running export because its project is going away. */
 void fl_exporter_abort(Fl_Exporter *exporter, const char *reason);
-/* Snapshot of the latest export. */
+/* Snapshot of the latest export. Elapsed time advances while the export is running. */
 Fl_ExportStatus fl_exporter_status(const Fl_Exporter *exporter);
+/* Borrow the latest encoded frame. False when no frame has been produced yet. */
+bool fl_exporter_preview(const Fl_Exporter *exporter, Fl_ExportPreview *preview);
