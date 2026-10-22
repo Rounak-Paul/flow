@@ -34,7 +34,7 @@ struct Fl_ScriptPanel {
     char message[256];
 };
 
-/* Rebuild the panel on the next frame. */
+/* Rebuild the panel immediately. The flush frees p->rows, so callers must copy row data first. */
 static void invalidate(Fl_ScriptPanel *p)
 {
     if (p->dock) ca_dock_invalidate_panel(p->dock, PANEL_ID);
@@ -113,9 +113,10 @@ static void import_clicked(Ca_Button *button, void *data)
 static void row_clicked(Ca_Button *button, void *data)
 {
     (void)button; Fl_ScriptRow *row = data;
-    row->panel->selected = row->script;
-    status(row->panel, "");
-    invalidate(row->panel);
+    Fl_ScriptPanel *panel = row->panel;
+    panel->selected = row->script;
+    status(panel, "");
+    invalidate(panel);
 }
 
 static void name_changed(Ca_TextInput *input, void *data)

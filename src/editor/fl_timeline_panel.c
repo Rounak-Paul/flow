@@ -559,13 +559,15 @@ static bool beat_double_clicked(Fl_TimelinePanel *p, Fl_Id beat, const Ca_DragEv
 static void item_drag_end(const Ca_DragEvent *event, void *data)
 {
     Fl_TimelineItem *it = data; Fl_TimelinePanel *p = it->panel;
+    Fl_ItemKind kind = it->kind; Fl_Id id = it->id;
     const Fl_Scene *s = scene_of(p);
-    if (it->kind != ITEM_BEAT) p->click_beat = 0;
+    if (kind != ITEM_BEAT) p->click_beat = 0;
     if (!s) return;
-    if (it->kind == ITEM_BEAT || it->kind == ITEM_KEY || it->kind == ITEM_BEAT_EDGE || it->kind == ITEM_CLIP) item_drag(event, data);
+    /* item_drag commits keys, edges and clips, and that rebuilds this panel. */
+    if (kind == ITEM_BEAT || kind == ITEM_KEY || kind == ITEM_BEAT_EDGE || kind == ITEM_CLIP) item_drag(event, data);
     if (p->drag_moved || hypotf(event->dx, event->dy) / panel_scale(p) >= FL_STYLE_WIDGET_DRAG_THRESHOLD)
         p->click_beat = 0;
-    if (it->kind == ITEM_BEAT && p->drag_beat) {
+    if (kind == ITEM_BEAT && p->drag_beat) {
         Fl_Id beat = p->drag_beat; p->drag_beat = 0;
         if (p->beat_drop_marker) ca_set_hidden(p->beat_drop_marker, true);
         if (p->drag_moved) {
@@ -583,21 +585,21 @@ static void item_drag_end(const Ca_DragEvent *event, void *data)
     if (p->drag_moved || hypotf(event->dx, event->dy) / panel_scale(p) >= FL_STYLE_WIDGET_DRAG_THRESHOLD) return;
     Fl_Tick start;
     p->selected_key = p->selected_beat = p->selected_clip = 0;
-    if (it->kind == ITEM_KEY) {
-        const Fl_Keyframe *k = fl_scene_key(s, it->id, NULL);
-        p->selected_key = it->id;
+    if (kind == ITEM_KEY) {
+        const Fl_Keyframe *k = fl_scene_key(s, id, NULL);
+        p->selected_key = id;
         if (k) {Fl_Tick time; if (fl_anchor_sample(s, &k->at, &time)) seek_local(p, time);}
-    } else if ((it->kind == ITEM_BEAT || it->kind == ITEM_BEAT_EDGE) && fl_scene_beat_range(s, it->id, &start, NULL)) {
-        p->selected_beat = it->id;
-        if (it->kind == ITEM_BEAT) {
+    } else if ((kind == ITEM_BEAT || kind == ITEM_BEAT_EDGE) && fl_scene_beat_range(s, id, &start, NULL)) {
+        p->selected_beat = id;
+        if (kind == ITEM_BEAT) {
             seek_local(p, start);
-            if (beat_double_clicked(p, it->id, event, fl_clock_monotonic_ns())) {
-                for (size_t i = 0; i < s->beat_count; ++i) if (s->beats[i].id == it->id) {
+            if (beat_double_clicked(p, id, event, fl_clock_monotonic_ns())) {
+                for (size_t i = 0; i < s->beat_count; ++i) if (s->beats[i].id == id) {
                     rename_beat(p, &s->beats[i]); break;
                 }
             }
         }
-    } else if (it->kind == ITEM_CLIP) p->selected_clip = it->id;
+    } else if (kind == ITEM_CLIP) p->selected_clip = id;
     invalidate(p);
 }
 
