@@ -17,6 +17,7 @@
 #include "project/fl_resource_snapshot.h"
 #include "components/fl_style.h"
 #include "schema/fl_widgets.h"
+#include "components/fl_spatial.h"
 #include "text/fl_fonts.h"
 #include <causality.h>
 #include <math.h>
@@ -54,6 +55,21 @@ static Fl_Id make(Fl_Project *p, Fl_Id scene, Fl_WidgetKind kind, double x, doub
     CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ENTITY_CONFIGURE, .scene = scene, .entity = id, .name = e->name, .visible = true,
         .components = components, .component_count = 3}, NULL));
     return id;
+}
+
+/* The picture ratio belongs to a camera. */
+static void picture_aspect(Fl_Project *p, Fl_Id scene, unsigned w, unsigned h)
+{
+    Fl_Id id = 0;
+    CHECK(fl_spatial_create(p, scene, 0, "camera", 0, 0, 0, &id));
+    const Fl_Component *component = fl_entity_component(fl_scene_entity(fl_project_scene(p, scene), id), FL_COMPONENT_CAMERA);
+    Fl_Camera camera;
+    CHECK(component && fl_camera_decode(component, &camera));
+    camera.aspect_w = w; camera.aspect_h = h;
+    unsigned char bytes[FL_CAMERA_BYTES];
+    fl_camera_encode(&camera, bytes);
+    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_COMPONENT_SET, .scene = scene, .entity = id,
+        .component = {.type = FL_COMPONENT_CAMERA, .version = 1, .size = FL_CAMERA_BYTES, .data = bytes, .id = component->id}}, NULL));
 }
 
 /* Verify generated video pixels and prototype audio through the captured-resource export pipeline. */
@@ -289,8 +305,8 @@ int main(int argc, char **argv)
     CHECK(near(at(&frame, 650, 200), 255, 255, 255, 12) && at(&frame, 596, 200).r > 70 && at(&frame, 596, 200).r < 200 && near(at(&frame, 540, 200), 25, 31, 47, 6));
     fl_frame_free(&frame);
 
-    /* Target aspect frames the output; invalid requests fail without drawing. */
-    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_SCENE_ASPECT, .scene = scene_id, .aspect_width = 1, .aspect_height = 1}, NULL));
+    /* A camera's aspect frames the output; invalid requests fail without drawing. */
+    picture_aspect(p, scene_id, 1, 1);
     scene = fl_project_scene(p, scene_id);
     CHECK(fl_scene_renderer_render(renderer, p, scene, 0, 500, &frame) && frame.width == 500 && frame.height == 500);
     fl_frame_free(&frame);
@@ -332,7 +348,7 @@ int main(int argc, char **argv)
         CHECK(fl_exporter_status(exporter).state == FL_EXPORT_CANCELLED && !fl_fs_exists(output));
         const Fl_Id both[2] = {scene_id, effects_scene};
         CHECK(!fl_exporter_start(exporter, p, &(Fl_ExportDesc){.path = output, .width = 320, .fps = 10, .scenes = both, .scene_count = 2}, error, sizeof(error)) && strstr(error, "aspect"));
-        CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_SCENE_ASPECT, .scene = effects_scene, .aspect_width = 1, .aspect_height = 1}, NULL));
+        picture_aspect(p, effects_scene, 1, 1);
         CHECK(!fl_exporter_start(exporter, p, &(Fl_ExportDesc){.path = output, .width = 320, .fps = 10, .scenes = both, .scene_count = 2, .crossfade = 5}, error, sizeof(error)) && strstr(error, "shorter"));
         CHECK(fl_exporter_start(exporter, p, &(Fl_ExportDesc){.path = output, .width = 320, .fps = 10, .scenes = both, .scene_count = 2, .crossfade = 1}, error, sizeof(error)));
         while (fl_exporter_status(exporter).state == FL_EXPORT_RUNNING) fl_event_bus_dispatch(bus);

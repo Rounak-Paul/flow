@@ -15,7 +15,7 @@ typedef struct Fl_Frame {
     uint32_t width, height;
 } Fl_Frame;
 
-/* Output size of a scene rendered width pixels wide: the height follows the scene's target frame aspect.
+/* Output size of a scene rendered width pixels wide: the height follows the first visible camera, or the canvas.
    False when the scene or width is invalid or the frame exceeds FL_RENDER_MAX_PIXELS. */
 bool fl_frame_dimensions(const Fl_Scene *scene, uint32_t width, uint32_t *out_width, uint32_t *out_height);
 /* Free a frame's pixels and clear it. */

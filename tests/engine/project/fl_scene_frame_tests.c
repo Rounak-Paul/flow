@@ -36,12 +36,8 @@ int main(int argc, char **argv)
         CHECK(fl_project_apply(project, &(Fl_Op){.kind = FL_OP_SCENE_ASPECT, .scene = id,
             .aspect_width = ratios[i][0], .aspect_height = ratios[i][1]}, NULL));
         Fl_SceneFrame frame = fl_scene_frame(scene);
-        CHECK(frame.width > 0 && frame.height > 0);
-        CHECK(frame.x >= 0 && frame.y >= 0);
-        CHECK(fabs(frame.x * 2 + frame.width - 1920) < 1e-8);
-        CHECK(fabs(frame.y * 2 + frame.height - 1080) < 1e-8);
-        double expected = ratios[i][0] ? (double)ratios[i][0] / ratios[i][1] : 1920.0 / 1080;
-        CHECK(fabs(frame.width / frame.height - expected) < 1e-8);
+        CHECK(fabs(frame.x) < 1e-8 && fabs(frame.y) < 1e-8);
+        CHECK(fabs(frame.width - 1920) < 1e-8 && fabs(frame.height - 1080) < 1e-8);
     }
     CHECK(fl_project_apply(project, &(Fl_Op){.kind = FL_OP_SCENE_ASPECT, .scene = id,
         .aspect_width = 9, .aspect_height = 16}, NULL));
@@ -67,7 +63,7 @@ int main(int argc, char **argv)
     scene = fl_project_scene(project, id);
     CHECK(scene && scene->aspect_width == 9 && scene->aspect_height == 16);
     Fl_SceneFrame frame = fl_scene_frame(scene);
-    CHECK(fabs(frame.x - 656.25) < 1e-8 && frame.y == 0 && frame.width == 607.5 && frame.height == 1080);
+    CHECK(fabs(frame.x) < 1e-8 && frame.y == 0 && frame.width == 1920 && frame.height == 1080);
     CHECK(scene->camera_x==125 && scene->camera_y==-75);
     uint64_t camera_revision=scene->revision;
     CHECK(fl_project_apply(project, &(Fl_Op){.kind=FL_OP_SCENE_CAMERA,.scene=id,.camera_x=125,.camera_y=-75}, NULL));
@@ -90,8 +86,8 @@ int main(int argc, char **argv)
     scene = fl_project_scene(project, id);
     Fl_Camera camera;
     const Fl_Component *camera_component = fl_entity_component(fl_scene_entity(scene, camera_id), FL_COMPONENT_CAMERA);
-    CHECK(fl_camera_decode(camera_component, &camera) && camera.aspect_w == 9 && camera.aspect_h == 16);
-    CHECK(fabs(fl_scene_frame(scene).width / fl_scene_frame(scene).height - 9.0 / 16.0) < 1e-8);
+    CHECK(fl_camera_decode(camera_component, &camera) && camera.aspect_w == 16 && camera.aspect_h == 9);
+    CHECK(fabs(fl_scene_frame(scene).width / fl_scene_frame(scene).height - 16.0 / 9.0) < 1e-8);
     camera.aspect_w = 1; camera.aspect_h = 1;
     unsigned char camera_bytes[FL_CAMERA_BYTES];
     fl_camera_encode(&camera, camera_bytes);

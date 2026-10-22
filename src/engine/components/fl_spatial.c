@@ -6,6 +6,21 @@
 #include <string.h>
 
 Fl_Camera fl_camera_default(void) {return (Fl_Camera){.fov_y = 0.9, .near_z = 0.1, .far_z = 10000, .exposure = 1};}
+
+void fl_camera_canvas_aspect(const Fl_Scene *scene, unsigned *aspect_w, unsigned *aspect_h)
+{
+    unsigned w = 16, h = 9;
+    uint64_t width = scene ? scene->width : 0, height = scene ? scene->height : 0;
+    if (width && height) {
+        uint64_t a = width, b = height;
+        while (b) { uint64_t t = a % b; a = b; b = t; }
+        width /= a; height /= a;
+        while ((width > 255 || height > 255) && !(width % 2) && !(height % 2)) { width /= 2; height /= 2; }
+        if (width && height && width <= 255 && height <= 255) { w = (unsigned)width; h = (unsigned)height; }
+    }
+    if (aspect_w) *aspect_w = w;
+    if (aspect_h) *aspect_h = h;
+}
 Fl_Material fl_material_default(void) {return (Fl_Material){.base = {220, 224, 232, 255}, .roughness = 0.55};}
 Fl_Light fl_light_default(void) {return (Fl_Light){.color = {255, 248, 236, 255}, .intensity = 2, .spot_angle = 0.5};}
 Fl_Particles fl_particles_default(void) {return (Fl_Particles){128, 1, 24, 1.6, 14, 90, {255, 176, 64, 255}};}
@@ -237,8 +252,8 @@ Fl_SceneFrame fl_scene_gate(const Fl_Scene *scene, const Fl_SceneState *state)
     if (!scene) return frame;
     Fl_Pose pose = fl_pose_identity(); Fl_Camera camera;
     if (!fl_scene_view_camera(scene, state, &pose, &camera, NULL)) return frame;
-    uint64_t aspect_w = camera.aspect_w && camera.aspect_h ? camera.aspect_w : scene->aspect_width;
-    uint64_t aspect_h = camera.aspect_w && camera.aspect_h ? camera.aspect_h : scene->aspect_height;
+    uint64_t aspect_w = camera.aspect_w && camera.aspect_h ? camera.aspect_w : 0;
+    uint64_t aspect_h = camera.aspect_w && camera.aspect_h ? camera.aspect_h : 0;
     double width = (double)scene->width, height = (double)scene->height;
     if (aspect_w && aspect_h) {
         double ratio = (double)aspect_w / (double)aspect_h;
@@ -263,7 +278,7 @@ bool fl_spatial_create(Fl_Project *project, Fl_Id scene, Fl_Id parent, const cha
         pose.x = s ? (double)s->width * 0.5 : 0; pose.y = s ? (double)s->height * 0.5 : 0;
         pose.z = s ? (double)s->height : 1080; pose.x += x; pose.y += y; pose.z += z;
         Fl_Camera camera = fl_camera_default(); camera.perspective = true;
-        if (s && s->aspect_width <= 255 && s->aspect_height <= 255) { camera.aspect_w = (unsigned)s->aspect_width; camera.aspect_h = (unsigned)s->aspect_height; }
+        fl_camera_canvas_aspect(s, &camera.aspect_w, &camera.aspect_h);
         fl_camera_encode(&camera, extra); extra_type = FL_COMPONENT_CAMERA; extra_size = FL_CAMERA_BYTES;
         bounds = (Fl_Bounds){0}; name = "Camera";
     } else if (!strcmp(kind, "plane") || !strcmp(kind, "cube") || !strcmp(kind, "sphere")) {

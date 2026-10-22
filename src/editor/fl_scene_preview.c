@@ -79,8 +79,8 @@ static void frame_editor(Fl_ScenePreview *p, const Fl_Scene *scene, const Fl_Sce
 static Fl_SceneFrame camera_picture(const Fl_Scene *scene, const Fl_Camera *camera)
 {
     double width = scene && scene->width ? (double)scene->width : 0, height = scene && scene->height ? (double)scene->height : 0;
-    uint64_t aspect_w = camera && camera->aspect_w && camera->aspect_h ? camera->aspect_w : (scene ? scene->aspect_width : 0);
-    uint64_t aspect_h = camera && camera->aspect_w && camera->aspect_h ? camera->aspect_h : (scene ? scene->aspect_height : 0);
+    uint64_t aspect_w = camera && camera->aspect_w && camera->aspect_h ? camera->aspect_w : 0;
+    uint64_t aspect_h = camera && camera->aspect_w && camera->aspect_h ? camera->aspect_h : 0;
     if (aspect_w && aspect_h && width > 0 && height > 0) {
         double ratio = (double)aspect_w / (double)aspect_h;
         if (width / height > ratio) width = height * ratio;

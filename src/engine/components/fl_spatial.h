@@ -15,7 +15,7 @@ typedef enum Fl_LightKind { FL_LIGHT_DIRECTIONAL = 0, FL_LIGHT_POINT = 1, FL_LIG
 typedef struct Fl_Camera {
     bool perspective;
     double fov_y, near_z, far_z, ortho_height, exposure;
-    unsigned aspect_w, aspect_h; /* film gate; both zero keep the scene ratio */
+    unsigned aspect_w, aspect_h; /* film gate; both zero use the canvas */
 } Fl_Camera;
 typedef struct Fl_Material {
     unsigned char base[4];
@@ -38,6 +38,8 @@ typedef struct Fl_Particle {
 } Fl_Particle;
 
 Fl_Camera fl_camera_default(void);
+/* Canvas ratio reduced to fit a camera's aspect bytes. 16:9 when the canvas has no size. */
+void fl_camera_canvas_aspect(const Fl_Scene *scene, unsigned *aspect_w, unsigned *aspect_h);
 Fl_Material fl_material_default(void);
 Fl_Light fl_light_default(void);
 Fl_Particles fl_particles_default(void);
@@ -68,7 +70,7 @@ void fl_scene_camera(const Fl_Scene *scene, const Fl_SceneState *state, double f
 bool fl_scene_view_camera(const Fl_Scene *scene, const Fl_SceneState *state, Fl_Pose *pose, Fl_Camera *camera, double *bloom);
 /* One camera entity, including a hidden one chosen from the viewport. False when id is not a camera. */
 bool fl_scene_camera_entity(const Fl_Scene *scene, const Fl_SceneState *state, Fl_Id id, Fl_Pose *pose, Fl_Camera *camera, double *bloom);
-/* Output gate. A shot camera's aspect replaces the scene ratio. The gate stays on the canvas. */
+/* Output gate. The first visible camera's aspect crops the canvas; both zero keep the whole canvas. */
 Fl_SceneFrame fl_scene_gate(const Fl_Scene *scene, const Fl_SceneState *state);
 
 /* Deterministic emission. out receives at most capacity alive particles in emitter-local space. */

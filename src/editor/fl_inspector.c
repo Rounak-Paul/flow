@@ -1185,7 +1185,7 @@ static void camera_projection(Ca_Select *select, void *data)
 
 static void camera_aspect(Ca_Select *select, void *data)
 {
-    static const unsigned presets[][2]={{0,0},{16,9},{9,16},{1,1},{4,3},{3,4},{21,9}};
+    static const unsigned presets[][2]={{16,9},{9,16},{1,1},{4,3},{3,4},{21,9}};
     Fl_Inspector *p=data; int index=ca_select_get(select);
     if (index<0 || (size_t)index>=sizeof(presets)/sizeof(*presets)) return;
     p->camera.aspect_w=presets[index][0]; p->camera.aspect_h=presets[index][1]; drafted(p);
@@ -1210,17 +1210,19 @@ static void camera_section(Fl_Inspector *p, const Fl_Entity *entity)
     ca_select(&(Ca_SelectDesc){.options=projection,.option_count=2,.selected=p->camera.perspective?0:1,.id="camera-projection",
         .style=FL_CLASS_PROPERTY_SELECT,.on_change=camera_projection,.change_data=p});
     ca_div_end();
-    static const char *const presets[]={"Scene","16:9","9:16","1:1","4:3","3:4","21:9"};
-    static const unsigned ratios[][2]={{0,0},{16,9},{9,16},{1,1},{4,3},{3,4},{21,9}};
-    int selected=0; char custom[32]; const char *options[8];
-    int count=7;
-    for (int i=0;i<7;++i) {
+    static const char *const presets[]={"16:9","9:16","1:1","4:3","3:4","21:9"};
+    static const unsigned ratios[][2]={{16,9},{9,16},{1,1},{4,3},{3,4},{21,9}};
+    unsigned aspect_w=p->camera.aspect_w, aspect_h=p->camera.aspect_h;
+    if (!aspect_w || !aspect_h) fl_camera_canvas_aspect(inspector_scene(p), &aspect_w, &aspect_h);
+    int selected=0; char custom[32]; const char *options[7];
+    int count=6;
+    for (int i=0;i<6;++i) {
         options[i]=presets[i];
-        if (p->camera.aspect_w==ratios[i][0] && p->camera.aspect_h==ratios[i][1]) selected=i;
+        if (aspect_w==ratios[i][0] && aspect_h==ratios[i][1]) selected=i;
     }
     bool listed=false;
-    for (int i=0;i<7;++i) if (p->camera.aspect_w==ratios[i][0] && p->camera.aspect_h==ratios[i][1]) listed=true;
-    if (!listed) {snprintf(custom,sizeof(custom),"%u:%u",p->camera.aspect_w,p->camera.aspect_h); options[count]=custom; selected=count++;}
+    for (int i=0;i<6;++i) if (aspect_w==ratios[i][0] && aspect_h==ratios[i][1]) listed=true;
+    if (!listed) {snprintf(custom,sizeof(custom),"%u:%u",aspect_w,aspect_h); options[count]=custom; selected=count++;}
     bool aspect_locked=camera_driven(p,entity,FL_PROP_ASPECT_W)||camera_driven(p,entity,FL_PROP_ASPECT_H);
     ca_div_begin(&(Ca_DivDesc){.direction=CA_HORIZONTAL,.style=FL_CLASS_PROPERTY_ROW});
     ca_text(&(Ca_TextDesc){.text="Aspect",.style=FL_CLASS_PROPERTY_LABEL});
@@ -1239,7 +1241,7 @@ static void camera_section(Fl_Inspector *p, const Fl_Entity *entity)
             .on_change=edited,.change_data=&p->camera_fields[i],.disabled=camera_driven(p,entity,props[i])});
         ca_div_end();
     }
-    ca_text(&(Ca_TextDesc){.text="Aspect Scene uses the scene ratio. The first visible camera is the shot while playing, and export looks through it.",.style=FL_CLASS_MUTED,.wrap=true});
+    ca_text(&(Ca_TextDesc){.text="This ratio is the camera's picture. Export uses the first visible camera.",.style=FL_CLASS_MUTED,.wrap=true});
 }
 
 void fl_inspector_build(Ca_Dock *dock,Ca_Window *window,void *data)

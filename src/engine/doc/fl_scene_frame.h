@@ -4,5 +4,5 @@
 /* Camera output rectangle in scene coordinates. */
 typedef struct Fl_SceneFrame { double x, y, width, height; } Fl_SceneFrame;
 
-/* Resolve scene's target ratio and persisted camera offset; NULL/invalid dimensions return an empty frame. */
+/* The first visible camera's picture, centered on the canvas. No camera aspect keeps the whole canvas. */
 Fl_SceneFrame fl_scene_frame(const Fl_Scene *scene);

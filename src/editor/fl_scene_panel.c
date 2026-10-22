@@ -640,8 +640,9 @@ static void build_hierarchy(Fl_ScenePanel *p, const Fl_Scene *s)
         Fl_Camera camera;
         if (fl_camera_decode(fl_entity_component(e, FL_COMPONENT_CAMERA), &camera)) {
             char ratio[32];
-            if (camera.aspect_w && camera.aspect_h) snprintf(ratio, sizeof(ratio), "%u:%u", camera.aspect_w, camera.aspect_h);
-            else snprintf(ratio, sizeof(ratio), "Scene");
+            unsigned aspect_w = camera.aspect_w, aspect_h = camera.aspect_h;
+            if (!aspect_w || !aspect_h) fl_camera_canvas_aspect(s, &aspect_w, &aspect_h);
+            snprintf(ratio, sizeof(ratio), "%u:%u", aspect_w, aspect_h);
             ca_text(&(Ca_TextDesc){.text = ratio, .style = FL_CLASS_MUTED});
             bool shot = e->visible;
             if (shot) for (size_t earlier = 0; earlier < i; ++earlier) {

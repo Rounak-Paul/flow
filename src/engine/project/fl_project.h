@@ -63,7 +63,7 @@ typedef struct Fl_Scene {
     uint64_t revision;
     uint64_t duration; /* 120000 ticks per second */
     uint64_t width, height; /* canvas dimensions; target framing never moves entities */
-    uint64_t aspect_width, aspect_height; /* target ratio; both zero use the whole canvas */
+    uint64_t aspect_width, aspect_height; /* retained from older files; a camera's aspect crops the picture */
     double camera_x, camera_y; /* retained from older files; the canvas is not shifted by this */
     unsigned char background[4]; /* backdrop colour, sRGB RGBA8 with opaque alpha */
     const Fl_Entity *entities;
