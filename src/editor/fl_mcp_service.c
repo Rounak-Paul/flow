@@ -73,21 +73,88 @@ static void hex(const unsigned char *bytes, size_t n, char *out)
     out[n * 2] = 0;
 }
 
+/* Write one JSON object as a user-only file. */
+static bool write_private_json(const char *path, cJSON *config)
+{
+    char *text = config ? cJSON_Print(config) : NULL;
+    bool ok = text && fl_fs_write_atomic(path, text, strlen(text)) && fl_fs_make_private(path);
+    free(text);
+    return ok;
+}
+
+static void endpoint_url(unsigned port, char url[64])
+{
+    snprintf(url, 64, "http://127.0.0.1:%u/mcp", port);
+}
+
 /* Write mcp.json readable by the user only. */
 static bool write_config(const Fl_McpService *s, unsigned port)
 {
     cJSON *config = cJSON_CreateObject();
-    if (!config) return false;
-    cJSON_AddNumberToObject(config, "port", port);
-    cJSON_AddStringToObject(config, "token", s->token);
     char url[64];
-    snprintf(url, sizeof(url), "http://127.0.0.1:%u/mcp", port);
-    cJSON_AddStringToObject(config, "url", url);
-    char *text = cJSON_Print(config);
+    endpoint_url(port, url);
+    if (!config || !cJSON_AddNumberToObject(config, "port", port) || !cJSON_AddStringToObject(config, "token", s->token) || !cJSON_AddStringToObject(config, "url", url)) {
+        cJSON_Delete(config);
+        return false;
+    }
+    bool ok = write_private_json(s->config_path, config);
     cJSON_Delete(config);
-    bool ok = text && fl_fs_write_atomic(s->config_path, text, strlen(text)) && fl_fs_make_private(s->config_path);
-    free(text);
     return ok;
+}
+
+/* Same connection document as the app config, inside the project. */
+static bool write_project_mcp(const char *directory, unsigned port, const char *token)
+{
+    char folder[FL_PATH_MAX], path[FL_PATH_MAX], url[64];
+    endpoint_url(port, url);
+    if (!fl_fs_join(folder, sizeof(folder), directory, ".flow") || !fl_fs_mkdir_p(folder) || !fl_fs_join(path, sizeof(path), folder, "mcp.json")) return false;
+    cJSON *config = cJSON_CreateObject();
+    if (!config || !cJSON_AddNumberToObject(config, "port", port) || !cJSON_AddStringToObject(config, "token", token) || !cJSON_AddStringToObject(config, "url", url)) {
+        cJSON_Delete(config);
+        return false;
+    }
+    bool ok = write_private_json(path, config);
+    cJSON_Delete(config);
+    return ok;
+}
+
+/* Point Cursor, for this folder, at the running editor. Other servers in the file stay. */
+static bool write_cursor_mcp(const char *directory, unsigned port, const char *token)
+{
+    char folder[FL_PATH_MAX], path[FL_PATH_MAX], url[64], bearer[80];
+    endpoint_url(port, url);
+    snprintf(bearer, sizeof(bearer), "Bearer %s", token);
+    if (!fl_fs_join(folder, sizeof(folder), directory, ".cursor") || !fl_fs_mkdir_p(folder) || !fl_fs_join(path, sizeof(path), folder, "mcp.json")) return false;
+    size_t size = 0;
+    char *existing = fl_fs_read_file(path, 1024 * 1024, &size);
+    cJSON *root = existing ? cJSON_ParseWithLength(existing, size) : cJSON_CreateObject();
+    free(existing);
+    if (!root || !cJSON_IsObject(root)) {cJSON_Delete(root); return false;}
+    cJSON *servers = cJSON_GetObjectItemCaseSensitive(root, "mcpServers");
+    if (!servers) servers = cJSON_AddObjectToObject(root, "mcpServers");
+    if (!cJSON_IsObject(servers)) {cJSON_Delete(root); return false;}
+    cJSON *flow = cJSON_CreateObject();
+    cJSON *headers = flow ? cJSON_AddObjectToObject(flow, "headers") : NULL;
+    bool shaped = flow && cJSON_AddStringToObject(flow, "url", url) && headers && cJSON_AddStringToObject(headers, "Authorization", bearer);
+    if (!shaped) {cJSON_Delete(flow); cJSON_Delete(root); return false;}
+    bool replaced = cJSON_GetObjectItemCaseSensitive(servers, "flow") != NULL;
+    bool stored = replaced ? cJSON_ReplaceItemInObjectCaseSensitive(servers, "flow", flow) : cJSON_AddItemToObject(servers, "flow", flow);
+    if (!stored) cJSON_Delete(flow);
+    bool ok = stored && write_private_json(path, root);
+    cJSON_Delete(root);
+    return ok;
+}
+
+/* Refresh the copies an agent sees when its workspace is this project. */
+static void publish_project_connection(const Fl_McpService *s)
+{
+    const char *directory = s->project ? fl_project_directory(s->project) : NULL;
+    unsigned port = s->http ? fl_mcp_http_port(s->http) : 0;
+    if (!directory || !port || !s->token[0]) return;
+    bool project = write_project_mcp(directory, port, s->token);
+    bool cursor = write_cursor_mcp(directory, port, s->token);
+    if (project && cursor) FL_LOG_INFO(LOG_TAG, "project MCP connection updated in %s", directory);
+    else FL_LOG_WARN(LOG_TAG, "could not write the MCP connection into %s", directory);
 }
 
 /* Load the saved port and token, or mint a new token. */
@@ -296,6 +363,7 @@ void fl_mcp_service_attach(Fl_McpService *s, Fl_Project *project, Ca_Window *win
     if (!s) return;
     fl_mcp_service_detach(s);
     s->project = project; s->window = window; s->workspace = workspace;
+    publish_project_connection(s);
 }
 
 unsigned fl_mcp_service_port(const Fl_McpService *s) { return s ? fl_mcp_http_port(s->http) : 0; }

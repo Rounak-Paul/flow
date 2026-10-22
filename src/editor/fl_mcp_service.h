@@ -7,7 +7,8 @@
  * (get_editor_state, set_editor_state, render_frame through the GPU scene renderer). Requests are served on network threads and executed on the
  * UI thread through the application bus, so tools see exactly what the user sees and every edit goes through the
  * same project operations as the GUI. The connection details (port, bearer token) persist in the user's config
- * directory as mcp.json.
+ * directory as mcp.json. Opening or creating a project copies that file into the project and refreshes the
+ * project's Cursor MCP entry so an agent working in the folder can reach the running editor.
  */
 typedef struct Fl_McpService Fl_McpService;
 typedef struct Fl_Exporter Fl_Exporter;
@@ -16,7 +17,7 @@ typedef struct Fl_Exporter Fl_Exporter;
 Fl_McpService *fl_mcp_service_create(Fl_EventBus *bus, Ca_Instance *instance, Fl_Fonts *fonts, Fl_JobSystem *jobs);
 /* Stop serving, fail in-flight calls and free. Safe with the project still attached. NULL is safe. */
 void fl_mcp_service_destroy(Fl_McpService *service);
-/* Expose an open project and its workspace to agents. */
+/* Expose an open project and its workspace to agents, and refresh the project's MCP connection files. */
 void fl_mcp_service_attach(Fl_McpService *service, Fl_Project *project, Ca_Window *window, Fl_Workspace *workspace);
 /* Withdraw the project before it or its window is destroyed; pending renders fail. */
 void fl_mcp_service_detach(Fl_McpService *service);

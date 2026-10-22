@@ -12,7 +12,9 @@ Open a project in Flow. The editor listens on `http://127.0.0.1:7788/mcp` (anoth
 | Windows | `%APPDATA%\Flow\config\mcp.json` |
 | Linux | `~/.config/flow/mcp.json` |
 
-The file is readable by you only and keeps the same token across restarts. Claude Code:
+The file is readable by you only and keeps the same token across restarts. Creating or opening a project copies that same file to `<project>/.flow/mcp.json` and refreshes the `flow` server in `<project>/.cursor/mcp.json` (url plus `Authorization: Bearer <token>`), leaving any other servers in that file alone. Both copies are rewritten every time the project is opened, so an agent whose workspace is the project folder sees the live endpoint.
+
+Claude Code:
 
 ```sh
 claude mcp add --transport http flow http://127.0.0.1:7788/mcp \
