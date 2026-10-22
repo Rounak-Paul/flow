@@ -262,7 +262,8 @@ static bool create_pipeline(Fl_SceneRenderer *p, VkFormat format, int kind)
         "else{vec2 d=q+p.fill2.x*vec2(sin(q.y*10.+time),cos(q.x*10.-time));color=mix(A,B,clamp(d.x,0.,1.));}"
         "return;}"
         "if(kind==16.){float m=p.extra.w;float d=rbox((uv-.5)*size,size*.5-m,r);color=p.fill;color.a*=1-smoothstep(-sw,sw,d);return;}"
-        "if(kind==5.){color=p.fill;color.a*=texture(mask,uv).r;return;}"
+        "if(kind==5.){vec2 m=texture(mask,uv).rg;float fa=p.fill.a*m.r;float sa=p.stroke.a*m.g;float cover=fa+(1.-fa)*sa;"
+        "vec3 rgb=cover>1e-4?(p.fill.rgb*fa*(1.-sa)+p.stroke.rgb*sa)/cover:vec3(0.);color=vec4(rgb,cover);return;}"
         "if(kind==6.){color=texture(mask,p.fill2.xy+uv*p.fill2.zw);color.a*=p.fill.a;"
         "if(r>0.){float e=rbox((uv-.5)*size,size*.5,r);float w=max(fwidth(e),.001);color.a*=1-smoothstep(-w,w,e);}return;}"
         "if(kind==3.||kind==4.){float shaft=abs((uv.y-.5)*size.y)-sw*.5;"
@@ -657,7 +658,7 @@ static void prepare_paths(Fl_SceneRenderer *p, const Fl_Scene *scene, const Fl_S
         for (size_t j = 0; j < p->path_count; ++j) if (p->paths[j].entity == entry->entity && p->paths[j].hash == hash) {entry->image = p->paths[j].image; p->paths[j].image = NULL; break;}
         if (!entry->image && box.width > 0 && box.height > 0) {
             uint32_t w, h; unsigned char *mask = fl_path_raster(&path, box.width, box.height, stroke, &w, &h);
-            if (mask) {entry->image = fl_gpu_image_create(p->images, FL_GPU_IMAGE_COVERAGE, mask, w, h); free(mask);}
+            if (mask) {entry->image = fl_gpu_image_create(p->images, FL_GPU_IMAGE_VECTOR, mask, w, h); free(mask);}
         }
     }
     for (size_t i = 0; i < p->path_count; ++i) fl_gpu_image_destroy(p->paths[i].image);
@@ -911,7 +912,7 @@ static void draw_entity(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_Scene
             double scale = p->text_scale > 0 ? p->text_scale : 1;
             const Fl_TextMotion *motion = &state->entities[index].motion;
             for (int g = 0; g < cached->glyph_count; ++g) {
-                double u = motion->duration > 0 ? (seconds - g * motion->stagger) / motion->duration : 1;
+                double u = motion->duration > 0 ? (seconds - motion->delay - g * motion->stagger) / motion->duration : 1;
                 u = u < 0 ? 0 : u > 1 ? 1 : u; u = u * u * (3 - 2 * u);
                 double dy = motion->rise * (1 - u);
                 double fade = motion->fade == 0 ? 1 : u * motion->fade + (1 - motion->fade);

@@ -27,7 +27,7 @@
 enum { NAME,X,Y,Z,WIDTH,HEIGHT,DEPTH,ROTATION,RX,RY,SCALE_X,SCALE_Y,SCALE_Z,FILL,STROKE,STROKE_WIDTH,FONT_SIZE,CONTENT,FONT_FILTER,OPACITY,RADIUS,SHADOW_BLUR,SHADOW_X,SHADOW_Y,SHADOW_COLOR,GRADIENT_TO,GRADIENT_ANGLE,CROP_X,CROP_Y,CROP_W,CROP_H,
        VIDEO_START,VIDEO_OFFSET,VIDEO_RATE,BLUR,
        PIVOT_X,PIVOT_Y,PIVOT_Z,GLOW,BLEND,RADIAL,GRADIENT_MID,GRADIENT_MID_POS,
-       TRACKING,STAGGER,RISE,TEXT_FADE,TEXT_DURATION,TRIM_START,TRIM_END,
+       TRACKING,STAGGER,RISE,TEXT_FADE,TEXT_DURATION,TEXT_DELAY,TRIM_START,TRIM_END,
        VIGNETTE,GRAIN,LIFT,GAMMA,GAIN,FIELD_COUNT };
 #define WEIGHT_OPTIONS 32
 typedef struct Fl_InspectorField { struct Fl_Inspector *owner; char *value; bool dirty; } Fl_InspectorField;
@@ -619,10 +619,10 @@ static void apply(Ca_Button *button,void *data)
     if (def&&def->has_text) {
         Fl_TextMotion motion=fl_motion_default();
         if (!number(p->fields[TRACKING].value,&motion.tracking)||!number(p->fields[STAGGER].value,&motion.stagger)||!number(p->fields[RISE].value,&motion.rise)||
-            !number(p->fields[TEXT_FADE].value,&motion.fade)||!number(p->fields[TEXT_DURATION].value,&motion.duration)) {status(p,"Check tracking, stagger, rise, fade and duration.");return;}
+            !number(p->fields[TEXT_FADE].value,&motion.fade)||!number(p->fields[TEXT_DURATION].value,&motion.duration)||!number(p->fields[TEXT_DELAY].value,&motion.delay)) {status(p,"Check tracking, stagger, rise, fade, duration and delay.");return;}
         fl_motion_encode(&motion,motion_bytes);
         if (!fl_motion_decode(&(Fl_Component){.type=FL_COMPONENT_TEXT_MOTION,.version=1,.size=FL_MOTION_BYTES,.data=motion_bytes},&motion)) {status(p,"Text motion values are out of range.");return;}
-        if (fl_motion_active(&motion)||motion.duration!=fl_motion_default().duration||fl_entity_component(entity,FL_COMPONENT_TEXT_MOTION))
+        if (fl_motion_active(&motion)||motion.duration!=fl_motion_default().duration||motion.delay!=0||fl_entity_component(entity,FL_COMPONENT_TEXT_MOTION))
             components[count++]=(Fl_Component){.type=FL_COMPONENT_TEXT_MOTION,.version=1,.size=FL_MOTION_BYTES,.data=motion_bytes};
     }
     if (def&&def->kind==FL_WIDGET_PATH) {
@@ -844,9 +844,9 @@ static bool load(Fl_Inspector *p,const Fl_Scene *scene,const Fl_Entity *entity)
     if (!field_set(&p->fields[GRADIENT_MID],text)) return false;
     p->loaded_numbers[GRADIENT_MID_POS]=look.gradient_mid_pos; snprintf(text,sizeof(text),"%.9g",look.gradient_mid_pos); if (!field_set(&p->fields[GRADIENT_MID_POS],text)) return false;
     Fl_TextMotion motion=now&&now->has_motion?now->motion:fl_motion_default();
-    const double motion_values[]={motion.tracking,motion.stagger,motion.rise,motion.fade,motion.duration};
-    static const int motion_fields[]={TRACKING,STAGGER,RISE,TEXT_FADE,TEXT_DURATION};
-    for (size_t i=0;i<5;++i) {p->loaded_numbers[motion_fields[i]]=motion_values[i];snprintf(text,sizeof(text),"%.9g",motion_values[i]);if (!field_set(&p->fields[motion_fields[i]],text)) return false;}
+    const double motion_values[]={motion.tracking,motion.stagger,motion.rise,motion.fade,motion.duration,motion.delay};
+    static const int motion_fields[]={TRACKING,STAGGER,RISE,TEXT_FADE,TEXT_DURATION,TEXT_DELAY};
+    for (size_t i=0;i<6;++i) {p->loaded_numbers[motion_fields[i]]=motion_values[i];snprintf(text,sizeof(text),"%.9g",motion_values[i]);if (!field_set(&p->fields[motion_fields[i]],text)) return false;}
     double trim0=now?now->trim_start:0, trim1=now&&now->has_path?now->trim_end:1;
     p->loaded_numbers[TRIM_START]=trim0; p->loaded_numbers[TRIM_END]=trim1;
     snprintf(text,sizeof(text),"%.9g",trim0); if (!field_set(&p->fields[TRIM_START],text)) return false;
@@ -915,7 +915,7 @@ static void field(Fl_Inspector *p,int index,const char *label,bool numeric)
         FL_PROP_SCALE_Y,FL_PROP_SCALE_Z,FL_PROP_FILL,FL_PROP_STROKE,FL_PROP_STROKE_WIDTH,FL_PROP_FONT_SIZE,-1,-1,FL_PROP_OPACITY,FL_PROP_RADIUS,FL_PROP_SHADOW_BLUR,FL_PROP_SHADOW_X,FL_PROP_SHADOW_Y,FL_PROP_SHADOW_COLOR,FL_PROP_GRADIENT_TO,FL_PROP_GRADIENT_ANGLE,
         FL_PROP_CROP_X,FL_PROP_CROP_Y,FL_PROP_CROP_W,FL_PROP_CROP_H,-1,-1,-1,FL_PROP_BLUR,
         FL_PROP_PIVOT_X,FL_PROP_PIVOT_Y,FL_PROP_PIVOT_Z,FL_PROP_GLOW,FL_PROP_BLEND,FL_PROP_RADIAL,FL_PROP_GRADIENT_MID,FL_PROP_GRADIENT_MID_POS,
-        FL_PROP_TRACKING,FL_PROP_STAGGER,FL_PROP_RISE,FL_PROP_TEXT_FADE,FL_PROP_TEXT_DURATION,FL_PROP_TRIM_START,FL_PROP_TRIM_END,
+        FL_PROP_TRACKING,FL_PROP_STAGGER,FL_PROP_RISE,FL_PROP_TEXT_FADE,FL_PROP_TEXT_DURATION,FL_PROP_TEXT_DELAY,FL_PROP_TRIM_START,FL_PROP_TRIM_END,
         FL_PROP_VIGNETTE,FL_PROP_GRAIN,FL_PROP_LIFT,FL_PROP_GAMMA,FL_PROP_GAIN};
     const Fl_Scene *scene=inspector_scene(p);
     bool keyed=animated[index]>=0&&fl_scene_track(scene,p->entity,(Fl_AnimProperty)animated[index]);
@@ -1106,7 +1106,7 @@ static void style_section(Fl_Inspector *p,const Fl_WidgetDef *def)
         field(p,SHADOW_BLUR,"Shadow blur",true);field(p,SHADOW_X,"Shadow X",true);field(p,SHADOW_Y,"Shadow Y",true);field(p,SHADOW_COLOR,"Shadow colour",false);
     }
     if (def->has_text) {
-        field(p,TRACKING,"Tracking",true); field(p,STAGGER,"Stagger",true); field(p,RISE,"Rise",true); field(p,TEXT_FADE,"Fade",true); field(p,TEXT_DURATION,"Duration",true);
+        field(p,TRACKING,"Tracking",true); field(p,STAGGER,"Stagger",true); field(p,RISE,"Rise",true); field(p,TEXT_FADE,"Fade",true); field(p,TEXT_DURATION,"Duration",true); field(p,TEXT_DELAY,"Delay",true);
         static const char *const options[]={"Left","Center","Right"};
         ca_div_begin(&(Ca_DivDesc){.direction=CA_HORIZONTAL,.style=FL_CLASS_PROPERTY_ROW});
         ca_text(&(Ca_TextDesc){.text="Align",.style=FL_CLASS_PROPERTY_LABEL});

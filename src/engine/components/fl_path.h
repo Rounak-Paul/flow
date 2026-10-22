@@ -23,7 +23,8 @@ typedef struct Fl_Path {
 Fl_Path fl_path_default(double width, double height);
 size_t fl_path_encode(const Fl_Path *path, unsigned char *out, size_t capacity);
 bool fl_path_decode(const Fl_Component *component, Fl_Path *out);
-/* Rasterise fill and stroke into an 8-bit coverage mask. Caller frees the result. */
+/* Rasterise into two coverage bytes per pixel: fill, then stroke. A transparent fill is an open stroke.
+   Stroke width 0 draws no stroke. Caller frees the result. */
 unsigned char *fl_path_raster(const Fl_Path *path, double width, double height, double stroke, uint32_t *out_w, uint32_t *out_h);
 
 cJSON *fl_path_write(Fl_Json *context, const Fl_Component *component);

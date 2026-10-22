@@ -27,7 +27,7 @@ static const Field material_fields[] = {{"base",0,COLOR},{"roughness",8,NUMBER},
 static const Field light_fields[] = {{"kind",0,BYTE},{"color",4,COLOR},{"intensity",8,NUMBER},{"range",16,NUMBER},{"spot_angle",24,NUMBER},{0}};
 static const Field particle_fields[] = {{"capacity",0,UNSIGNED},{"seed",8,UNSIGNED},{"rate",16,NUMBER},{"life",24,NUMBER},{"size",32,NUMBER},{"speed",40,NUMBER},{"color",48,COLOR},{"size_end",56,NUMBER},{"gravity",64,NUMBER},{"spread",72,NUMBER},{"burst",80,NUMBER},{"blend",88,NUMBER},{"force_x",96,NUMBER},{"force_y",104,NUMBER},{"force_z",112,NUMBER},{"color_end",120,COLOR},{0}};
 static const Field post_fields[] = {{"bloom",0,NUMBER},{"vignette",8,NUMBER},{"grain",16,NUMBER},{"lift",24,NUMBER},{"gamma",32,NUMBER},{"gain",40,NUMBER},{0}};
-static const Field motion_fields[] = {{"tracking",0,NUMBER},{"stagger",8,NUMBER},{"rise",16,NUMBER},{"fade",24,NUMBER},{"duration",32,NUMBER},{0}};
+static const Field motion_fields[] = {{"tracking",0,NUMBER},{"stagger",8,NUMBER},{"rise",16,NUMBER},{"fade",24,NUMBER},{"duration",32,NUMBER},{"delay",40,NUMBER},{0}};
 static const Field mesh_fields[] = {{"shape",0,BYTE},{0}};
 static const Field rectangle[] = {{"color",0,COLOR},{0}};
 static const Field appearance[] = {{"fill",0,COLOR},{"stroke",4,COLOR},{"stroke_width",8,NUMBER},{"font_size",16,NUMBER},{0}};
@@ -231,7 +231,7 @@ bool fl_document_component_read(Fl_Json *c, const cJSON *o, Fl_Id entity, Fl_Com
     }
     if (out->type==FL_COMPONENT_SAMPLED) {
         Fl_Id id=out->id;
-        bool valid=(out->version==1 || out->version==FL_SAMPLED_ANIMATION_VERSION) && fl_sampled_animation_read(c,fl_json_member(c,o,"samples",cJSON_Array),out);
+        bool valid=(out->version==1 || out->version==2 || out->version==FL_SAMPLED_ANIMATION_VERSION) && fl_sampled_animation_read(c,fl_json_member(c,o,"samples",cJSON_Array),out);
         out->id=id; return valid || fl_json_fail(c,"Invalid sampled animation schema");
     }
     if (out->type==FL_COMPONENT_COMPOSITION) {

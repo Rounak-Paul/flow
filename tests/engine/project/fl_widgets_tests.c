@@ -1,11 +1,14 @@
 #include "flow_test.h"
 #include "schema/fl_widgets.h"
+#include "components/fl_path.h"
+#include "components/fl_motion.h"
 #include "components/fl_style.h"
 #include "components/fl_video_clip.h"
 #include "doc/fl_scene_geometry.h"
 #include "platform/fl_fs.h"
 #include "platform/fl_paths.h"
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* Replace a local transform through the same atomic operation used by viewport gestures. */
@@ -124,6 +127,21 @@ int main(int argc,char **argv)
     CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_ASSET_REMOVE,.asset=picture_id},NULL));
     ellipse=fl_scene_entity(fl_project_scene(p,scene),ids[FL_WIDGET_ELLIPSE]);CHECK(fl_widget_for_entity(ellipse)->kind==FL_WIDGET_ELLIPSE);
     CHECK(fl_widget_appearance(ellipse).stroke_width==12&&fl_entity_component(ellipse,999)->data[2]==3);
+    Fl_Path ring={.trim_end=1}; double cx=32, cy=32, radius=20, k=radius*0.5522847498;
+    ring.points[ring.count++]=(Fl_PathPoint){FL_PATH_MOVE,cx+radius,cy,0,0,0,0};
+    ring.points[ring.count++]=(Fl_PathPoint){FL_PATH_CUBIC,cx,cy+radius,cx+radius,cy+k,cx+k,cy+radius};
+    ring.points[ring.count++]=(Fl_PathPoint){FL_PATH_CUBIC,cx-radius,cy,cx-k,cy+radius,cx-radius,cy+k};
+    ring.points[ring.count++]=(Fl_PathPoint){FL_PATH_CUBIC,cx,cy-radius,cx-radius,cy-k,cx-k,cy-radius};
+    ring.points[ring.count++]=(Fl_PathPoint){FL_PATH_CUBIC,cx+radius,cy,cx+k,cy-radius,cx+radius,cy-k};
+    uint32_t rw=0,rh=0; unsigned char *mask=fl_path_raster(&ring,64,64,4,&rw,&rh);
+    CHECK(mask && rw==64 && rh==64 && mask[(32*64+32)*2]>200 && mask[(32*64+32)*2+1]<40 && mask[(32*64+52)*2+1]>180);
+    ring.trim_end=0; unsigned char *hidden=fl_path_raster(&ring,64,64,4,&rw,&rh);
+    CHECK(hidden && hidden[(32*64+32)*2]==0 && hidden[(32*64+52)*2+1]==0);
+    free(mask); free(hidden);
+    Fl_TextMotion motion=fl_motion_default(); motion.delay=12.5; unsigned char motion_bytes[FL_MOTION_BYTES]; fl_motion_encode(&motion,motion_bytes);
+    Fl_Component motion_component={.type=FL_COMPONENT_TEXT_MOTION,.version=1,.size=FL_MOTION_BYTES,.data=motion_bytes}; Fl_TextMotion decoded_motion={0};
+    CHECK(fl_motion_decode(&motion_component,&decoded_motion)&&decoded_motion.delay==12.5&&decoded_motion.duration==0.35);
+    motion.delay=-1; fl_motion_encode(&motion,motion_bytes); CHECK(!fl_motion_decode(&motion_component,&decoded_motion));
     fl_scene_geometry_clear(&geometry);fl_project_destroy(p);fl_fs_remove(path);
     return FLOW_TEST_RESULT("fl_widgets_tests");
 }

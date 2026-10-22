@@ -159,6 +159,7 @@ void fl_entity_state_apply(Fl_EntityState *e, Fl_AnimProperty property, const do
     case FL_PROP_RISE: e->motion.rise=v[0]; break;
     case FL_PROP_TEXT_FADE: e->motion.fade=fmin(1, fmax(0, v[0])); break;
     case FL_PROP_TEXT_DURATION: e->motion.duration=fmax(0, v[0]); break;
+    case FL_PROP_TEXT_DELAY: e->motion.delay=fmax(0, v[0]); break;
     case FL_PROP_BLEND: e->style.blend=(unsigned char)fmin(3, fmax(0, v[0])); break;
     case FL_PROP_RADIAL: e->style.radial=v[0] >= 0.5; break;
     case FL_PROP_GLOW: e->style.glow=fmax(0, v[0]); break;
@@ -351,6 +352,7 @@ void fl_entity_state_values(const Fl_EntityState *s, double values[FL_PROP_COUNT
     values[FL_PROP_TRIM_START][0]=s->trim_start; values[FL_PROP_TRIM_END][0]=s->trim_end;
     values[FL_PROP_TRACKING][0]=s->motion.tracking; values[FL_PROP_STAGGER][0]=s->motion.stagger; values[FL_PROP_RISE][0]=s->motion.rise;
     values[FL_PROP_TEXT_FADE][0]=s->motion.fade; values[FL_PROP_TEXT_DURATION][0]=s->motion.duration;
+    values[FL_PROP_TEXT_DELAY][0]=s->motion.delay;
     values[FL_PROP_BLEND][0]=s->style.blend; values[FL_PROP_RADIAL][0]=s->style.radial ? 1 : 0; values[FL_PROP_GLOW][0]=s->style.glow;
     values[FL_PROP_GRADIENT_MID_POS][0]=s->style.gradient_mid_pos;
     values[FL_PROP_VIGNETTE][0]=s->post.vignette; values[FL_PROP_GRAIN][0]=s->post.grain; values[FL_PROP_LIFT][0]=s->post.lift;

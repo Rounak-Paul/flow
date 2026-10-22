@@ -97,6 +97,17 @@ int main(int argc, char **argv)
     Fl_SceneFrame square = fl_scene_frame(scene);
     CHECK(fabs(square.width - 1080) < 1e-6 && fabs(square.height - 1080) < 1e-6);
     CHECK(fabs(square.x - 420) < 1e-6 && fabs(square.y) < 1e-6);
+    Fl_Pose cam = fl_pose_identity();
+    cam.x = 960; cam.y = 540; cam.z = 1080;
+    Fl_Camera ortho = fl_camera_default();
+    ortho.perspective = false; ortho.ortho_height = 1080; ortho.near_z = 0.5; ortho.far_z = 20000;
+    Fl_Mat4 vp = fl_camera_view_proj(&cam, &ortho, 0, 0, 1920, 1080);
+    Fl_Vec3 mid = fl_mat4_point(vp, (Fl_Vec3){960, 540, 0});
+    Fl_Vec3 corner = fl_mat4_point(vp, (Fl_Vec3){0, 0, 0});
+    Fl_Vec3 parked = fl_mat4_point(vp, (Fl_Vec3){960, 540, 1080});
+    CHECK(fabs(mid.x) < 1e-4 && fabs(mid.y) < 1e-4 && mid.z > 0 && mid.z < 1);
+    CHECK(fabs(corner.x + 1) < 1e-3 && fabs(corner.y + 1) < 1e-3 && corner.z > 0 && corner.z < 1);
+    CHECK(parked.z < 0);
     fl_project_destroy(project);
     return FLOW_TEST_RESULT("fl_scene_frame_tests");
 }

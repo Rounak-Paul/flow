@@ -64,7 +64,8 @@ bool fl_mesh_decode(const Fl_Component *component, Fl_MeshShape *out);
 typedef struct Fl_Scene Fl_Scene;
 typedef struct Fl_SceneState Fl_SceneState;
 
-/* View-projection for a camera entity. Orthographic cameras with ortho_height 0 use the scene frame. */
+/* View-projection for a camera entity. A positive ortho_height looks along the camera's local -Z;
+   near and far are distances along that axis. ortho_height 0 keeps the scene frame. */
 Fl_Mat4 fl_camera_view_proj(const Fl_Pose *pose, const Fl_Camera *camera, double frame_x, double frame_y, double frame_width, double frame_height);
 /* Scene-frame orthographic camera used when no camera entity is active. */
 Fl_Mat4 fl_camera_frame(double frame_x, double frame_y, double frame_width, double frame_height);

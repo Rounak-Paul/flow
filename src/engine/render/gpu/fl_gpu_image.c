@@ -22,9 +22,9 @@ struct Fl_GpuImage {
 Fl_GpuImage *fl_gpu_image_create(Fl_GpuImages *device, Fl_GpuImageFormat format, const unsigned char *pixels,
                                  uint32_t w, uint32_t h)
 {
-    if (!device || !pixels || !w || !h || (format != FL_GPU_IMAGE_COVERAGE && format != FL_GPU_IMAGE_SRGBA)) return NULL;
-    const VkDeviceSize texel = format == FL_GPU_IMAGE_SRGBA ? 4 : 1, bytes = (VkDeviceSize)w * h * texel;
-    const VkFormat vk_format = format == FL_GPU_IMAGE_SRGBA ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8_UNORM;
+    if (!device || !pixels || !w || !h || (format != FL_GPU_IMAGE_COVERAGE && format != FL_GPU_IMAGE_VECTOR && format != FL_GPU_IMAGE_SRGBA)) return NULL;
+    const VkDeviceSize texel = format == FL_GPU_IMAGE_SRGBA ? 4 : format == FL_GPU_IMAGE_VECTOR ? 2 : 1, bytes = (VkDeviceSize)w * h * texel;
+    const VkFormat vk_format = format == FL_GPU_IMAGE_SRGBA ? VK_FORMAT_R8G8B8A8_SRGB : format == FL_GPU_IMAGE_VECTOR ? VK_FORMAT_R8G8_UNORM : VK_FORMAT_R8_UNORM;
     Fl_GpuImage *image = calloc(1,sizeof(*image)); if (!image) return NULL;
     image->owner=device;
     VkBuffer staging=VK_NULL_HANDLE; VmaAllocation allocation=NULL; VmaAllocationInfo mapped={0};

@@ -21,16 +21,17 @@ void fl_motion_encode(const Fl_TextMotion *motion, unsigned char out[FL_MOTION_B
 {
     Fl_TextMotion m = motion ? *motion : fl_motion_default();
     put_double(out, m.tracking); put_double(out + 8, m.stagger); put_double(out + 16, m.rise);
-    put_double(out + 24, m.fade); put_double(out + 32, m.duration);
+    put_double(out + 24, m.fade); put_double(out + 32, m.duration); put_double(out + 40, m.delay);
 }
 
 bool fl_motion_decode(const Fl_Component *c, Fl_TextMotion *out)
 {
     if (!c || !out || c->type != FL_COMPONENT_TEXT_MOTION || c->version != 1 || c->size != FL_MOTION_BYTES || !c->data) return false;
-    Fl_TextMotion m = {get_double(c->data), get_double(c->data + 8), get_double(c->data + 16), get_double(c->data + 24), get_double(c->data + 32)};
+    Fl_TextMotion m = {get_double(c->data), get_double(c->data + 8), get_double(c->data + 16), get_double(c->data + 24), get_double(c->data + 32), get_double(c->data + 40)};
     if (!isfinite(m.tracking) || fabs(m.tracking) > 512 || !isfinite(m.stagger) || m.stagger < 0 || m.stagger > 10 ||
         !isfinite(m.rise) || fabs(m.rise) > 2000 || !isfinite(m.fade) || m.fade < 0 || m.fade > 1 ||
-        !isfinite(m.duration) || m.duration < 0 || m.duration > 30) return false;
+        !isfinite(m.duration) || m.duration < 0 || m.duration > 30 ||
+        !isfinite(m.delay) || m.delay < 0 || m.delay > 100000) return false;
     *out = m;
     return true;
 }

@@ -9,7 +9,10 @@
 
 static unsigned sample_channels(const Fl_Component *component)
 {
-    return component && component->version == 1 ? FL_SAMPLED_CHANNELS_V1 : (unsigned)FL_PROP_COUNT;
+    if (!component) return 0;
+    if (component->version == 1) return FL_SAMPLED_CHANNELS_V1;
+    if (component->version == 2) return FL_SAMPLED_CHANNELS_V2;
+    return (unsigned)FL_PROP_COUNT;
 }
 static size_t sample_record(const Fl_Component *component)
 {
@@ -25,7 +28,7 @@ static uint64_t sample_word(const unsigned char *bytes)
 /* Borrow the checked record table shape before random access. */
 static bool sample_shape(const Fl_Component *component, size_t *count, bool *text)
 {
-    if (!component || component->type!=FL_COMPONENT_SAMPLED || (component->version!=1 && component->version!=FL_SAMPLED_ANIMATION_VERSION) || !component->data || component->size<SAMPLE_HEADER || component->size>FL_SAMPLED_ANIMATION_LIMIT) return false;
+    if (!component || component->type!=FL_COMPONENT_SAMPLED || (component->version!=1 && component->version!=2 && component->version!=FL_SAMPLED_ANIMATION_VERSION) || !component->data || component->size<SAMPLE_HEADER || component->size>FL_SAMPLED_ANIMATION_LIMIT) return false;
     uint64_t n=sample_word(component->data), flags=sample_word(component->data+8);
     size_t record=sample_record(component);
     if (!n || n>FL_SAMPLED_ANIMATION_KEYS || flags>1 || n>(component->size-SAMPLE_HEADER)/record) return false;
@@ -144,7 +147,7 @@ bool fl_sampled_animation_read(Fl_Json *context, const cJSON *samples, Fl_Compon
     size_t count=cJSON_IsArray(samples) ? (size_t)cJSON_GetArraySize(samples) : 0;
     if (!count || count>FL_SAMPLED_ANIMATION_KEYS) return fl_json_fail(context,"Invalid sampled animation count");
     Fl_SampledKey *keys=calloc(count,sizeof(*keys)); if (!keys) return fl_json_fail(context,"Cannot allocate sampled poses");
-    char fields[2048]="text";
+    char fields[4096]="text";
     for (int p=0;p<FL_PROP_COUNT;++p) {strcat(fields," "); strcat(fields,fl_property_name((Fl_AnimProperty)p));}
     bool valid=true,has_text=false; const char *text=NULL; size_t index=0;
     for (const cJSON *sample=samples->child;valid && sample;sample=sample->next,++index) {

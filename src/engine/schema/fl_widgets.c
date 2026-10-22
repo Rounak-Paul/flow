@@ -29,7 +29,7 @@ static const Fl_WidgetDef definitions[FL_WIDGET_COUNT] = {
     {FL_WIDGET_DIAMOND, "Diamond", "Rhombus, for decisions and highlights", k_pose, {240,240,0}, {{168,124,232,255},{230,233,238,255},0,48}, true,true,false,false,false},
     {FL_WIDGET_HEXAGON, "Hexagon", "Regular six-sided shape", k_pose, {260,225,0}, {{72,190,200,255},{230,233,238,255},0,48}, true,true,false,false,false},
     {FL_WIDGET_STAR, "Star", "Five-pointed star", k_pose, {240,240,0}, {{245,200,66,255},{230,233,238,255},0,48}, true,true,false,false,false},
-    {FL_WIDGET_PATH, "Path", "Stroked cubic path", k_pose, {360,180,0}, {{230,233,238,255},{230,233,238,255},4,48}, false,true,false,false,false},
+    {FL_WIDGET_PATH, "Path", "Cubic curve. Stroke paints the trim; fill paints the interior when the curve closes", k_pose, {360,180,0}, {{230,233,238,0},{230,233,238,255},4,48}, true,true,false,false,false},
     {FL_WIDGET_EFFECT, "Effect", "Procedural shader fill", k_pose, {640,360,0}, {{91,156,255,255},{232,112,92,255},0,48}, true,true,false,false,false},
 };
 static const Fl_Typography default_typography = {FL_TYPOGRAPHY_DEFAULT_FAMILY, 400, false};

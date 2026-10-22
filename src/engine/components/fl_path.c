@@ -122,9 +122,9 @@ unsigned char *fl_path_raster(const Fl_Path *path, double width, double height, 
     size_t raw_count = 0, kept_count = 0;
     flatten(path, raw, &raw_count, FL_CURVE_MAX * 12);
     trim_segs(raw, raw_count, path->trim_start, path->trim_end, kept, &kept_count);
-    unsigned char *pixels = calloc((size_t)w * h, 1);
+    unsigned char *pixels = calloc((size_t)w * h, 2);
     if (!pixels) return NULL;
-    double sw = fmax(stroke, 1.0) * scale;
+    double sw = stroke > 0 ? fmax(stroke * scale, 1.0) : 0;
     for (uint32_t y = 0; y < h; ++y) for (uint32_t x = 0; x < w; ++x) {
         double px = ((double)x + 0.5) / scale, py = ((double)y + 0.5) / scale, best = 1e9;
         int wind = 0;
@@ -140,12 +140,12 @@ unsigned char *fl_path_raster(const Fl_Path *path, double width, double height, 
                 if (px < ix) wind ^= 1;
             }
         }
-        double cover = 0;
-        if (wind) cover = 1;
-        if (sw > 0 && best < sw * 0.5 + 1) cover = fmax(cover, 1 - fmax(0, (best - sw * 0.5) ));
-        if (cover < 0) cover = 0;
-        if (cover > 1) cover = 1;
-        pixels[(size_t)y * w + x] = (unsigned char)lround(cover * 255);
+        double edge = sw > 0 && best < sw * 0.5 + 1 ? 1 - fmax(0, best - sw * 0.5) : 0;
+        if (edge < 0) edge = 0;
+        if (edge > 1) edge = 1;
+        unsigned char *pxl = pixels + ((size_t)y * w + x) * 2;
+        pxl[0] = wind ? 255 : 0;
+        pxl[1] = (unsigned char)lround(edge * 255);
     }
     *out_w = w; *out_h = h;
     return pixels;

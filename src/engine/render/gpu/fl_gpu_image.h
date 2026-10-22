@@ -9,6 +9,7 @@ typedef struct Fl_GpuImages Fl_GpuImages;
 typedef struct Fl_GpuImage Fl_GpuImage;
 typedef enum Fl_GpuImageFormat {
     FL_GPU_IMAGE_COVERAGE,      /* 8-bit linear coverage mask */
+    FL_GPU_IMAGE_VECTOR,        /* 8-bit fill coverage, then stroke coverage */
     FL_GPU_IMAGE_SRGBA          /* straight-alpha sRGB RGBA8 picture */
 } Fl_GpuImageFormat;
 

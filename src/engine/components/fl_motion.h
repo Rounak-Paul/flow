@@ -1,7 +1,7 @@
 #pragma once
 #include "fl_component.h"
 
-#define FL_MOTION_BYTES 40u
+#define FL_MOTION_BYTES 48u
 
 /* Kinetic type on one text entity. Glyphs stay in the shaped run. */
 typedef struct Fl_TextMotion {
@@ -10,6 +10,7 @@ typedef struct Fl_TextMotion {
     double rise;        /* pixels a glyph travels as it enters */
     double fade;        /* 0 keeps the glyph opaque; 1 fades it in with the entrance */
     double duration;    /* seconds of each glyph's entrance */
+    double delay;       /* scene seconds before the first glyph starts; set it to now to replay */
 } Fl_TextMotion;
 
 Fl_TextMotion fl_motion_default(void);

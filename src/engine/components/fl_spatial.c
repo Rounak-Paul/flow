@@ -160,7 +160,19 @@ Fl_Mat4 fl_camera_view_proj(const Fl_Pose *pose, const Fl_Camera *camera, double
         double height = c.ortho_height;
         double width = frame_height > 0 ? height * frame_width / frame_height : height;
         Fl_Pose p = pose ? *pose : fl_pose_identity();
-        return fl_mat4_ortho(p.x - width * 0.5, p.x + width * 0.5, p.y - height * 0.5, p.y + height * 0.5, c.near_z, c.far_z);
+        if (p.sx == 0) p.sx = 1;
+        if (p.sy == 0) p.sy = 1;
+        if (p.sz == 0) p.sz = 1;
+        double span = c.far_z - c.near_z;
+        Fl_Mat4 proj = {0};
+        proj.m[0] = width != 0 ? 2 / width : 0;
+        proj.m[5] = height != 0 ? 2 / height : 0;
+        proj.m[10] = span != 0 ? -1 / span : 0;
+        proj.m[14] = span != 0 ? -c.near_z / span : 0;
+        proj.m[15] = 1;
+        Fl_Mat4 view, world = fl_pose_model(&p);
+        if (!fl_mat4_inverse(world, &view)) view = fl_mat4_identity();
+        return fl_mat4_mul(proj, view);
     }
     Fl_Mat4 view, world = fl_pose_model(pose ? pose : &(Fl_Pose){.sx = 1, .sy = 1, .sz = 1});
     if (!fl_mat4_inverse(world, &view)) view = fl_mat4_identity();

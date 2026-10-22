@@ -160,7 +160,7 @@ static bool configure(Ctx *x, const Fl_Scene *scene, const Fl_Entity *e, const c
         "radius", "fill2", "gradient_angle", "shadow_blur", "shadow_x", "shadow_y", "shadow_color", "align",
         "start", "offset", "rate", "loop", "crop", "clip", "blur", "bloom",
         "pivot_x", "pivot_y", "pivot_z", "glow", "blend", "radial", "gradient_mid", "gradient_mid_pos",
-        "tracking", "stagger", "rise", "text_fade", "text_duration", "trim_start", "trim_end", "commands",
+        "tracking", "stagger", "rise", "text_fade", "text_duration", "text_delay", "trim_start", "trim_end", "commands",
         "vignette", "grain", "lift", "gamma", "gain",
         "life", "size", "speed", "size_end", "gravity", "spread", "burst", "particle_blend", "force_x", "force_y", "force_z", "color_end",
         "effect_kind", "u0", "u1", "u2", "u3", "u4", "u5", "u6", "u7", "source", NULL};
@@ -380,12 +380,12 @@ static bool configure(Ctx *x, const Fl_Scene *scene, const Fl_Entity *e, const c
         fl_style_encode(&style, style_bytes);
         components[count++] = (Fl_Component){.type = FL_COMPONENT_STYLE, .version = 1, .size = FL_STYLE_BYTES, .data = style_bytes};
     }
-    if (def && def->has_text && (cJSON_GetObjectItemCaseSensitive(props, "tracking") || cJSON_GetObjectItemCaseSensitive(props, "stagger") || cJSON_GetObjectItemCaseSensitive(props, "rise") || cJSON_GetObjectItemCaseSensitive(props, "text_fade") || cJSON_GetObjectItemCaseSensitive(props, "text_duration") || fl_entity_component(e, FL_COMPONENT_TEXT_MOTION))) {
+    if (def && def->has_text && (cJSON_GetObjectItemCaseSensitive(props, "tracking") || cJSON_GetObjectItemCaseSensitive(props, "stagger") || cJSON_GetObjectItemCaseSensitive(props, "rise") || cJSON_GetObjectItemCaseSensitive(props, "text_fade") || cJSON_GetObjectItemCaseSensitive(props, "text_duration") || cJSON_GetObjectItemCaseSensitive(props, "text_delay") || fl_entity_component(e, FL_COMPONENT_TEXT_MOTION))) {
         Fl_TextMotion motion = fl_motion_default();
         fl_motion_decode(fl_entity_component(e, FL_COMPONENT_TEXT_MOTION), &motion);
-        static const char *const motion_keys[] = {"tracking", "stagger", "rise", "text_fade", "text_duration"};
-        double *motion_fields[] = {&motion.tracking, &motion.stagger, &motion.rise, &motion.fade, &motion.duration};
-        for (size_t i = 0; i < 5; ++i) {
+        static const char *const motion_keys[] = {"tracking", "stagger", "rise", "text_fade", "text_duration", "text_delay"};
+        double *motion_fields[] = {&motion.tracking, &motion.stagger, &motion.rise, &motion.fade, &motion.duration, &motion.delay};
+        for (size_t i = 0; i < 6; ++i) {
             if (!agent_get_number(props, motion_keys[i], false, &number, &present, f, ctx)) return false;
             if (present) *motion_fields[i] = number;
         }

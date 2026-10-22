@@ -2,9 +2,10 @@
 #include "fl_animation.h"
 #include "doc/fl_json.h"
 
-#define FL_SAMPLED_ANIMATION_VERSION 2u
-/* Version 1 clips stored every channel except aspect_w and aspect_h. */
+#define FL_SAMPLED_ANIMATION_VERSION 3u
+/* Version 1 clips stored every channel except aspect_w and aspect_h. Version 2 predates text_delay. */
 #define FL_SAMPLED_CHANNELS_V1 51u
+#define FL_SAMPLED_CHANNELS_V2 88u
 #define FL_SAMPLED_ANIMATION_LIMIT (32u * 1024u * 1024u)
 #define FL_SAMPLED_ANIMATION_KEYS 32768u
 /* One sampled native pose. Text is a borrowed UTF-8 slice when the clip owns text output. */

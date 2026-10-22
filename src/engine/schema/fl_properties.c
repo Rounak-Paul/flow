@@ -92,6 +92,7 @@ static const Fl_PropertyDef properties[FL_PROP_COUNT] = {
     [FL_PROP_U5] = {"u5", "U5", "effect", FL_COMPONENT_EFFECT, "effect", "u5", 1, -1e6, 1e6},
     [FL_PROP_U6] = {"u6", "U6", "effect", FL_COMPONENT_EFFECT, "effect", "u6", 1, -1e6, 1e6},
     [FL_PROP_U7] = {"u7", "U7", "effect", FL_COMPONENT_EFFECT, "effect", "u7", 1, -1e6, 1e6},
+    [FL_PROP_TEXT_DELAY] = {"text_delay", "Delay", "text_motion", FL_COMPONENT_TEXT_MOTION, "motion", "delay", 1, 0, 100000},
 };
 
 const Fl_PropertyDef *fl_property_definition(Fl_AnimProperty property)
@@ -129,7 +130,7 @@ bool fl_property_supported(const Fl_Entity *entity, Fl_AnimProperty property)
     if (property >= FL_PROP_EMIT_RATE && property <= FL_PROP_PARTICLE_COLOR) return fl_entity_component(entity, FL_COMPONENT_PARTICLES) != NULL;
     if (property == FL_PROP_BLOOM || (property >= FL_PROP_VIGNETTE && property <= FL_PROP_GAIN)) return fl_entity_component(entity, FL_COMPONENT_POST) != NULL;
     if (property == FL_PROP_TRIM_START || property == FL_PROP_TRIM_END) return fl_entity_component(entity, FL_COMPONENT_PATH) != NULL;
-    if (property >= FL_PROP_TRACKING && property <= FL_PROP_TEXT_DURATION) {
+    if (property == FL_PROP_TEXT_DELAY || (property >= FL_PROP_TRACKING && property <= FL_PROP_TEXT_DURATION)) {
         const Fl_WidgetDef *text = fl_widget_for_entity(entity);
         return text && text->has_text;
     }
