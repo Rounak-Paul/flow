@@ -67,12 +67,13 @@ typedef struct Fl_SceneState Fl_SceneState;
 /* View-projection for a camera entity. A positive ortho_height looks along the camera's local -Z;
    near and far are distances along that axis. ortho_height 0 keeps the scene frame. */
 Fl_Mat4 fl_camera_view_proj(const Fl_Pose *pose, const Fl_Camera *camera, double frame_x, double frame_y, double frame_width, double frame_height);
-/* Scene-frame orthographic camera used when no camera entity is active. */
+/* Orthographic projection of one scene rectangle. An orthographic camera with ortho_height 0 uses this. */
 Fl_Mat4 fl_camera_frame(double frame_x, double frame_y, double frame_width, double frame_height);
-/* Active camera, or the scene frame when none is visible. right/up are billboard axes. bloom is the camera post strength. */
-void fl_scene_camera(const Fl_Scene *scene, const Fl_SceneState *state, double frame_x, double frame_y,
+/* The first visible camera. False when the scene has none; outputs are written only on success.
+   right/up are billboard axes. bloom is the camera post strength. */
+bool fl_scene_camera(const Fl_Scene *scene, const Fl_SceneState *state, double frame_x, double frame_y,
                      double frame_width, double frame_height, Fl_Mat4 *view_proj, Fl_Vec3 *right, Fl_Vec3 *up, double *bloom);
-/* The first visible camera entity. False when the view is the scene frame. */
+/* The first visible camera entity. False when the scene has none. */
 bool fl_scene_view_camera(const Fl_Scene *scene, const Fl_SceneState *state, Fl_Pose *pose, Fl_Camera *camera, double *bloom);
 /* One camera entity, including a hidden one chosen from the viewport. False when id is not a camera. */
 bool fl_scene_camera_entity(const Fl_Scene *scene, const Fl_SceneState *state, Fl_Id id, Fl_Pose *pose, Fl_Camera *camera, double *bloom);

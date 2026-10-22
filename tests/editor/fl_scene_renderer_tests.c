@@ -58,19 +58,47 @@ static Fl_Id make(Fl_Project *p, Fl_Id scene, Fl_WidgetKind kind, double x, doub
     return id;
 }
 
-/* The picture ratio belongs to a camera. */
-static void picture_aspect(Fl_Project *p, Fl_Id scene, unsigned w, unsigned h)
+static void write_camera(Fl_Project *p, Fl_Id scene, Fl_Id id, const Fl_Component *component, const Fl_Camera *camera)
+{
+    unsigned char bytes[FL_CAMERA_BYTES];
+    fl_camera_encode(camera, bytes);
+    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_COMPONENT_SET, .scene = scene, .entity = id,
+        .component = {.type = FL_COMPONENT_CAMERA, .version = 1, .size = FL_CAMERA_BYTES, .data = bytes, .id = component->id}}, NULL));
+}
+
+/* Orthographic camera that frames the canvas. Scene output draws only through a camera entity. */
+static void frame_camera(Fl_Project *p, Fl_Id scene)
 {
     Fl_Id id = 0;
     CHECK(fl_spatial_create(p, scene, 0, "camera", 0, 0, 0, &id));
     const Fl_Component *component = fl_entity_component(fl_scene_entity(fl_project_scene(p, scene), id), FL_COMPONENT_CAMERA);
     Fl_Camera camera;
     CHECK(component && fl_camera_decode(component, &camera));
+    camera.perspective = false; camera.ortho_height = 0;
+    write_camera(p, scene, id, component, &camera);
+}
+
+/* The picture ratio belongs to the scene's camera. */
+static void picture_aspect(Fl_Project *p, Fl_Id scene, unsigned w, unsigned h)
+{
+    const Fl_Scene *s = fl_project_scene(p, scene);
+    const Fl_Entity *entity = NULL;
+    const Fl_Component *component = NULL;
+    for (size_t i = 0; s && i < s->entity_count; ++i) {
+        const Fl_Component *found = fl_entity_component(&s->entities[i], FL_COMPONENT_CAMERA);
+        if (!found || !s->entities[i].visible) continue;
+        entity = &s->entities[i]; component = found; break;
+    }
+    Fl_Id id = entity ? entity->id : 0;
+    if (!entity) {
+        CHECK(fl_spatial_create(p, scene, 0, "camera", 0, 0, 0, &id));
+        entity = fl_scene_entity(fl_project_scene(p, scene), id);
+        component = fl_entity_component(entity, FL_COMPONENT_CAMERA);
+    }
+    Fl_Camera camera;
+    CHECK(component && fl_camera_decode(component, &camera));
     camera.aspect_w = w; camera.aspect_h = h;
-    unsigned char bytes[FL_CAMERA_BYTES];
-    fl_camera_encode(&camera, bytes);
-    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_COMPONENT_SET, .scene = scene, .entity = id,
-        .component = {.type = FL_COMPONENT_CAMERA, .version = 1, .size = FL_CAMERA_BYTES, .data = bytes, .id = component->id}}, NULL));
+    write_camera(p, scene, id, component, &camera);
 }
 
 /* Verify generated video pixels and prototype audio through the captured-resource export pipeline. */
@@ -109,6 +137,7 @@ static void test_media(Fl_SceneRenderer *renderer, Fl_Project *project, Fl_Event
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_SCENE_ADD,.name="Media composition"},&destination));
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_SCENE_SETTINGS,.scene=destination,.width=100,.height=100,.duration=2*FL_TICKS_PER_SECOND},NULL));
     CHECK(fl_prototype_instantiate(project,destination,0,prototype,0,0,&owner));
+    frame_camera(project, destination);
     Fl_Id hidden=0;
     CHECK(fl_widget_create(project,destination,0,FL_WIDGET_ENTITY,0,0,&hidden));
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_VISIBLE,.scene=destination,.entity=hidden,.visible=false},NULL));
@@ -167,6 +196,11 @@ int main(int argc, char **argv)
     make(p, scene_id, FL_WIDGET_DIAMOND, 1700, 700, 200, 200, red);
     make(p, scene_id, FL_WIDGET_STAR, 200, 850, 200, 200, red);
     make(p, scene_id, FL_WIDGET_HEXAGON, 600, 800, 260, 225, red);
+    scene = fl_project_scene(p, scene_id);
+    CHECK(fl_scene_renderer_render(renderer, p, scene, 0, 960, &frame));
+    CHECK(near(at(&frame, 200, 100), 25, 31, 47, 1));
+    fl_frame_free(&frame);
+    frame_camera(p, scene_id);
     scene = fl_project_scene(p, scene_id);
     CHECK(fl_scene_renderer_render(renderer, p, scene, 0, 960, &frame));
     CHECK(near(at(&frame, 200, 100), 255, 0, 0, 1) && near(at(&frame, 98, 48), 25, 31, 47, 1) && near(at(&frame, 303, 153), 25, 31, 47, 1));
@@ -299,6 +333,7 @@ int main(int argc, char **argv)
                 .components = components, .component_count = i == 0 ? 3 : 4}, NULL));
         }
     }
+    frame_camera(p, effects_scene);
     scene = fl_project_scene(p, effects_scene);
     CHECK(fl_scene_renderer_render(renderer, p, scene, 0, 960, &frame));
     CHECK(near(at(&frame, 300, 225), 255, 0, 0, 1) && near(at(&frame, 180, 225), 25, 31, 47, 1) && near(at(&frame, 300, 100), 25, 31, 47, 1));
@@ -382,6 +417,7 @@ int main(int argc, char **argv)
     Fl_Component behavior={0}; CHECK(fl_script_encode(&(Fl_Script){.script=simulated_asset,.enabled=true},&behavior));
     CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_COMPONENT_SET,.scene=simulated_scene,.entity=simulated_entity,.component=behavior},NULL));
     fl_component_clear(&behavior);
+    frame_camera(p, simulated_scene);
     const Fl_Scene *simulation=fl_project_scene(p,simulated_scene);
     Fl_Frame expected={0}, repeated={0};
     CHECK(fl_scene_renderer_render(renderer,p,simulation,FL_TICKS_PER_SECOND,100,&expected));
@@ -403,6 +439,7 @@ int main(int argc, char **argv)
     CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_SCENE_ADD,.name="Composition"},&composition_scene));
     CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_SCENE_SETTINGS,.scene=composition_scene,.width=100,.height=100,.duration=5*FL_TICKS_PER_SECOND},NULL));
     CHECK(fl_prototype_instantiate(p,composition_scene,0,prototype,40,0,&instance_entity));
+    frame_camera(p, composition_scene);
     CHECK(fl_scene_renderer_render(renderer,p,fl_project_scene(p,composition_scene),FL_TICKS_PER_SECOND,100,&repeated));
     if (repeated.rgba) CHECK(near(at(&repeated,50,5),255,0,0,1) && !near(at(&repeated,35,5),255,0,0,1));
     fl_frame_free(&repeated);
@@ -415,6 +452,7 @@ int main(int argc, char **argv)
     CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_ENTITY_ADD,.scene=generator_scene,.name="Generator owner"},&generator_entity));
     CHECK(fl_script_encode(&(Fl_Script){.script=generator_asset,.enabled=true},&behavior));
     CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_COMPONENT_SET,.scene=generator_scene,.entity=generator_entity,.component=behavior},NULL)); fl_component_clear(&behavior);
+    frame_camera(p, generator_scene);
     CHECK(fl_scene_renderer_render(renderer,p,fl_project_scene(p,generator_scene),FL_TICKS_PER_SECOND,100,&repeated));
     if (repeated.rgba) CHECK(near(at(&repeated,15,5),255,0,0,1) && !near(at(&repeated,5,5),255,0,0,1));
     fl_frame_free(&repeated);

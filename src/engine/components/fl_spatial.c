@@ -267,23 +267,17 @@ bool fl_scene_view_camera(const Fl_Scene *scene, const Fl_SceneState *state, Fl_
     return false;
 }
 
-void fl_scene_camera(const Fl_Scene *scene, const Fl_SceneState *state, double frame_x, double frame_y, double frame_width, double frame_height,
+bool fl_scene_camera(const Fl_Scene *scene, const Fl_SceneState *state, double frame_x, double frame_y, double frame_width, double frame_height,
                      Fl_Mat4 *view_proj, Fl_Vec3 *right, Fl_Vec3 *up, double *bloom)
 {
-    Fl_Mat4 vp = fl_camera_frame(frame_x, frame_y, frame_width, frame_height);
-    Fl_Vec3 cam_right = {1, 0, 0}, cam_up = {0, 1, 0};
-    double strength = 0;
-    Fl_Pose pose = fl_pose_identity(); Fl_Camera camera;
-    if (fl_scene_view_camera(scene, state, &pose, &camera, &strength)) {
-        Fl_Mat4 axes = fl_pose_model(&pose);
-        cam_right = (Fl_Vec3){axes.m[0], axes.m[1], axes.m[2]};
-        cam_up = (Fl_Vec3){axes.m[4], axes.m[5], axes.m[6]};
-        vp = fl_camera_view_proj(&pose, &camera, frame_x, frame_y, frame_width, frame_height);
-    }
-    if (view_proj) *view_proj = vp;
-    if (right) *right = cam_right;
-    if (up) *up = cam_up;
+    Fl_Pose pose = fl_pose_identity(); Fl_Camera camera; double strength = 0;
+    if (!fl_scene_view_camera(scene, state, &pose, &camera, &strength)) return false;
+    Fl_Mat4 axes = fl_pose_model(&pose);
+    if (view_proj) *view_proj = fl_camera_view_proj(&pose, &camera, frame_x, frame_y, frame_width, frame_height);
+    if (right) *right = (Fl_Vec3){axes.m[0], axes.m[1], axes.m[2]};
+    if (up) *up = (Fl_Vec3){axes.m[4], axes.m[5], axes.m[6]};
     if (bloom) *bloom = strength;
+    return true;
 }
 
 Fl_SceneFrame fl_scene_gate(const Fl_Scene *scene, const Fl_SceneState *state)

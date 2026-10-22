@@ -1690,13 +1690,14 @@ bool fl_scene_renderer_render(Fl_SceneRenderer *p, const Fl_Project *project, co
         fl_scene_renderer_sync_uniforms(p, cmd);
         vkCmdBeginRendering(cmd, &info);
         Fl_Mat4 view; Fl_Vec3 right, up; double bloom = 0;
-        fl_scene_camera(scene, state, frame.x, frame.y, frame.width, frame.height, &view, &right, &up, &bloom);
-        fl_scene_renderer_set_view(p, view, right, up, bloom);
-        ok = fl_scene_renderer_begin(p, cmd, format, w, h, true);
-        if (ok) {
-            fl_scene_renderer_background(p, cmd, &frame, &frame, scene->background);
-            Fl_RenderTarget target = {.view = o.view, .format = format, .width = w, .height = h, .image = o.image, .depth = depth};
-            fl_scene_renderer_entities(p, cmd, &target, &frame, scene, state, &geometry);
+        if (fl_scene_camera(scene, state, frame.x, frame.y, frame.width, frame.height, &view, &right, &up, &bloom)) {
+            fl_scene_renderer_set_view(p, view, right, up, bloom);
+            ok = fl_scene_renderer_begin(p, cmd, format, w, h, true);
+            if (ok) {
+                fl_scene_renderer_background(p, cmd, &frame, &frame, scene->background);
+                Fl_RenderTarget target = {.view = o.view, .format = format, .width = w, .height = h, .image = o.image, .depth = depth};
+                fl_scene_renderer_entities(p, cmd, &target, &frame, scene, state, &geometry);
+            }
         }
         vkCmdEndRendering(cmd);
         transition(cmd, o.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,

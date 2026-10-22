@@ -111,6 +111,7 @@ float fl_scene_renderer_linear(unsigned char value);
 /*
  * Render scene at tick into an RGBA8 image width pixels wide (height from the target frame's aspect), entirely
  * offscreen: independent of any window or what the editor shows. Blocks until the GPU finishes.
+ * With no visible camera the image is the backdrop only; scene content is drawn through a camera entity.
  */
 bool fl_scene_renderer_render(Fl_SceneRenderer *renderer, const Fl_Project *project, const Fl_Scene *scene, Fl_Tick tick,
                               uint32_t width, Fl_Frame *out);
