@@ -2,6 +2,7 @@
 #include "components/fl_script.h"
 #include "project/fl_project.h"
 #include "time/fl_scene_state.h"
+#include "schema/fl_widgets.h"
 #include <math.h>
 #include <string.h>
 
@@ -21,6 +22,27 @@ static bool attach(Fl_Project *project, Fl_Id scene, Fl_Id entity, Fl_Id asset, 
     Fl_Component component={0}; if (!fl_script_encode(&script,&component)) return false;
     bool ok=fl_project_apply(project,&(Fl_Op){.kind=FL_OP_COMPONENT_SET,.scene=scene,.entity=entity,.component=component},id);
     fl_component_clear(&component); return ok;
+}
+
+/* Text is beyond bit 31: failures must propagate without aliasing numeric channels. */
+static void test_text_failure_channels(Fl_Project *project)
+{
+    Fl_Id scene=0,entity=0,first=0,dependent=0,independent=0;
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_SCENE_ADD,.name="Text failure channels"},&scene));
+    CHECK(fl_widget_create(project,scene,0,FL_WIDGET_TEXT,0,0,&entity));
+    Fl_Id bad=module(project,"Failed text writer","return {outputs={self={text='replace'}},sample=function(ctx) ctx.entity.text='bad';error('failed text') end}");
+    Fl_Id later=module(project,"Dependent text writer","return {outputs={self={text='replace'}},sample=function(ctx) ctx.entity.text='must not run' end}");
+    Fl_Id numeric=module(project,"Independent numeric writer","return {outputs={self={x='replace'}},sample=function(ctx) ctx.entity.pose.x=42 end}");
+    CHECK(attach(project,scene,entity,bad,0,0,&first));
+    CHECK(attach(project,scene,entity,later,1,0,&dependent));
+    CHECK(attach(project,scene,entity,numeric,1,0,&independent));
+    Fl_SceneState state={0};
+    CHECK(fl_scene_state_update(&state,fl_project_scene(project,scene),120000));
+    CHECK(strstr(fl_script_runtime_component_error(fl_scene_state_scripts(&state),first),"failed text"));
+    CHECK(strstr(fl_script_runtime_component_error(fl_scene_state_scripts(&state),dependent),"Upstream"));
+    CHECK(!fl_script_runtime_component_error(fl_scene_state_scripts(&state),independent)[0]);
+    CHECK(!state.entities[0].text_override && state.entities[0].pose.x==42);
+    fl_scene_state_clear(&state);
 }
 
 int main(int argc, char **argv)
@@ -62,6 +84,7 @@ int main(int argc, char **argv)
     CHECK(strstr(fl_script_runtime_component_error(fl_scene_state_scripts(&state),reader),"Upstream"));
     CHECK(state.entities[1].pose.x==0);
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ASSET_SOURCE_SET,.source_kind=FL_ASSET_LUA,.asset=low_asset,.source=low,.source_size=strlen(low)},NULL));
+    test_text_failure_channels(project);
     CHECK(fl_project_save(project)); fl_scene_state_clear(&state); fl_project_destroy(project);
     project=fl_project_open(argv[1],NULL); CHECK(project);
     if (project) {

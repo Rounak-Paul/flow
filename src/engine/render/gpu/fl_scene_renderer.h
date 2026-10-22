@@ -116,6 +116,14 @@ float fl_scene_renderer_linear(unsigned char value);
 bool fl_scene_renderer_render(Fl_SceneRenderer *renderer, const Fl_Project *project, const Fl_Scene *scene, Fl_Tick tick,
                               uint32_t width, Fl_Frame *out);
 
+/* Wall-clock phase costs of the latest synchronous offscreen frame, in milliseconds.
+   gpu_wait includes command submission and the host's GPU completion fence, not timestamp-query GPU time. */
+typedef struct Fl_RenderStats {
+    double evaluation_ms, prepare_ms, record_ms, gpu_wait_ms, readback_ms, total_ms;
+} Fl_RenderStats;
+/* Snapshot timing counters; all zeros before the first offscreen frame. */
+Fl_RenderStats fl_scene_renderer_stats(const Fl_SceneRenderer *renderer);
+
 /* Borrow the latest offscreen render failure diagnostic; empty after a successful render. */
 const char *fl_scene_renderer_error(const Fl_SceneRenderer *renderer);
 

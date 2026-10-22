@@ -22,6 +22,10 @@ typedef struct Fl_ExportStatus {
     double crossfade;           /* seconds applied between scenes; 0 when a single scene ignores it */
     size_t scene_count;
     double elapsed_seconds;
+    double preparation_seconds; /* capture/resource/audio/encoder startup, excluded from render throughput */
+    double render_seconds;      /* wall time after rendering begins, including encoder backpressure */
+    double gpu_wait_seconds;    /* summed synchronous GPU submission/fence waits */
+    double frames_per_second;  /* observed render-pipeline throughput; zero before eight completed submissions */
     char path[FL_PATH_MAX];
     char message[256];          /* failure reason, or a summary when done */
 } Fl_ExportStatus;

@@ -1,3 +1,4 @@
+#include "core/fl_clock.h"
 #include "time/fl_composition.h"
 #include "fl_scene_renderer.h"
 #include "fl_gpu_image.h"
@@ -52,8 +53,14 @@ typedef struct Fl_CachedText {
     int glyph_box[FL_RASTER_GLYPHS][4];
     Fl_GpuImage *image, *glyphs[FL_RASTER_GLYPHS];
 } Fl_CachedText;
+/* Renderer-owned synchronous colour target and mapped readback allocation. */
+typedef struct Offscreen {
+    VkImage image; VmaAllocation image_memory; VkImageView view;
+    VkBuffer buffer; VmaAllocation buffer_memory; VmaAllocationInfo buffer_info;
+} Offscreen;
+static void offscreen_destroy(VmaAllocator allocator, VkDevice device, Offscreen *offscreen);
 typedef struct Fl_CachedPath { Fl_Id entity; uint64_t hash; Fl_GpuImage *image; } Fl_CachedPath;
-typedef struct Fl_EffectPipe { uint64_t hash; VkFormat format; int depth; VkPipeline pipeline; } Fl_EffectPipe;
+typedef struct Fl_EffectPipe { uint64_t hash; VkFormat format; int depth; VkPipeline pipeline; char *source; size_t source_size; } Fl_EffectPipe;
 /* Workers own copied source paths and one bounded decoded frame; no project pointers cross threads. */
 typedef struct Fl_VideoDecode {
     char path[FL_PATH_MAX];
@@ -105,6 +112,9 @@ struct Fl_SceneRenderer {
     uint64_t project_identity, render_project_identity;
     Fl_SceneState render_states[2];
     unsigned render_last;
+    Fl_RenderStats render_stats;
+    Offscreen offscreen;
+    uint32_t offscreen_width, offscreen_height;
     char error[256];
     VkDevice device;
     VkPipelineLayout layout;
@@ -154,8 +164,8 @@ struct Fl_SceneRenderer {
     double bloom, vignette, grain, lift, gamma, gain;
     Fl_CachedPath *paths;
     size_t path_count;
-    Fl_EffectPipe effects[8];
-    size_t effect_count;
+    Fl_EffectPipe *effects;
+    size_t effect_count, effect_capacity;
     float draw_mvp[16];
     float uniform_block[64];
     size_t uniform_bytes;
@@ -961,6 +971,10 @@ static void draw_entity(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_Scene
             use_model(p, v->model);
             bool custom_source = state->entities[index].effect_kind == FL_EFFECT_CUSTOM && state->entities[index].effect_source;
             VkPipeline custom = custom_source ? effect_pipeline(p, p->pass_format, p->pass_depth, state->entities[index].effect_source, state->entities[index].effect_source_size) : VK_NULL_HANDLE;
+            if (custom_source && !custom) {
+                if (!p->error[0]) snprintf(p->error,sizeof(p->error),"Cannot compile custom effect on entity %s",e->name);
+                return;
+            }
             if (custom) {load_effect_uniforms(p); vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, custom);}
             fl_scene_renderer_push(p, cmd, push, p->effect_mask ? p->effect_mask : white);
             p->uniform_bytes = 0;
@@ -1013,8 +1027,18 @@ static bool effect_samples_children(const Fl_SceneState *state, size_t index)
 static VkPipeline effect_pipeline(Fl_SceneRenderer *p, VkFormat format, bool depth, const char *source, size_t size)
 {
     uint64_t hash = fnv_bytes(source, size) ^ (uint64_t)format ^ (depth ? 1 : 0);
-    for (size_t i = 0; i < p->effect_count; ++i) if (p->effects[i].hash == hash) return p->effects[i].pipeline;
-    if (p->effect_count == 8 || size > 65536 || !p->layout) return VK_NULL_HANDLE;
+    for (size_t i = 0; i < p->effect_count; ++i) {
+        const Fl_EffectPipe *cached=&p->effects[i];
+        if (cached->hash==hash && cached->format==format && cached->depth==depth && cached->source_size==size && !memcmp(cached->source,source,size)) return cached->pipeline;
+    }
+    if (size > 65536 || !p->layout) return VK_NULL_HANDLE;
+    if (p->effect_count==p->effect_capacity) {
+        if (p->effect_capacity>SIZE_MAX/2/sizeof(*p->effects)) return VK_NULL_HANDLE;
+        size_t capacity=p->effect_capacity ? p->effect_capacity*2 : 8;
+        Fl_EffectPipe *effects=realloc(p->effects,capacity*sizeof(*effects));
+        if (!effects) return VK_NULL_HANDLE;
+        p->effects=effects; p->effect_capacity=capacity;
+    }
     bool writes_depth = depth && source_has_word(source, size, "sceneDepth");
     const char *depth_fn = writes_depth
         ? "void sceneDepth(vec3 world){vec4 c=flCam.viewProj*vec4(world,1.);gl_FragDepth=c.w!=0.?clamp(c.z/c.w,0.,1.):1.;}\n"
@@ -1066,7 +1090,10 @@ static VkPipeline effect_pipeline(Fl_SceneRenderer *p, VkFormat format, bool dep
     if (vert) vkDestroyShaderModule(p->device, vert, NULL);
     if (frag) vkDestroyShaderModule(p->device, frag, NULL);
     if (!pipeline) return VK_NULL_HANDLE;
-    p->effects[p->effect_count++] = (Fl_EffectPipe){hash, format, depth, pipeline};
+    char *copy=malloc(size ? size : 1);
+    if (!copy) {vkDestroyPipeline(p->device,pipeline,NULL); return VK_NULL_HANDLE;}
+    memcpy(copy,source,size);
+    p->effects[p->effect_count++] = (Fl_EffectPipe){hash, format, depth, pipeline,copy,size};
     return pipeline;
 }
 
@@ -1597,6 +1624,7 @@ void fl_scene_renderer_destroy(Fl_SceneRenderer *p)
     for (size_t i=0;i<p->video_count;++i) if (p->videos[i].decode) atomic_store_explicit(&p->videos[i].decode->cancel,true,memory_order_relaxed);
     for (size_t i=0;i<p->video_count;++i) if (p->videos[i].decode) {fl_job_wait(p->jobs,p->videos[i].job); release_video_decode(&p->videos[i]);}
     vkDeviceWaitIdle(p->device);
+    offscreen_destroy(p->gpu.allocator,p->device,&p->offscreen);
     for (size_t i = 0; i < p->picture_count; ++i) release_picture(&p->pictures[i]);
     for (size_t i = 0; i < p->text_count; ++i) {fl_gpu_image_destroy(p->texts[i].image); for (int g = 0; g < p->texts[i].glyph_count; ++g) fl_gpu_image_destroy(p->texts[i].glyphs[g]); free(p->texts[i].text);}
     for (size_t s = 0; s < LAYER_SLOTS; ++s) {
@@ -1613,7 +1641,8 @@ void fl_scene_renderer_destroy(Fl_SceneRenderer *p)
     if (p->ubo) vmaDestroyBuffer(p->gpu.allocator, p->ubo, p->ubo_memory);
     for (size_t i = 0; i < p->path_count; ++i) fl_gpu_image_destroy(p->paths[i].image);
     free(p->paths);
-    for (size_t i = 0; i < p->effect_count; ++i) vkDestroyPipeline(p->device, p->effects[i].pipeline, NULL);
+    for (size_t i = 0; i < p->effect_count; ++i) {vkDestroyPipeline(p->device,p->effects[i].pipeline,NULL); free(p->effects[i].source);}
+    free(p->effects);
     for (size_t i = 0; i < p->pipeline_count; ++i) vkDestroyPipeline(p->device, p->pipelines[i].pipeline, NULL);
     if (p->layout) vkDestroyPipelineLayout(p->device, p->layout, NULL);
     if (p->sample_pool) vkDestroyDescriptorPool(p->device, p->sample_pool, NULL);
@@ -1654,12 +1683,6 @@ Fl_SceneRenderer *fl_scene_renderer_snapshot(Fl_SceneRenderer *source, const Fl_
     if (!renderer) {fl_fonts_destroy(fonts); if (error && capacity) snprintf(error,capacity,"Cannot allocate export renderer"); return NULL;}
     renderer->owns_fonts=true; return renderer;
 }
-
-/* Offscreen target: a colour image and a host-readable buffer for the result. */
-typedef struct Offscreen {
-    VkImage image; VmaAllocation image_memory; VkImageView view;
-    VkBuffer buffer; VmaAllocation buffer_memory; VmaAllocationInfo buffer_info;
-} Offscreen;
 
 static void offscreen_destroy(VmaAllocator allocator, VkDevice device, Offscreen *o)
 {
@@ -1713,6 +1736,8 @@ bool fl_scene_renderer_render(Fl_SceneRenderer *p, const Fl_Project *project, co
     uint32_t w, h;
     if (!p || !project || !scene || !out || tick < 0 || !fl_frame_dimensions(scene, width, &w, &h)) return false;
     *out = (Fl_Frame){0};
+    p->render_stats=(Fl_RenderStats){0};
+    uint64_t started=fl_clock_monotonic_ns(),phase=started;
     p->error[0]=0;
     if (p->render_project_identity!=fl_project_identity(project)) {
         for (unsigned i=0;i<2;++i) fl_scene_state_clear(&p->render_states[i]);
@@ -1734,31 +1759,43 @@ bool fl_scene_renderer_render(Fl_SceneRenderer *p, const Fl_Project *project, co
         if (diagnostic[0]) {snprintf(p->error,sizeof(p->error),"%s",diagnostic); ok=false;}
     }
     ok=ok && fl_scene_geometry_update(&geometry,scene,state);
+    p->render_stats.evaluation_ms=(double)(fl_clock_monotonic_ns()-phase)/1e6;
+    phase=fl_clock_monotonic_ns();
     VmaAllocator allocator = p->gpu.allocator;
-    Offscreen o = {0};
+    Offscreen *o=&p->offscreen;
     const VkFormat format = VK_FORMAT_R8G8B8A8_SRGB;
     if (ok) {
         fl_scene_renderer_prepare(p, project, scene, state,&geometry,(double)w / frame.width, true);
+        p->render_stats.prepare_ms=(double)(fl_clock_monotonic_ns()-phase)/1e6;
+        phase=fl_clock_monotonic_ns();
+        ok=!p->video_error;
+    }
+    if (ok && (p->offscreen_width!=w || p->offscreen_height!=h || !o->view)) {
+        Offscreen fresh={0};
         VkImageCreateInfo image = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = format, .extent = {w, h, 1},
             .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
             .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
         VmaAllocationCreateInfo device_memory = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
         VkBufferCreateInfo buffer = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = (VkDeviceSize)w * h * 4, .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
         VmaAllocationCreateInfo host = {.usage = VMA_MEMORY_USAGE_AUTO, .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
-        ok = !p->video_error && vmaCreateImage(allocator, &image, &device_memory, &o.image, &o.image_memory, NULL) == VK_SUCCESS &&
-             vmaCreateBuffer(allocator, &buffer, &host, &o.buffer, &o.buffer_memory, &o.buffer_info) == VK_SUCCESS;
-        VkImageViewCreateInfo view = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = o.image, .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = format,
+        ok = !p->video_error && vmaCreateImage(allocator, &image, &device_memory, &fresh.image, &fresh.image_memory, NULL) == VK_SUCCESS &&
+             vmaCreateBuffer(allocator, &buffer, &host, &fresh.buffer, &fresh.buffer_memory, &fresh.buffer_info) == VK_SUCCESS;
+        VkImageViewCreateInfo view = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = fresh.image, .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = format,
             .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
-        ok = ok && vkCreateImageView(p->device, &view, NULL, &o.view) == VK_SUCCESS;
+        ok = ok && vkCreateImageView(p->device, &view, NULL, &fresh.view) == VK_SUCCESS;
+        if (ok) {
+            offscreen_destroy(allocator,p->device,o); *o=fresh;
+            p->offscreen_width=w; p->offscreen_height=h;
+        } else offscreen_destroy(allocator,p->device,&fresh);
     }
     ok = ok && pipeline_for(p, format, PIPE_DEPTH) != VK_NULL_HANDLE;
     VkCommandBuffer cmd = ok ? p->gpu.begin_transfer(p->gpu.host) : VK_NULL_HANDLE;
     VkImageView depth = cmd ? fl_scene_renderer_depth(p, cmd, w, h) : VK_NULL_HANDLE;
     if (ok && cmd && depth) {
-        transition(cmd, o.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        transition(cmd, o->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                    VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
         const unsigned char *backdrop = scene->background;
-        VkRenderingAttachmentInfo attachment = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = o.view, .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        VkRenderingAttachmentInfo attachment = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = o->view, .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
             .clearValue.color = {.float32 = {fl_scene_renderer_linear(backdrop[0]), fl_scene_renderer_linear(backdrop[1]), fl_scene_renderer_linear(backdrop[2]), 1}}};
         VkRenderingAttachmentInfo depth_info = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = depth, .imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
@@ -1772,31 +1809,44 @@ bool fl_scene_renderer_render(Fl_SceneRenderer *p, const Fl_Project *project, co
             ok = fl_scene_renderer_begin(p, cmd, format, w, h, true);
             if (ok) {
                 fl_scene_renderer_background(p, cmd, &frame, &frame, scene->background);
-                Fl_RenderTarget target = {.view = o.view, .format = format, .width = w, .height = h, .image = o.image, .depth = depth};
+                Fl_RenderTarget target = {.view = o->view, .format = format, .width = w, .height = h, .image = o->image, .depth = depth};
                 fl_scene_renderer_entities(p, cmd, &target, &frame, scene, state, &geometry);
             }
         }
         vkCmdEndRendering(cmd);
-        transition(cmd, o.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        transition(cmd, o->image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                    VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
         VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
-        vkCmdCopyImageToBuffer(cmd, o.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, o.buffer, 1, &copy);
+        vkCmdCopyImageToBuffer(cmd, o->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, o->buffer, 1, &copy);
         VkBufferMemoryBarrier host_read = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
             .dstAccessMask = VK_ACCESS_HOST_READ_BIT, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .buffer = o.buffer, .size = VK_WHOLE_SIZE};
+            .buffer = o->buffer, .size = VK_WHOLE_SIZE};
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1, &host_read, 0, NULL);
+        p->render_stats.record_ms=(double)(fl_clock_monotonic_ns()-phase)/1e6;
+        phase=fl_clock_monotonic_ns();
         p->gpu.end_transfer(p->gpu.host,cmd);
-        ok = ok && vmaInvalidateAllocation(allocator, o.buffer_memory, 0, VK_WHOLE_SIZE) == VK_SUCCESS;
-    } else ok = false;
+        p->render_stats.gpu_wait_ms=(double)(fl_clock_monotonic_ns()-phase)/1e6;
+        phase=fl_clock_monotonic_ns();
+        ok = ok && !p->error[0] && vmaInvalidateAllocation(allocator, o->buffer_memory, 0, VK_WHOLE_SIZE) == VK_SUCCESS;
+    } else {
+        if (cmd) p->gpu.end_transfer(p->gpu.host,cmd);
+        ok=false;
+    }
     if (ok) {
         out->rgba = malloc((size_t)w * h * 4);
-        if (out->rgba) {memcpy(out->rgba, o.buffer_info.pMappedData, (size_t)w * h * 4); out->width = w; out->height = h;}
+        if (out->rgba) {memcpy(out->rgba, o->buffer_info.pMappedData, (size_t)w * h * 4); out->width = w; out->height = h;}
         ok = out->rgba != NULL;
     }
-    offscreen_destroy(allocator, p->device, &o);
     fl_scene_geometry_clear(&geometry);
+    p->render_stats.readback_ms=(double)(fl_clock_monotonic_ns()-phase)/1e6;
+    p->render_stats.total_ms=(double)(fl_clock_monotonic_ns()-started)/1e6;
     if (!ok && !p->error[0]) snprintf(p->error,sizeof(p->error),"Frame evaluation or GPU rendering failed");
     return ok;
+}
+
+Fl_RenderStats fl_scene_renderer_stats(const Fl_SceneRenderer *renderer)
+{
+    return renderer ? renderer->render_stats : (Fl_RenderStats){0};
 }
 
 const char *fl_scene_renderer_error(const Fl_SceneRenderer *renderer)

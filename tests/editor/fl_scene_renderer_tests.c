@@ -384,6 +384,26 @@ int main(int argc, char **argv)
         fl_frame_free(&frame);
     }
 
+    /* Distinct programs beyond eight remain real shaders, and failed compilation cannot silently export a fallback. */
+    {
+        Fl_Id programs=0;
+        CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_SCENE_ADD,.name="Many shader programs"},&programs));
+        Fl_Id effect=make(p,programs,FL_WIDGET_EFFECT,0,0,1920,1080,white);
+        frame_camera(p,programs);
+        for (unsigned variant=0;variant<12;++variant) {
+            char source[256];
+            snprintf(source,sizeof(source),"vec4 effect(vec2 uv,float time,vec4 a,vec4 b){return vec4(%u.,%u.,0.,1.);} // variant %u",variant%2,1-variant%2,variant);
+            set_custom_effect(p,programs,effect,source);
+            CHECK(fl_scene_renderer_render(renderer,p,fl_project_scene(p,programs),0,variant%2 ? 320 : 160,&frame));
+            CHECK(near(at(&frame,frame.width/2,frame.height/2),variant%2 ? 255 : 0,variant%2 ? 0 : 255,0,3));
+            fl_frame_free(&frame);
+        }
+        set_custom_effect(p,programs,effect,"vec4 effect(vec2 uv,float time,vec4 a,vec4 b){invalid source}");
+        CHECK(!fl_scene_renderer_render(renderer,p,fl_project_scene(p,programs),0,160,&frame));
+        CHECK(strstr(fl_scene_renderer_error(renderer),"Cannot compile custom effect"));
+        fl_frame_free(&frame);
+    }
+
     /* The scene camera is a value the shader can ray through the same pixel, and sceneDepth lets a mesh
        stay in front of a closer shader quad. */
     {

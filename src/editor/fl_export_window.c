@@ -476,10 +476,10 @@ static void format_detail(const Fl_ExportStatus *status, char *out, size_t capac
     if (status->state == FL_EXPORT_IDLE || !status->frames_total) return;
     char elapsed[16], remain[16];
     format_clock(status->elapsed_seconds, elapsed, sizeof(elapsed));
-    if (status->state == FL_EXPORT_RUNNING && status->frames_done && status->frames_done < status->frames_total && status->elapsed_seconds > 0.05) {
-        double left = (double)(status->frames_total - status->frames_done) * status->elapsed_seconds / (double)status->frames_done;
+    if (status->state == FL_EXPORT_RUNNING && status->frames_done >= 8 && status->frames_done < status->frames_total && status->frames_per_second > 0) {
+        double left = (double)(status->frames_total - status->frames_done) / status->frames_per_second;
         format_clock(left, remain, sizeof(remain));
-        snprintf(out, capacity, "%llu / %llu frames · %s elapsed · %s left",
+        snprintf(out, capacity, "%llu / %llu frames · %s elapsed · ~%s at average speed",
             (unsigned long long)status->frames_done, (unsigned long long)status->frames_total, elapsed, remain);
         return;
     }

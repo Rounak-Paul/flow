@@ -70,7 +70,7 @@ struct Fl_Exporter {
     Fl_Project *project;
     Fl_Id *scenes;
     size_t scene_count, scene_index;
-    uint64_t frame_in_scene, frames_in_scene, overlap, job, started_ns;
+    uint64_t frame_in_scene, frames_in_scene, overlap, job, started_ns, render_started_ns;
     Fl_Encoder *encoder;
     Fl_ExportMix *mix;
     char temporary[FL_PATH_MAX];
@@ -173,6 +173,7 @@ static bool render_scene(Fl_Exporter *e, const Fl_Scene *scene, uint64_t index, 
         *reason = "a scene changed size or aspect during the export"; return false;
     }
     if (!fl_scene_renderer_render(e->renderer, e->project, scene, tick, w, frame)) {*reason = fl_scene_renderer_error(e->renderer); return false;}
+    e->status.gpu_wait_seconds+=fl_scene_renderer_stats(e->renderer).gpu_wait_ms/1000.;
     return true;
 }
 
@@ -278,6 +279,10 @@ static bool on_step(const Fl_Event *event, void *data)
     if (encoding==FL_ENCODER_DONE) {finish(e,FL_EXPORT_DONE,"export finished"); return true;}
     if (encoding!=FL_ENCODER_READY) return true;
     uint64_t slice_start = fl_clock_monotonic_ns();
+    if (!e->render_started_ns) {
+        e->render_started_ns=slice_start;
+        e->status.preparation_seconds=(double)(slice_start-e->started_ns)/1e9;
+    }
     while (e->status.state == FL_EXPORT_RUNNING && fl_clock_monotonic_ns() - slice_start < SLICE_NS) {
         if (fl_encoder_status(e->encoder)!=FL_ENCODER_READY) break;
         const Fl_Scene *scene = fl_project_scene(e->project, e->scenes[e->scene_index]);
@@ -302,6 +307,9 @@ static bool on_step(const Fl_Event *event, void *data)
         fl_frame_free(&frame);
         if (!written) {finish(e, FL_EXPORT_FAILED, "ffmpeg stopped accepting frames"); break;}
         ++e->status.frames_done;
+        e->status.render_seconds=(double)(fl_clock_monotonic_ns()-e->render_started_ns)/1e9;
+        e->status.frames_per_second=e->status.frames_done>=8 && e->status.render_seconds>0 ?
+            (double)e->status.frames_done/e->status.render_seconds : 0;
         if (++e->frame_in_scene == e->frames_in_scene) {
             e->frame_in_scene = e->overlap;
             if (++e->scene_index == e->scene_count) {fl_encoder_end(e->encoder); set_message(e,"Finishing encoding"); break;}
@@ -402,7 +410,7 @@ bool fl_exporter_start(Fl_Exporter *e, Fl_Project *project, const Fl_ExportDesc 
     error[0]=0;
     Fl_SceneRenderer *renderer=fl_scene_renderer_snapshot(e->source_renderer,view,scenes,count,error,error_size);
     if (!renderer) {fl_fs_remove(temporary); release_mix(mix,fl_scene_renderer_jobs(e->source_renderer)); fl_resource_snapshot_destroy(resources); free(scenes); return false;}
-    e->renderer=renderer; e->resources=resources;
+    e->renderer=renderer; e->resources=resources; e->render_started_ns=0;
     if (!has_audio) {release_mix(mix,fl_scene_renderer_jobs(e->source_renderer)); mix=NULL;}
     e->mix=mix;
     snprintf(e->command,sizeof(e->command),"%s",command);

@@ -39,7 +39,7 @@ Tools need an open project. With the project launcher showing they return `no_pr
 | `undo` / `redo` | Revert or repeat the newest changeset; shared with GUI edits |
 | `render_frame` | Renders a scene at one time or up to six (`times`) offscreen on the GPU and returns PNG images at any width (default 1024, up to 8.8 megapixels). Independent of the editor window: no grid or selection, nothing on screen changes |
 | `export_video` | Renders the project's scenes in order to an H.264 MP4 (BT.709, yuv420p) through ffmpeg: `path` (a file name goes to the project's `exports` folder), `width` (default 1920, height follows the aspect, both even), `fps` (default 60), `crf` (default 16), optional `scenes`, optional `crossfade` seconds (scenes overlap and dissolve into each other in linear light). Audio clips of the exported scenes are mixed (gain, fades, trimmed to their scene) into AAC. Runs in the background on the same renderer as `render_frame` |
-| `get_export_status` / `cancel_export` | Progress (state, frames done/total, elapsed, output path) of the latest export; stop it |
+| `get_export_status` / `cancel_export` | Progress of the latest export: state, frames done/total, elapsed, preparation/render seconds, summed GPU fence wait seconds, average frames per second after startup, and output path; stop it |
 | `get_editor_state` / `set_editor_state` | Read or set the shown scene, playhead and selection |
 | `import_asset` | Copy a local image, audio, video, font or Lua file (absolute path) into the project through shared undo history |
 | `save_project` | Write now; Flow also autosaves after changes |

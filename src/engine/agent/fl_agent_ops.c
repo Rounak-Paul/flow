@@ -587,9 +587,8 @@ static bool key_set(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
         }
     }
     const Fl_WidgetDef *def = fl_widget_for_entity(e);
-    bool crop_prop = property >= FL_PROP_CROP_X, text_prop = property == FL_PROP_FONT_SIZE, fill = property == FL_PROP_FILL, stroke = property == FL_PROP_STROKE || property == FL_PROP_STROKE_WIDTH;
-    if (def && ((crop_prop && !(def->has_image || def->has_video)) || (text_prop && !def->has_text) || (fill && !def->has_fill) || (stroke && !def->has_stroke)))
-        return fl_fail(f, "not_applicable", "key.set: a %s cannot animate %s", agent_widget_name(def->kind), property_name);
+    if (!fl_property_supported(e, property))
+        return fl_fail(f, "not_applicable", "key.set: a %s cannot animate %s", def ? agent_widget_name(def->kind) : "entity", property_name);
     Fl_Id created = 0;
     if (!apply(x, &(Fl_Op){.kind = FL_OP_KEY_SET, .scene = s->id, .entity = e->id, .key = key, .property = property, .anchor = anchor,
                            .value = {v[0], v[1], v[2], v[3]}, .ease = ease, .ease_param = {curve[0], curve[1], curve[2], curve[3]}}, &created))

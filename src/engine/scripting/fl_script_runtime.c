@@ -78,7 +78,7 @@ struct Fl_ScriptRuntime {
     const Fl_Asset *script;
     cJSON *build_output, *binding_output;
     Fl_EntityState *inputs;
-    uint32_t *failed;
+    bool (*failed)[FL_SCRIPT_OUTPUT_COUNT];
     Fl_ScriptOrder *order;
     Fl_OutputOwner *owners;
     size_t owner_count;
@@ -985,14 +985,14 @@ bool fl_script_runtime_evaluate_scene(Fl_ScriptRuntime *r, const Fl_Scene *scene
             if (!program->enabled) continue;
             bool blocked=false;
             for (size_t t=0;t<program->target_count;++t) if (program->targets[t].entity!=SIZE_MAX)
-                for (int p=0;p<FL_SCRIPT_OUTPUT_COUNT;++p) if (program->targets[t].modes[p] && (r->failed[program->targets[t].entity]&(UINT32_C(1)<<p))) blocked=true;
+                for (int p=0;p<FL_SCRIPT_OUTPUT_COUNT;++p) if (program->targets[t].modes[p] && r->failed[program->targets[t].entity][p]) blocked=true;
             for (size_t t=0;t<program->read_count;++t) if (program->reads[t].entity!=SIZE_MAX)
-                for (int p=0;p<FL_SCRIPT_OUTPUT_COUNT;++p) if (program->reads[t].modes[p] && (r->failed[program->reads[t].entity]&(UINT32_C(1)<<p))) blocked=true;
+                for (int p=0;p<FL_SCRIPT_OUTPUT_COUNT;++p) if (program->reads[t].modes[p] && r->failed[program->reads[t].entity][p]) blocked=true;
             Fl_EntityState own=r->inputs[program->entity];
             if (blocked) snprintf(program->error,sizeof(program->error),"Upstream property writer failed");
             if (blocked || !evaluate_attachment(r,scene,program->entity,index,tick,&own)) {
                 for (size_t t=0;t<program->target_count;++t) if (program->targets[t].entity!=SIZE_MAX)
-                    for (int p=0;p<FL_SCRIPT_OUTPUT_COUNT;++p) if (program->targets[t].modes[p]) r->failed[program->targets[t].entity]|=UINT32_C(1)<<p;
+                    for (int p=0;p<FL_SCRIPT_OUTPUT_COUNT;++p) if (program->targets[t].modes[p]) r->failed[program->targets[t].entity][p]=true;
                 valid=false; continue;
             }
             if (!program->has_sample || !r->time.active) continue;

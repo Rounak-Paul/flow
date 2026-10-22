@@ -666,6 +666,36 @@ static void test_bake(Fl_Agent *agent)
     result=call(agent,"bake_scene","{\"action\":\"cancel\",\"token\":2}",&error); CHECK(!result && error && error_code(error,"stale_job")); cJSON_Delete(error);
 }
 
+/* Key authoring uses the component registry, including channels added after crop. */
+static void test_extended_key_channels(Fl_Agent *agent)
+{
+    Fl_Id scene=0;
+    CHECK(fl_project_apply(g_project,&(Fl_Op){.kind=FL_OP_SCENE_ADD,.name="Extended channels"},&scene));
+    char args[4096];
+    snprintf(args,sizeof(args),
+        "{\"ops\":[{\"op\":\"entity.create\",\"scene\":%llu,\"kind\":\"effect\",\"as\":\"$fx\"},"
+        "{\"op\":\"entity.create\",\"scene\":%llu,\"kind\":\"camera\",\"as\":\"$cam\"},"
+        "{\"op\":\"entity.create\",\"scene\":%llu,\"kind\":\"rectangle\",\"as\":\"$box\"},"
+        "{\"op\":\"key.set\",\"entity\":\"$fx\",\"property\":\"u0\",\"at\":0,\"value\":20},"
+        "{\"op\":\"key.set\",\"entity\":\"$fx\",\"property\":\"u7\",\"at\":2,\"value\":0.5},"
+        "{\"op\":\"key.set\",\"entity\":\"$cam\",\"property\":\"fov\",\"at\":0,\"value\":0.8},"
+        "{\"op\":\"key.set\",\"entity\":\"$box\",\"property\":\"radius\",\"at\":0,\"value\":12}]}",
+        (unsigned long long)scene,(unsigned long long)scene,(unsigned long long)scene);
+    cJSON *error=NULL,*result=call(agent,"apply_ops",args,&error);
+    CHECK(result && !error); cJSON_Delete(result); cJSON_Delete(error); error=NULL;
+    const Fl_Scene *document=fl_project_scene(g_project,scene);
+    CHECK(document && document->entity_count==3);
+    if (!document || document->entity_count!=3) return;
+    const char *unsupported[]={"u0","crop_w","fov"};
+    for (size_t i=0;i<3;++i) {
+        snprintf(args,sizeof(args),"{\"ops\":[{\"op\":\"key.set\",\"entity\":%llu,\"property\":\"%s\",\"at\":0,\"value\":1}]}",
+            (unsigned long long)document->entities[2].id,unsupported[i]);
+        result=call(agent,"apply_ops",args,&error);
+        CHECK(!result && error && error_code(error,"not_applicable")); cJSON_Delete(result); cJSON_Delete(error); error=NULL;
+        document=fl_project_scene(g_project,scene);
+    }
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 2) return 2;
@@ -678,6 +708,7 @@ int main(int argc, char **argv)
     CHECK(agent != NULL); if (!agent) return 1;
     Fl_Id scene = fl_project_scene_at(g_project, 0)->id;
     test_authoring(agent, scene);
+    test_extended_key_channels(agent);
     test_look(agent, scene);
     test_scripts(agent, scene);
     test_asset_sources(agent);

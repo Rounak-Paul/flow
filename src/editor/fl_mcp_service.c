@@ -234,6 +234,10 @@ static cJSON *export_json(const Fl_ExportStatus *status)
     cJSON_AddNumberToObject(o, "crf", status->crf); cJSON_AddNumberToObject(o, "crossfade", status->crossfade);
     cJSON_AddNumberToObject(o, "scene_count", (double)status->scene_count);
     cJSON_AddNumberToObject(o, "elapsed_seconds", status->elapsed_seconds);
+    cJSON_AddNumberToObject(o, "preparation_seconds", status->preparation_seconds);
+    cJSON_AddNumberToObject(o, "render_seconds", status->render_seconds);
+    cJSON_AddNumberToObject(o, "gpu_wait_seconds", status->gpu_wait_seconds);
+    cJSON_AddNumberToObject(o, "frames_per_second", status->frames_per_second);
     cJSON_AddStringToObject(o, "path", status->path);
     if (status->message[0]) cJSON_AddStringToObject(o, "message", status->message);
     return o;
@@ -393,7 +397,7 @@ static bool register_editor_tools(Fl_McpService *s)
          "It runs in the background: poll get_export_status.",
          "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"width\":{\"type\":\"integer\"},\"fps\":{\"type\":\"integer\"},\"crf\":{\"type\":\"integer\"},\"crossfade\":{\"type\":\"number\"},\"scenes\":{\"type\":\"array\",\"items\":{\"type\":[\"integer\",\"string\"]}}},\"required\":[\"path\"],\"additionalProperties\":false}",
          false, tool_export_video, s},
-        {"get_export_status", "Progress of the latest video export: state, frames done and total, elapsed time, output path, size, fps, crf, crossfade and scene count.", empty, true, tool_get_export_status, s},
+        {"get_export_status", "Progress of the latest video export: state, frames done and total, elapsed/preparation/rendering time, GPU fence waits, average throughput, output path, size, fps, crf, crossfade and scene count.", empty, true, tool_get_export_status, s},
         {"cancel_export", "Stop the running video export.", empty, false, tool_cancel_export, s},
         {"get_editor_state", "The scene, time and selection currently shown in the editor.", empty, true, tool_get_editor_state, s},
         {"set_editor_state", "Show a scene, move the playhead (seconds) or select entities in the editor so the user can follow along.",

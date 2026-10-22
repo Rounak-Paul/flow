@@ -91,3 +91,10 @@ set_tests_properties(fl_timeline_playback_tests PROPERTIES TIMEOUT 30)
 
 # Native GPU tests own windows/devices and must not compete for the desktop/GPU clock.
 set_tests_properties(fl_scene_renderer_tests fl_timeline_playback_tests fl_scene_thumbnails_tests PROPERTIES RESOURCE_LOCK flow_gpu)
+
+# Read-only native project profiling, deliberately excluded from CTest.
+add_executable(flow_render_benchmark ../tools/fl_render_benchmark.c)
+target_include_directories(flow_render_benchmark PRIVATE "${PROJECT_SOURCE_DIR}/src/editor")
+target_link_libraries(flow_render_benchmark PRIVATE flow_editor causality)
+target_compile_definitions(flow_render_benchmark PRIVATE $<$<PLATFORM_ID:Windows>:CA_API=>)
+flow_target_warnings(flow_render_benchmark)
