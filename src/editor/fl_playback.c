@@ -68,8 +68,8 @@ static void tick(void *data)
 /* Follow external time moves (scrubbing) and timeline edits while playing. */
 static bool time_changed(const Fl_Event *event, void *data)
 {
-    (void)event; Fl_Playback *p = data;
-    if (p->playing && !p->advancing) start_clock(p);
+    const Fl_TimeChange *change = event->payload; Fl_Playback *p = data;
+    if (change->edit == p->edit && change->kind == FL_TIME_POSITION && p->playing && !p->advancing) start_clock(p);
     return false;
 }
 static bool project_changed(const Fl_Event *event, void *data)

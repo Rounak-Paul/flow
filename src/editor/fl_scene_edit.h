@@ -10,8 +10,9 @@ typedef struct Fl_SceneEdit Fl_SceneEdit;
 typedef struct Fl_SnapChange { Fl_SceneEdit *edit; } Fl_SnapChange;
 /* Selection notifications carry the edit controller pointer. */
 typedef struct Fl_SelectionChange { Fl_SceneEdit *edit; } Fl_SelectionChange;
-/* Current-time notifications carry the controller and the new scene time. */
-typedef struct Fl_TimeChange { Fl_SceneEdit *edit; Fl_Tick tick; } Fl_TimeChange;
+/* Evaluation notifications invalidate the preview without moving the playback clock. */
+typedef enum Fl_TimeChangeKind { FL_TIME_POSITION, FL_TIME_EVALUATION } Fl_TimeChangeKind;
+typedef struct Fl_TimeChange { Fl_SceneEdit *edit; Fl_Tick tick; Fl_TimeChangeKind kind; } Fl_TimeChange;
 typedef enum Fl_EditGesture {
     FL_GESTURE_MOVE, FL_GESTURE_NW, FL_GESTURE_NE, FL_GESTURE_SE, FL_GESTURE_SW, FL_GESTURE_ROTATE,
     FL_GESTURE_AXIS_X, FL_GESTURE_AXIS_Y, FL_GESTURE_AXIS_Z,

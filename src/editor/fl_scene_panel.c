@@ -199,7 +199,10 @@ static void build_view_tools(Fl_ScenePanel *p)
         .tooltip = editor ? "Frame the scene. Right-drag looks. Middle-drag pans. Scroll dollies. Hold right-click and use WASD, Q and E to fly." : "Frame is available on the editor camera"});
     fl_button(&(Fl_ButtonDesc){.text=CA_ICON_NF_MD_MAGNET,.id="scene-toggle-snap",
         .on_click=toggle_snap,.click_data=p, .kind = FL_BUTTON_ICON, .active = fl_scene_edit_snap(p->edit), .tooltip = fl_scene_edit_snap(p->edit) ? "Grid snapping on (64 units)" : "Grid snapping off"});
-    if (p->playing) ca_text(&(Ca_TextDesc){.text = "Playing", .style = FL_CLASS_LABEL});
+    if (p->playing) {
+        ca_text(&(Ca_TextDesc){.text = "Playing · draft", .style = FL_CLASS_LABEL});
+        ca_tooltip(&(Ca_TooltipDesc){.text = "Playback previews use up to 960 pixels. Pause to inspect full resolution. Exports use the selected output resolution."});
+    }
 }
 
 static void choose_flat(Ca_Button *button, void *data)
@@ -455,6 +458,7 @@ static bool playback_changed(const Fl_Event *event, void *data)
     const Fl_PlaybackChange *change = event->payload;
     if (!change || change->playback != p->playback) return false;
     p->playing = change->playing;
+    ca_viewport_set_max_dimension(p->viewport, p->playing ? 960 : 0);
     if (p->navigating) p->navigating = 0;
     if (p->viewport) ca_viewport_request_redraw(p->viewport);
     if (p->dock) ca_dock_invalidate_panel(p->dock, "scene");
@@ -767,6 +771,7 @@ void fl_scene_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
         .on_drag_start=stage_start,.on_drag=stage_move,.on_drag_end=stage_end,.drag_data=p,.drag_buttons=7,
         .on_scroll=stage_scroll,.scroll_data=p});
     p->viewport = ca_viewport(&(Ca_ViewportDesc){.on_render = fl_scene_preview_render, .render_data = p->preview, .id = "scene-viewport", .style = FL_CLASS_VIEWPORT});
+    ca_viewport_set_max_dimension(p->viewport, p->playing ? 960 : 0);
     if (p->viewport) ca_viewport_request_redraw(p->viewport);
     p->evaluation_overlay=ca_div_begin(&(Ca_DivDesc){.position=CA_POSITION_ABSOLUTE,.style=FL_CLASS_EVALUATION_STATUS,.no_hover=true});
     ca_text(&(Ca_TextDesc){.text="Evaluating…",.style=FL_CLASS_MUTED});

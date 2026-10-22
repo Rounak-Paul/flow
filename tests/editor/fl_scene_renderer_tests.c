@@ -404,6 +404,36 @@ int main(int argc, char **argv)
         fl_frame_free(&frame);
     }
 
+    /* Camera rays remain subpixel-stable while a translated, tilted camera moves smoothly. */
+    {
+        Fl_Id space = 0, camera = 0;
+        CHECK(fl_project_apply(p, &(Fl_Op){.kind=FL_OP_SCENE_ADD, .name="Stable camera rays"}, &space));
+        Fl_Id lens = make(p, space, FL_WIDGET_EFFECT, 0, 0, 1920, 1080, white);
+        set_custom_effect(p, space, lens,
+            "vec4 effect(vec2 uv,float time,vec4 a,vec4 b){"
+            "float e=.14+.10*time/65.383+.013*sin(time*.06);"
+            "vec2 q=(pixelUv()*2.-1.)*vec2(1.7777777778,1.)*tan(.778*.5);"
+            "vec3 d=normalize(vec3(q,-1.));"
+            "vec3 expected=vec3(d.x,cos(e)*d.y-sin(e)*d.z,sin(e)*d.y+cos(e)*d.z);"
+            "return vec4(vec3(.25)+1000.*(cameraRay(pixelUv())-expected),1.);}");
+        CHECK(fl_spatial_create(p, space, 0, "camera", 0, 0, 0, &camera));
+        Fl_Camera settings = fl_camera_default();
+        settings.perspective = true; settings.fov_y = .778; settings.near_z = .1; settings.far_z = 10000;
+        write_camera(p, space, camera, fl_entity_component(fl_scene_entity(fl_project_scene(p, space), camera), FL_COMPONENT_CAMERA), &settings);
+        for (unsigned i = 0; i < 60; ++i) {
+            double t = i / 60., elevation = .14 + .10 * t / 65.383 + .013 * sin(t * .06);
+            double radius = 1140 - 165 * t / 65.383;
+            Fl_Pose pose = fl_pose_identity();
+            pose.x = 960; pose.y = 540 - radius * sin(elevation); pose.z = radius * cos(elevation); pose.rx = elevation;
+            unsigned char bytes[FL_POSE_BYTES]; fl_pose_encode(&pose, bytes);
+            CHECK(fl_project_apply(p, &(Fl_Op){.kind=FL_OP_COMPONENT_SET, .scene=space, .entity=camera,
+                .component={.type=FL_COMPONENT_POSE, .version=1, .size=sizeof(bytes), .data=bytes}}, NULL));
+            CHECK(fl_scene_renderer_render(renderer, p, fl_project_scene(p, space), (Fl_Tick)(t * SECOND), 64, &frame));
+            if (frame.rgba) CHECK(near(at(&frame, 32, 18), 137, 137, 137, 2));
+            fl_frame_free(&frame);
+        }
+    }
+
     /* The scene camera is a value the shader can ray through the same pixel, and sceneDepth lets a mesh
        stay in front of a closer shader quad. */
     {

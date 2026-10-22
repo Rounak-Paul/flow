@@ -6,6 +6,7 @@
 #include "text/fl_fonts.h"
 #include "components/fl_effect.h"
 #include "platform/fl_fs.h"
+#include "platform/fl_paths.h"
 #include "media/fl_png.h"
 #include <string.h>
 #include <causality.h>
@@ -24,15 +25,17 @@ static bool number(const char *text, double *value)
 /* Measure consecutive 60fps frames through the real GPU renderer without encoding or modifying the project. */
 int main(int argc, char **argv)
 {
-    if (argc!=6 && argc!=8 && argc!=9) {fprintf(stderr,"Usage: %s PROJECT SCENE_INDEX SECONDS WIDTH COUNT [EFFECT_NAME SOURCE [OUTPUT_PNG]]\n",argv[0]); return 2;}
+    if (argc!=6 && argc!=8 && argc!=9) {fprintf(stderr,"Usage: %s PROJECT SCENE_INDEX SECONDS WIDTH COUNT [--frames DIRECTORY | EFFECT_NAME SOURCE [OUTPUT_PNG]]\n",argv[0]); return 2;}
     double index,time,width,count;
     if (!number(argv[2],&index) || !number(argv[3],&time) || !number(argv[4],&width) || !number(argv[5],&count) ||
         index<0 || index>100000 || index!=floor(index) || time<0 || width<2 || width>8192 || width!=floor(width) || count<1 || count>600 || count!=floor(count)) return 2;
+    bool sequence = argc == 8 && !strcmp(argv[6], "--frames");
+    if (sequence && !fl_fs_mkdir_p(argv[7])) return 2;
     Fl_Project *project=fl_project_open(argv[1],NULL);
     const Fl_Scene *scene=project ? fl_project_scene_at(project,(size_t)index) : NULL;
     if (!project) fprintf(stderr,"Cannot open project; close it in Flow or profile an independent copy.\n");
     if (!scene || time+(count-1)/60.>(double)fl_scene_length(scene)/FL_TICKS_PER_SECOND) {fl_project_destroy(project); return 2;}
-    if (argc>=8) {
+    if (argc>=8 && !sequence) {
         size_t size=0; char *source=fl_fs_read_file(argv[7],65536,&size);
         bool replaced=false;
         for (size_t i=0;source && i<scene->entity_count;++i) if (!strcmp(scene->entities[i].name,argv[6])) {
@@ -66,9 +69,16 @@ int main(int argc, char **argv)
         Fl_RenderStats s=fl_scene_renderer_stats(renderer);
         printf("{\"scene\":%.0f,\"frame\":%u,\"width\":%u,\"height\":%u,\"evaluation_ms\":%.4f,\"prepare_ms\":%.4f,\"record_ms\":%.4f,\"gpu_wait_ms\":%.4f,\"readback_ms\":%.4f,\"total_ms\":%.4f}\n",index,i,frame.width,frame.height,s.evaluation_ms,s.prepare_ms,s.record_ms,s.gpu_wait_ms,s.readback_ms,s.total_ms);
         fflush(stdout);
-        if (ok && argc==9 && i==0) {
+        if (ok && (sequence || (argc==9 && i==0))) {
+            char path[FL_PATH_MAX], name[32];
+            const char *output = argc==9 ? argv[8] : NULL;
+            if (sequence) {
+                snprintf(name, sizeof(name), "frame-%06u.png", i);
+                if (!fl_fs_join(path, sizeof(path), argv[7], name)) {fl_frame_free(&frame); ok=false; break;}
+                output = path;
+            }
             size_t size=0; unsigned char *png=fl_png_encode_region(frame.rgba,frame.width,frame.height,0,0,frame.width,frame.height,0,&size,NULL,NULL);
-            FILE *file=png ? fl_fs_fopen(argv[8],"wb") : NULL;
+            FILE *file=png ? fl_fs_fopen(output,"wb") : NULL;
             bool written=file && fwrite(png,1,size,file)==size;
             if (file && fclose(file)!=0) written=false;
             free(png); if (!written) ok=false;

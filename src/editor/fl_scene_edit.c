@@ -41,10 +41,10 @@ struct Fl_SceneEdit {
     double snap_x, snap_y;
 };
 
-/* Publish a time change. */
-static void notify_time(Fl_SceneEdit *edit)
+/* Publish position changes or evaluation invalidations with their distinct clock semantics. */
+static void notify_time(Fl_SceneEdit *edit, Fl_TimeChangeKind kind)
 {
-    Fl_TimeChange change = {edit, edit->time};
+    Fl_TimeChange change = {edit, edit->time, kind};
     fl_event_publish(edit->bus, edit->time_event, &change, sizeof(change));
 }
 
@@ -83,7 +83,7 @@ static bool evaluation_done(const Fl_Event *event, void *data)
 {
     Fl_SceneEdit *edit=data;
     if (!fl_evaluation_matches(edit->evaluation,event->payload)) return false;
-    fl_evaluation_publish(edit->evaluation); reconcile_focus(edit,fl_evaluation_state(edit->evaluation)); notify_time(edit);
+    fl_evaluation_publish(edit->evaluation); reconcile_focus(edit,fl_evaluation_state(edit->evaluation)); notify_time(edit, FL_TIME_EVALUATION);
     return false;
 }
 
@@ -103,7 +103,7 @@ static bool document_changed(const Fl_Event *event, void *data)
         if (fl_scene_entity(scene, edit->selection[i])) edit->selection[count++] = edit->selection[i];
     if (count != edit->count) { edit->count = count; edit->focus=0; notify(edit); }
     Fl_Tick length = fl_scene_length(scene);
-    if (edit->time > length) { edit->time = length; notify_time(edit); }
+    if (edit->time > length) { edit->time = length; notify_time(edit, FL_TIME_POSITION); }
     return false;
 }
 
@@ -174,7 +174,7 @@ bool fl_scene_edit_select(Fl_SceneEdit *edit, Fl_Id scene_id, Fl_Id id, bool add
         memmove(edit->selection+found, edit->selection+found+1, (count-found-1)*sizeof(*edit->selection)); --count;
     } else count = 0;
     clear_gesture(edit); edit->scene = scene_id; edit->count = count; edit->focus=focus; notify(edit);
-    if (!same_scene && edit->time) { edit->time = 0; notify_time(edit); }
+    if (!same_scene && edit->time) { edit->time = 0; notify_time(edit, FL_TIME_POSITION); }
     return true;
 }
 Fl_Tick fl_scene_edit_time(const Fl_SceneEdit *edit) { return edit ? edit->time : 0; }
@@ -185,7 +185,7 @@ void fl_scene_edit_set_time(Fl_SceneEdit *edit, Fl_Tick tick)
     tick = tick < 0 ? 0 : tick > length ? length : tick;
     if (tick == edit->time) return;
     edit->time = tick;
-    notify_time(edit);
+    notify_time(edit, FL_TIME_POSITION);
 }
 const Fl_SceneState *fl_scene_edit_state(Fl_SceneEdit *edit)
 {
@@ -212,7 +212,7 @@ const Fl_SceneState *fl_scene_edit_state(Fl_SceneEdit *edit)
         if (!edit->evaluation) return NULL;
         bool pending=fl_evaluation_pending(edit->evaluation);
         fl_evaluation_request(edit->evaluation,edit->time);
-        if (!pending && fl_evaluation_pending(edit->evaluation)) notify_time(edit);
+        if (!pending && fl_evaluation_pending(edit->evaluation)) notify_time(edit, FL_TIME_EVALUATION);
         return fl_evaluation_state(edit->evaluation);
     }
     if (!fl_scene_state_update(&edit->state,scene,edit->time)) return NULL;

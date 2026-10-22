@@ -777,15 +777,29 @@ static void use_affine(Fl_SceneRenderer *p, Fl_Affine matrix)
     use_model(p, model);
 }
 
-/* Custom effects read the scene camera and the render-target size from the same uniform as the quad matrix. */
+/* Build homogeneous ray differences in double precision before world translations can cancel in the shader. */
 static void load_effect_uniforms(Fl_SceneRenderer *p)
 {
     memset(p->uniform_block, 0, sizeof(p->uniform_block));
     memcpy(p->uniform_block, p->draw_mvp, sizeof(p->draw_mvp));
     fl_mat4_float(p->view_proj, p->uniform_block + 16);
-    p->uniform_block[32] = p->pass_width ? (float)p->pass_width : 1.f;
-    p->uniform_block[33] = p->pass_height ? (float)p->pass_height : 1.f;
-    p->uniform_bytes = 36 * sizeof(float);
+    Fl_Mat4 inverse;
+    if (!fl_mat4_inverse(p->view_proj, &inverse)) inverse = fl_mat4_identity();
+    fl_mat4_float(inverse, p->uniform_block + 32);
+    double rays[3][3];
+    for (unsigned column = 0; column < 3; ++column) {
+        unsigned at = column < 2 ? column * 4 : 12;
+        for (unsigned row = 0; row < 3; ++row)
+            rays[column][row] = inverse.m[8 + row] * inverse.m[at + 3] - inverse.m[at + row] * inverse.m[11];
+    }
+    double scale = hypot(hypot(rays[2][0], rays[2][1]), rays[2][2]);
+    if (!(scale > 0) || !isfinite(scale)) scale = 1;
+    for (unsigned column = 0; column < 3; ++column)
+        for (unsigned row = 0; row < 3; ++row)
+            p->uniform_block[48 + column * 4 + row] = (float)(rays[column][row] / scale);
+    p->uniform_block[60] = p->pass_width ? (float)p->pass_width : 1.f;
+    p->uniform_block[61] = p->pass_height ? (float)p->pass_height : 1.f;
+    p->uniform_bytes = sizeof(p->uniform_block);
 }
 
 void fl_scene_renderer_push(Fl_SceneRenderer *p, VkCommandBuffer cmd, const float push[PUSH_FLOATS], VkDescriptorSet mask)
@@ -1049,15 +1063,15 @@ static VkPipeline effect_pipeline(Fl_SceneRenderer *p, VkFormat format, bool dep
     int wrote = snprintf(fs, cap,
         "#version 450\nlayout(push_constant) uniform P { vec4 a; vec4 b; vec4 fill; vec4 stroke; vec4 params; vec4 fill2; vec4 extra; vec4 mid; } p;"
         "layout(set=0,binding=0) uniform sampler2D mask;"
-        "layout(set=1,binding=0) uniform FlCam { mat4 mvp; mat4 viewProj; vec4 target; } flCam;"
+        "layout(set=1,binding=0) uniform FlCam { mat4 mvp; mat4 viewProj; mat4 inverseViewProj; mat3 rays; vec4 target; } flCam;"
         "layout(location=0) in vec2 uv;layout(location=0) out vec4 color;"
         "vec2 pixelUv(){return gl_FragCoord.xy/max(flCam.target.xy,vec2(1.));}"
-        "vec3 cameraUnproject(vec2 fragUv,float ndcZ){vec4 w=inverse(flCam.viewProj)*vec4(fragUv*2.-1.,ndcZ,1.);return w.w!=0.?w.xyz/w.w:w.xyz;}"
+        "vec3 cameraUnproject(vec2 fragUv,float ndcZ){vec4 w=flCam.inverseViewProj*vec4(fragUv*2.-1.,ndcZ,1.);return w.w!=0.?w.xyz/w.w:w.xyz;}"
         "vec3 cameraOrigin(vec2 fragUv){return cameraUnproject(fragUv,0.);}"
-        "vec3 cameraRay(vec2 fragUv){return normalize(cameraUnproject(fragUv,1.)-cameraUnproject(fragUv,0.));}"
+        "vec3 cameraRay(vec2 fragUv){return normalize(flCam.rays*vec3(fragUv*2.-1.,1.));}"
         "vec4 sceneColor(vec2 fragUv){vec4 c=texture(mask,fragUv);return vec4(c.a>1e-5?c.rgb/c.a:vec3(0.),c.a);}\n"
         "%s%.*s\nvoid main(){color=effect(uv,p.mid.x,p.fill2,p.extra);}", depth_fn, (int)size, source);
-    const char *vs = "#version 450\nlayout(set=1,binding=0) uniform FlCam { mat4 mvp; mat4 viewProj; vec4 target; } flCam;"
+    const char *vs = "#version 450\nlayout(set=1,binding=0) uniform FlCam { mat4 mvp; mat4 viewProj; mat4 inverseViewProj; mat3 rays; vec4 target; } flCam;"
         "layout(push_constant) uniform P { vec4 a; vec4 b; vec4 fill; vec4 stroke; vec4 params; vec4 fill2; vec4 extra; vec4 mid; } p;"
         "layout(location=0) out vec2 uv;vec2 v[6]=vec2[](vec2(0,0),vec2(1,0),vec2(1,1),vec2(0,0),vec2(1,1),vec2(0,1));"
         "void main(){uv=v[gl_VertexIndex];gl_Position=flCam.mvp*vec4(uv*p.params.xy,0.,1.);}";

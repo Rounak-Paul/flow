@@ -320,13 +320,15 @@ static void tool_get_editor_state(Fl_McpCall *call, const cJSON *args, void *dat
 
 static void tool_set_editor_state(Fl_McpCall *call, const cJSON *args, void *data)
 {
-    static const char *const keys[] = {"scene", "time", "select", NULL};
+    static const char *const keys[] = {"scene", "time", "select", "playing", NULL};
     Fl_McpService *s = data;
     if (!only_keys(call, args, keys) || !require_editor(s, call)) return;
     Fl_SceneEdit *edit = edit_of(s);
     Fl_Json context={0}; Fl_Id scene_id=fl_scene_edit_scene(edit); double seconds=0; bool has_time=false;
     const cJSON *scene_value=cJSON_GetObjectItemCaseSensitive(args,"scene"), *select=cJSON_GetObjectItemCaseSensitive(args,"select");
     if (scene_value && !fl_json_uint(&context,scene_value,&scene_id)) {fl_mcp_return_error(call,"invalid_argument","Scene must be an exact ID"); return;}
+    const cJSON *playing=cJSON_GetObjectItemCaseSensitive(args,"playing");
+    if (playing && !cJSON_IsBool(playing)) {fl_mcp_return_error(call,"invalid_argument","playing must be a boolean"); return;}
     if (!number_arg(call,args,"time",false,&seconds,&has_time)) return;
     Fl_Tick tick=0;
     if (has_time && !fl_time_from_seconds(seconds,&tick)) {fl_mcp_return_error(call,"invalid_argument","Time exceeds native tick range"); return;}
@@ -344,12 +346,15 @@ static void tool_set_editor_state(Fl_McpCall *call, const cJSON *args, void *dat
         if (!fl_scene_entity(flat,id) || (!fl_scene_entity(scene,id) && cJSON_GetArraySize(select)!=1)) {fl_scene_state_clear(&candidate); fl_mcp_return_error(call,"not_found","Generated selection requires one valid displayed object"); return;}
     }
     fl_scene_state_clear(&candidate);
+    Fl_Playback *playback=fl_workspace_playback(s->workspace);
+    if (playing && cJSON_IsFalse(playing)) fl_playback_pause(playback);
     if (scene_value || select) fl_scene_edit_select(edit,scene->id,0,false);
     if (has_time) fl_scene_edit_set_time(edit,tick);
     for (const cJSON *item=select ? select->child : NULL;item;item=item->next) {
         Fl_Id id=0; fl_json_uint(&context,item,&id);
         if (!fl_scene_edit_select(edit,scene->id,id,true)) {fl_mcp_return_error(call,"evaluation_failed","Cannot publish the requested selection"); return;}
     }
+    if (cJSON_IsTrue(playing)) fl_playback_play(playback);
     tool_get_editor_state(call, NULL, data);
 }
 
@@ -400,8 +405,8 @@ static bool register_editor_tools(Fl_McpService *s)
         {"get_export_status", "Progress of the latest video export: state, frames done and total, elapsed/preparation/rendering time, GPU fence waits, average throughput, output path, size, fps, crf, crossfade and scene count.", empty, true, tool_get_export_status, s},
         {"cancel_export", "Stop the running video export.", empty, false, tool_cancel_export, s},
         {"get_editor_state", "The scene, time and selection currently shown in the editor.", empty, true, tool_get_editor_state, s},
-        {"set_editor_state", "Show a scene, move the playhead (seconds) or select entities in the editor so the user can follow along.",
-         "{\"type\":\"object\",\"properties\":{\"scene\":{\"type\":[\"integer\",\"string\"]},\"time\":{\"type\":\"number\"},\"select\":{\"type\":\"array\",\"items\":{\"type\":[\"integer\",\"string\"]}}},\"additionalProperties\":false}",
+        {"set_editor_state", "Show a scene, move the playhead (seconds), select entities or start/pause timeline playback.",
+         "{\"type\":\"object\",\"properties\":{\"scene\":{\"type\":[\"integer\",\"string\"]},\"time\":{\"type\":\"number\"},\"playing\":{\"type\":\"boolean\"},\"select\":{\"type\":\"array\",\"items\":{\"type\":[\"integer\",\"string\"]}}},\"additionalProperties\":false}",
          false, tool_set_editor_state, s},
     };
     for (size_t i = 0; i < sizeof(tools) / sizeof(*tools); ++i) if (!fl_mcp_register(s->mcp, &tools[i])) return false;
