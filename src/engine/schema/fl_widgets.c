@@ -14,7 +14,7 @@
 
 static const Fl_Pose k_pose = {.sx = 1, .sy = 1, .sz = 1};
 static const Fl_WidgetDef definitions[FL_WIDGET_COUNT] = {
-    {FL_WIDGET_GROUP, "Group", "Organize related entities", k_pose, {320,180,0}, {{91,156,255,255},{230,233,238,255},0,48}, false,false,false,false,false},
+    {FL_WIDGET_ENTITY, "Entity", "Empty entity. Children follow its transform", k_pose, {320,180,0}, {{91,156,255,255},{230,233,238,255},0,48}, false,false,false,false,false},
     {FL_WIDGET_RECTANGLE, "Rectangle", "Filled or outlined rectangle", k_pose, {320,180,0}, {{91,156,255,255},{230,233,238,255},0,48}, true,true,false,false,false},
     {FL_WIDGET_ELLIPSE, "Ellipse", "Circle or ellipse", k_pose, {240,240,0}, {{76,195,138,255},{230,233,238,255},0,48}, true,true,false,false,false},
     {FL_WIDGET_LINE, "Line", "Straight connector", k_pose, {360,32,0}, {{230,233,238,255},{230,233,238,255},6,48}, false,true,false,false,false},
@@ -127,7 +127,7 @@ const Fl_WidgetDef *fl_widget_for_entity(const Fl_Entity *e)
     if (fl_entity_component(e, FL_COMPONENT_IMAGE)) return &definitions[FL_WIDGET_IMAGE];
     if (fl_entity_component(e, FL_COMPONENT_TEXT)) return &definitions[FL_WIDGET_TEXT];
     if (fl_entity_component(e, FL_COMPONENT_RECTANGLE)) return &definitions[FL_WIDGET_RECTANGLE];
-    return &definitions[FL_WIDGET_GROUP];
+    return &definitions[FL_WIDGET_ENTITY];
 }
 
 Fl_Appearance fl_widget_appearance(const Fl_Entity *e)
@@ -184,13 +184,13 @@ bool fl_widget_create(Fl_Project *p, Fl_Id scene, Fl_Id parent, Fl_WidgetKind ki
     unsigned char typography[3 + FL_TYPOGRAPHY_FAMILY_MAX];
     Fl_Component components[5] = {{.type=FL_COMPONENT_POSE, .version=1, .size=FL_POSE_BYTES, .data=pose}, {.type=FL_COMPONENT_BOUNDS, .version=1, .size=FL_BOUNDS_BYTES, .data=bounds_bytes}};
     size_t count = 2;
-    if (kind != FL_WIDGET_GROUP) components[count++] = (Fl_Component){.type = FL_COMPONENT_APPEARANCE, .version = 1, .size = 24, .data = appearance};
+    if (kind != FL_WIDGET_ENTITY) components[count++] = (Fl_Component){.type = FL_COMPONENT_APPEARANCE, .version = 1, .size = 24, .data = appearance};
     if (kind == FL_WIDGET_RECTANGLE) components[count++] = (Fl_Component){.type = FL_COMPONENT_RECTANGLE, .version = 1, .size = 4, .data = def->appearance.fill};
     else if (kind == FL_WIDGET_TEXT) {
         components[count++] = (Fl_Component){.type = FL_COMPONENT_TEXT, .version = 1, .size = 4, .data = (const unsigned char *)"Text"};
         components[count++] = (Fl_Component){.type = FL_COMPONENT_TYPOGRAPHY, .version = 1, .size = fl_typography_encode(&default_typography, typography), .data = typography};
     }
-    else if (kind != FL_WIDGET_GROUP) components[count++] = (Fl_Component){.type = FL_COMPONENT_GEOMETRY, .version = 1, .size = 1, .data = &geometry};
+    else if (kind != FL_WIDGET_ENTITY) components[count++] = (Fl_Component){.type = FL_COMPONENT_GEOMETRY, .version = 1, .size = 1, .data = &geometry};
     return fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ENTITY_ADD, .scene = scene, .parent = parent,
         .name = def->name, .components = components, .component_count = count}, out_id);
 }

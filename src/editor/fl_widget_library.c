@@ -98,7 +98,7 @@ void fl_widget_library_build(Ca_Dock *dock,Ca_Window *window,void *data)
         CA_ICON_NF_FA_MINUS,CA_ICON_NF_FA_ARROW_RIGHT_LONG,CA_ICON_NF_FA_FONT,CA_ICON_NF_FA_IMAGE,CA_ICON_NF_FA_FILM,CA_ICON_NF_FA_CARET_UP,CA_ICON_NF_FA_DIAMOND,
         CA_ICON_NF_FA_DRAW_POLYGON,CA_ICON_NF_FA_STAR};
     ca_div_begin(&(Ca_DivDesc){.direction=CA_HORIZONTAL,.style=FL_CLASS_ASSET_GRID});
-    for (int kind=FL_WIDGET_GROUP;kind<FL_WIDGET_COUNT;++kind) {
+    for (int kind=FL_WIDGET_ENTITY;kind<FL_WIDGET_COUNT;++kind) {
         if (kind==FL_WIDGET_IMAGE||kind==FL_WIDGET_VIDEO) continue;
         const Fl_WidgetDef *def=fl_widget_definition((Fl_WidgetKind)kind);
         if (!matches(def->name,library->query)) continue;

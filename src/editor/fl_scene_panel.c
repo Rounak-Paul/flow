@@ -26,7 +26,7 @@ struct Fl_ScenePanel {
     Ca_Div *hierarchy;
     Ca_Div *scene_strip;
     Ca_Effect *keys;
-    bool gesturing, playing;
+    bool gesturing, playing, drag_spatial;
     int navigating;             /* 1 looks, 2 pans; 0 is idle */
     Fl_Playback *playback;
     double pan_dx, pan_dy;
@@ -152,6 +152,9 @@ static void retain_view_camera(Fl_ScenePanel *p, const Fl_Scene *scene)
     fl_scene_preview_set_camera(p->preview, 0);
 }
 
+static void choose_flat(Ca_Button *button, void *data);
+static void choose_spatial(Ca_Button *button, void *data);
+
 /* Right-align the view camera and the editor-camera controls. */
 static void build_view_tools(Fl_ScenePanel *p)
 {
@@ -181,6 +184,15 @@ static void build_view_tools(Fl_ScenePanel *p)
     if (options) ca_select(&(Ca_SelectDesc){.options = options, .option_count = (int)count + 1, .selected = selected,
         .id = "scene-camera", .style = FL_CLASS_CAMERA_SELECT, .on_change = camera_chosen, .change_data = p});
     free(options);
+    bool flat = fl_scene_preview_flat(p->preview);
+    ca_btn_begin(&(Ca_BtnDesc){.text = "2D", .id = "scene-mode-2d", .style = flat ? FL_CLASS_MODE_ACTIVE : FL_CLASS_MODE,
+        .on_click = choose_flat, .click_data = p});
+    ca_btn_end();
+    ca_tooltip(&(Ca_TooltipDesc){.text = "Canvas mode. Corner handles resize. Right-drag or middle-drag pans. Scroll zooms."});
+    ca_btn_begin(&(Ca_BtnDesc){.text = "3D", .id = "scene-mode-3d", .style = flat ? FL_CLASS_MODE : FL_CLASS_MODE_ACTIVE,
+        .on_click = choose_spatial, .click_data = p});
+    ca_btn_end();
+    ca_tooltip(&(Ca_TooltipDesc){.text = "Axis gizmo moves and rotates. Right-drag looks. Hold right-click and use WASD, Q and E to fly."});
     bool editor = p->view_camera == 0;
     fl_button(&(Fl_ButtonDesc){.text=CA_ICON_NF_MD_FIT_TO_PAGE_OUTLINE,.id="scene-fit-canvas",
         .on_click=reset_canvas,.click_data=p, .kind = FL_BUTTON_ICON, .disabled = !editor,
@@ -188,6 +200,20 @@ static void build_view_tools(Fl_ScenePanel *p)
     fl_button(&(Fl_ButtonDesc){.text=CA_ICON_NF_MD_MAGNET,.id="scene-toggle-snap",
         .on_click=toggle_snap,.click_data=p, .kind = FL_BUTTON_ICON, .active = fl_scene_edit_snap(p->edit), .tooltip = fl_scene_edit_snap(p->edit) ? "Grid snapping on (64 units)" : "Grid snapping off"});
     if (p->playing) ca_text(&(Ca_TextDesc){.text = "Playing", .style = FL_CLASS_LABEL});
+}
+
+static void choose_flat(Ca_Button *button, void *data)
+{
+    (void)button; Fl_ScenePanel *p = data;
+    fl_scene_preview_set_flat(p->preview, true);
+    if (p->dock) ca_dock_invalidate_panel(p->dock, "scene");
+}
+
+static void choose_spatial(Ca_Button *button, void *data)
+{
+    (void)button; Fl_ScenePanel *p = data;
+    fl_scene_preview_set_flat(p->preview, false);
+    if (p->dock) ca_dock_invalidate_panel(p->dock, "scene");
 }
 
 /* Select a card or hierarchy row by stable identity. */
@@ -206,11 +232,11 @@ static void add_scene(Ca_Button *button, void *data)
     if (apply(p, (Fl_Op){.kind = FL_OP_SCENE_ADD, .name = name}, &id)) fl_scene_edit_select(p->edit,id,0,false);
 }
 
-/* Add a group or rectangle under parent, then select its stable identity. */
+/* Add an entity or rectangle under parent, then select its stable identity. */
 static void add_entity(Fl_ScenePanel *p, Fl_Id scene, Fl_Id parent, bool rectangle)
 {
     Fl_Id id;
-    if (fl_widget_create(p->project,scene,parent,rectangle ? FL_WIDGET_RECTANGLE : FL_WIDGET_GROUP,0,0,&id))
+    if (fl_widget_create(p->project,scene,parent,rectangle ? FL_WIDGET_RECTANGLE : FL_WIDGET_ENTITY,0,0,&id))
         fl_scene_edit_select(p->edit,scene,id,false);
 }
 
@@ -309,7 +335,8 @@ static void stage_start(const Ca_DragEvent *event,void *data)
 {
     Fl_ScenePanel *p=data;double x,y;
     if (p->viewport && !fl_scene_preview_shot(p->preview) && (event->button==1 || event->button==2)) {
-        p->navigating=event->button==1 ? 1 : 2; p->pan_dx=p->pan_dy=0; return;
+        bool look = event->button==1 && !fl_scene_preview_flat(p->preview);
+        p->navigating=look ? 1 : 2; p->pan_dx=p->pan_dy=0; return;
     }
     if (!p->viewport) return;
     bool placed=fl_scene_preview_point(p->preview,p->viewport,event->start_x,event->start_y,true,&x,&y);
@@ -320,6 +347,13 @@ static void stage_start(const Ca_DragEvent *event,void *data)
         p->drag_scale_x=unit_x-zero_x;p->drag_scale_y=unit_y-zero_y;
     }
     Fl_EditGesture mode=fl_scene_preview_handle(p->preview,p->viewport,event->start_x,event->start_y);
+    p->drag_spatial = mode >= FL_GESTURE_AXIS_X && mode <= FL_GESTURE_RING_Z;
+    if (p->drag_spatial) {
+        if (!fl_scene_preview_gizmo_arm(p->preview, p->viewport, mode, event->start_x, event->start_y)) { p->drag_spatial = false; return; }
+        p->gesturing = fl_scene_edit_begin(p->edit, mode, 0, 0);
+        if (!p->gesturing) p->drag_spatial = false;
+        return;
+    }
     if (mode==FL_GESTURE_MOVE) {
         const Fl_Scene *s=fl_project_scene(p->project,fl_scene_edit_scene(p->edit));
         Fl_Id hit=fl_scene_preview_pick(p->preview,p->viewport,event->start_x,event->start_y);
@@ -340,6 +374,12 @@ static void stage_move(const Ca_DragEvent *event,void *data)
         else if (p->viewport) fl_scene_preview_pan(p->preview,p->viewport,dx,dy);
         p->pan_dx=event->dx; p->pan_dy=event->dy; return;
     }
+    if (p->gesturing && p->drag_spatial) {
+        Fl_Vec3 delta, axis; double radians;
+        if (p->viewport && fl_scene_preview_gizmo_delta(p->preview, p->viewport, event->x, event->y, &delta, &axis, &radians))
+            fl_scene_edit_update_spatial(p->edit, delta, axis, radians);
+        return;
+    }
     if (p->gesturing) {
         double sx,sy;
         if (p->viewport&&fl_scene_preview_point(p->preview,p->viewport,event->x,event->y,true,&sx,&sy))
@@ -352,7 +392,7 @@ static void stage_end(const Ca_DragEvent *event,void *data)
     Fl_ScenePanel *p=data;
     if (p->navigating) {stage_move(event,p);p->navigating=0;return;}
     if (!p->gesturing) return;
-    stage_move(event,p);fl_scene_edit_end(p->edit,false);p->gesturing=false;
+    stage_move(event,p);fl_scene_edit_end(p->edit,false);p->gesturing=false;p->drag_spatial=false;
 }
 /* Horizontal scroll trucks. Vertical scroll dollies. Playback keeps the shot camera still. */
 static void stage_scroll(double dx, double dy, void *data)
@@ -372,7 +412,7 @@ static void check_keys(void *data)
         else if (p->viewport) fl_scene_preview_pan(p->preview,p->viewport,-p->pan_dx,-p->pan_dy);
         p->navigating=0;
     }
-    if (!fl_scene_preview_shot(p->preview) && !p->gesturing && !p->navigating && p->viewport && p->window && ca_window_focused(p->window) && ca_window_mouse_button_down(p->window,1)) {
+    if (!fl_scene_preview_shot(p->preview) && !fl_scene_preview_flat(p->preview) && !p->gesturing && !p->navigating && p->viewport && p->window && ca_window_focused(p->window) && ca_window_mouse_button_down(p->window,1)) {
         double forward=0, right=0, up=0;
         if (ca_window_key_down(p->window,CA_KEY_W)) forward+=1;
         if (ca_window_key_down(p->window,CA_KEY_S)) forward-=1;
@@ -383,7 +423,7 @@ static void check_keys(void *data)
         if (forward||right||up) fl_scene_preview_fly(p->preview,p->viewport,forward,right,up);
     }
     if (p->gesturing&&p->window&&ca_window_focused(p->window)&&ca_window_key_down(p->window,CA_KEY_ESCAPE)) {
-        fl_scene_edit_end(p->edit,true);p->gesturing=false;
+        fl_scene_edit_end(p->edit,true);p->gesturing=false;p->drag_spatial=false;
     }
 }
 
@@ -506,7 +546,7 @@ static bool is_below(const Fl_Scene *s, const Fl_Entity *descendant, Fl_Id ances
     return false;
 }
 
-/* Eye button: hide a shown entity, show a hidden one, and reveal everything under a mixed group. */
+/* Eye button: hide a shown entity, show a hidden one, and reveal everything under a mixed parent. */
 static void toggle_visibility(Ca_Button *button, void *data)
 {
     (void)button; Fl_Row row = *(Fl_Row *)data; Fl_ScenePanel *p = row.panel;
@@ -532,7 +572,7 @@ static const char *kind_icon(const Fl_Entity *e, bool open)
 {
     const Fl_WidgetDef *def = fl_widget_for_entity(e);
     if (fl_entity_component(e, FL_COMPONENT_CAMERA)) return CA_ICON_NF_MD_CAMERA;
-    switch (def ? def->kind : FL_WIDGET_GROUP) {
+    switch (def ? def->kind : FL_WIDGET_ENTITY) {
     case FL_WIDGET_RECTANGLE: return CA_ICON_NF_FA_SQUARE;
     case FL_WIDGET_ELLIPSE: return CA_ICON_NF_FA_CIRCLE;
     case FL_WIDGET_TEXT: return CA_ICON_NF_FA_FONT;
@@ -543,7 +583,7 @@ static const char *kind_icon(const Fl_Entity *e, bool open)
     case FL_WIDGET_DIAMOND: return CA_ICON_NF_FA_DIAMOND;
     case FL_WIDGET_HEXAGON: return CA_ICON_NF_FA_DRAW_POLYGON;
     case FL_WIDGET_STAR: return CA_ICON_NF_FA_STAR;
-    default: return open ? CA_ICON_NF_FA_FOLDER_OPEN : CA_ICON_NF_FA_FOLDER;
+    default: return open ? CA_ICON_NF_MD_CUBE : CA_ICON_NF_MD_CUBE_OUTLINE;
     }
 }
 
@@ -657,7 +697,7 @@ static void build_hierarchy(Fl_ScenePanel *p, const Fl_Scene *s)
             .on_click = toggle_visibility, .click_data = row, .id = key, .style = eye_style});
         ca_btn_end();
         ca_btn_end();
-        const char *items[] = {"Rename", "Add child group", "Add child rectangle", "Toggle visibility", "Move to root", "Move up", "Move down", "Delete subtree", "Parent to selected"};
+        const char *items[] = {"Rename", "Add child entity", "Add child rectangle", "Toggle visibility", "Move to root", "Move up", "Move down", "Delete subtree", "Parent to selected"};
         ca_context_menu(&(Ca_CtxMenuDesc){.items = items, .item_count = 9, .on_select = entity_menu, .select_data = row});
         ca_div_end();
         if (collapsed) skip_below = d;

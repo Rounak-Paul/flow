@@ -109,7 +109,7 @@ static void test_media(Fl_SceneRenderer *renderer, Fl_Project *project, Fl_Event
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_SCENE_SETTINGS,.scene=destination,.width=100,.height=100,.duration=2*FL_TICKS_PER_SECOND},NULL));
     CHECK(fl_prototype_instantiate(project,destination,0,prototype,0,0,&owner));
     Fl_Id hidden=0;
-    CHECK(fl_widget_create(project,destination,0,FL_WIDGET_GROUP,0,0,&hidden));
+    CHECK(fl_widget_create(project,destination,0,FL_WIDGET_ENTITY,0,0,&hidden));
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_VISIBLE,.scene=destination,.entity=hidden,.visible=false},NULL));
     for (size_t i=0;i<17;++i) CHECK(fl_widget_create_video(project,destination,hidden,video_id,0,0,20,20,NULL));
     Fl_Frame frame={0};
@@ -275,7 +275,7 @@ int main(int argc, char **argv)
     /* Clip cuts children to the box (rounded corners included); blur spreads an entity's light beyond its edge. */
     Fl_Id effects_scene = 0, clipper = 0, overflow = 0, glow = 0;
     CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_SCENE_ADD, .name = "Effects"}, &effects_scene));
-    CHECK(fl_widget_create(p, effects_scene, 0, FL_WIDGET_GROUP, 400, 300, &clipper));
+    CHECK(fl_widget_create(p, effects_scene, 0, FL_WIDGET_ENTITY, 400, 300, &clipper));
     CHECK(fl_widget_create(p, effects_scene, clipper, FL_WIDGET_RECTANGLE, -100, -100, &overflow));
     CHECK(fl_widget_create(p, effects_scene, 0, FL_WIDGET_RECTANGLE, 1200, 300, &glow));
     {

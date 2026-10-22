@@ -261,7 +261,7 @@ static bool configure(Ctx *x, const Fl_Scene *scene, const Fl_Entity *e, const c
     const char *shape_kinds = "rectangle, image or video";
     if (!agent_get_number(props, "radius", false, &number, &present, f, ctx)) return false;
     if (present) {
-        if (!def || !(def->kind == FL_WIDGET_RECTANGLE || def->kind == FL_WIDGET_GROUP || def->has_image || def->has_video)) return fl_fail(f, "not_applicable", "%s: radius needs a %s (or a group that clips)", ctx, shape_kinds);
+        if (!def || !(def->kind == FL_WIDGET_RECTANGLE || def->kind == FL_WIDGET_ENTITY || def->has_image || def->has_video)) return fl_fail(f, "not_applicable", "%s: radius needs a %s (or an entity that clips)", ctx, shape_kinds);
         if (number < 0 || number > 65536) return fl_fail(f, "invalid_argument", "%s: radius is 0..65536", ctx);
         style.radius = number; style_given = true;
     }
@@ -326,7 +326,7 @@ static bool configure(Ctx *x, const Fl_Scene *scene, const Fl_Entity *e, const c
     fl_pose_encode(&t, pose_bytes); fl_bounds_encode(&box, bounds_bytes); fl_appearance_encode(&a, appearance); fl_opacity_encode(opacity, alpha);
     Fl_Component components[10] = {{.type=FL_COMPONENT_POSE, .version=1, .size=FL_POSE_BYTES, .data=pose_bytes}, {.type=FL_COMPONENT_BOUNDS, .version=1, .size=FL_BOUNDS_BYTES, .data=bounds_bytes}, {.type=FL_COMPONENT_OPACITY, .version=1, .size=8, .data=alpha}};
     size_t count = 3;
-    if (def && def->kind != FL_WIDGET_GROUP && !def->has_image && !def->has_video) components[count++] = (Fl_Component){.type = FL_COMPONENT_APPEARANCE, .version = 1, .size = 24, .data = appearance};
+    if (def && def->kind != FL_WIDGET_ENTITY && !def->has_image && !def->has_video) components[count++] = (Fl_Component){.type = FL_COMPONENT_APPEARANCE, .version = 1, .size = 24, .data = appearance};
     if (def && def->has_text) {
         size_t size = fl_typography_encode(&ty, typography);
         if (!size) return fl_fail(f, "invalid_argument", "%s: invalid typography", ctx);
@@ -358,7 +358,7 @@ static bool entity_create(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
         !agent_get_string(op, "kind", true, &kind_name, f, "entity.create") || !agent_get_id(op, "parent", &x->refs, false, &parent, f, "entity.create") ||
         !agent_get_id(op, "asset", &x->refs, false, &asset, f, "entity.create")) return false;
     if (!strcmp(kind_name, "camera") || !strcmp(kind_name, "plane") || !strcmp(kind_name, "cube") || !strcmp(kind_name, "sphere") || !strcmp(kind_name, "light") || !strcmp(kind_name, "particles")) kind = FL_WIDGET_COUNT;
-    else if (!agent_widget_from_name(kind_name, &kind)) return fl_fail(f, "invalid_argument", "entity.create: kind must be group, rectangle, ellipse, triangle, diamond, hexagon, star, line, arrow, text, image, video, camera, plane, cube, sphere, light or particles");
+    else if (!agent_widget_from_name(kind_name, &kind)) return fl_fail(f, "invalid_argument", "entity.create: kind must be entity, rectangle, ellipse, triangle, diamond, hexagon, star, line, arrow, text, image, video, camera, plane, cube, sphere, light or particles");
     if (parent && !fl_scene_entity(s, parent)) return fl_fail(f, "not_found", "entity.create: parent %llu is not in scene %llu", (unsigned long long)parent, (unsigned long long)s->id);
     const cJSON *props = cJSON_GetObjectItemCaseSensitive(op, "props");
     if (props && !agent_object(props, f, "entity.create props")) return false;

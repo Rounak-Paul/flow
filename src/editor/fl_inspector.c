@@ -570,7 +570,7 @@ static void apply(Ca_Button *button,void *data)
     unsigned char style_bytes[FL_STYLE_BYTES],clip_bytes[FL_VIDEO_CLIP_BYTES];
     unsigned char camera_bytes[FL_CAMERA_BYTES];
     Fl_Component components[16]={{.type=FL_COMPONENT_POSE, .version=1, .size=FL_POSE_BYTES, .data=bytes},{.type=FL_COMPONENT_BOUNDS, .version=1, .size=FL_BOUNDS_BYTES, .data=bounds_bytes},{.type=FL_COMPONENT_OPACITY, .version=1, .size=8, .data=alpha}};size_t count=3;
-    if (def&&def->kind!=FL_WIDGET_GROUP&&!def->has_image&&!def->has_video) components[count++]=(Fl_Component){.type = FL_COMPONENT_APPEARANCE, .version = 1, .size = 24, .data = style};
+    if (def&&def->kind!=FL_WIDGET_ENTITY&&!def->has_image&&!def->has_video) components[count++]=(Fl_Component){.type = FL_COMPONENT_APPEARANCE, .version = 1, .size = 24, .data = style};
     if (def&&def->has_text) {
         size_t size=fl_typography_encode(&p->typography,typography);
         if (!size) {status(p,"Choose a font family.");return;}
@@ -1038,7 +1038,7 @@ static void style_section(Fl_Inspector *p,const Fl_WidgetDef *def)
 {
     if (!def) return;
     ca_text(&(Ca_TextDesc){.text="Style",.style=FL_CLASS_HEADING});
-    bool box=def->kind==FL_WIDGET_RECTANGLE||def->kind==FL_WIDGET_GROUP||def->has_image||def->has_video,shape=def->kind==FL_WIDGET_RECTANGLE||def->kind==FL_WIDGET_ELLIPSE,filled=shape||fl_widget_is_polygon(def->kind);
+    bool box=def->kind==FL_WIDGET_RECTANGLE||def->kind==FL_WIDGET_ENTITY||def->has_image||def->has_video,shape=def->kind==FL_WIDGET_RECTANGLE||def->kind==FL_WIDGET_ELLIPSE,filled=shape||fl_widget_is_polygon(def->kind);
     if (box) field(p,RADIUS,"Radius",true);
     ca_checkbox(&(Ca_CheckboxDesc){.text="Clip children",.checked=p->clip,.on_change=clip_changed,.change_data=p,.id="property-clip"});
     field(p,BLUR,"Blur",true);

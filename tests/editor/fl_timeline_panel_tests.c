@@ -192,7 +192,7 @@ int main(int argc, char **argv)
     Fl_TimelinePanel *panel = fl_timeline_panel_create(edit, &playback, bus); CHECK(panel);
     Fl_Id scene = fl_project_scene_at(project, 0)->id, rectangle, group, text;
     CHECK(fl_widget_create(project, scene, 0, FL_WIDGET_RECTANGLE, 10, 20, &rectangle));
-    CHECK(fl_widget_create(project, scene, 0, FL_WIDGET_GROUP, 0, 0, &group));
+    CHECK(fl_widget_create(project, scene, 0, FL_WIDGET_ENTITY, 0, 0, &group));
     CHECK(fl_widget_create(project, scene, 0, FL_WIDGET_TEXT, 0, 0, &text));
     CHECK(fl_property_supported(fl_scene_entity(scene_of(panel), rectangle), FL_PROP_FILL));
     CHECK(!fl_property_supported(fl_scene_entity(scene_of(panel), group), FL_PROP_FILL));

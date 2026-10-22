@@ -80,7 +80,7 @@ bool fl_scene_geometry_update(Fl_SceneGeometry *g, const Fl_Scene *s, const Fl_S
             v->world = fl_affine_from_mat4(v->model);
             v->invertible = fl_affine_inverse(v->world, &v->inverse) && fl_mat4_inverse(v->model, &v->inverse_model);
             v->visible = e->visible && (!parent || next.entities[parent-s->entities].visible);
-            const Fl_WidgetDef *def = fl_widget_for_entity(e); v->kind = def ? def->kind : FL_WIDGET_GROUP;
+            const Fl_WidgetDef *def = fl_widget_for_entity(e); v->kind = def ? def->kind : FL_WIDGET_ENTITY;
             resolved[index] = 1;
         }
     }
@@ -118,7 +118,7 @@ static Fl_Id pick_along(const Fl_SceneGeometry *g, const Fl_Scene *s, Fl_Vec3 or
     if (!g || !s || g->count!=s->entity_count || g->scene != s->id || g->revision != s->revision) return 0;
     for (size_t i = g->count; i; ) {
         size_t index = g->order[--i]; const Fl_ResolvedEntity *v = &g->entities[index];
-        if (!v->visible || !v->invertible || (v->kind == FL_WIDGET_GROUP && !v->mesh)) continue;
+        if (!v->visible || !v->invertible || (v->kind == FL_WIDGET_ENTITY && !v->mesh)) continue;
         double lx, ly;
         if (!intersect_local(v, origin, direction, forward_only, &lx, &ly)) continue;
         double w = v->bounds.width, h = v->bounds.height;

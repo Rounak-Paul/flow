@@ -188,13 +188,14 @@ bool agent_parse_anchor(const cJSON *v, const Fl_AgentRefs *refs, Fl_TimeAnchor 
     *out = anchor; return true;
 }
 
-static const char *const widget_names[FL_WIDGET_COUNT] = {"group", "rectangle", "ellipse", "line", "arrow", "text", "image", "video", "triangle", "diamond", "hexagon", "star"};
+static const char *const widget_names[FL_WIDGET_COUNT] = {"entity", "rectangle", "ellipse", "line", "arrow", "text", "image", "video", "triangle", "diamond", "hexagon", "star"};
 static const char *const ease_names[FL_EASE_COUNT] = {"linear", "in", "out", "in_out", "hold"};
 
 const char *agent_widget_name(Fl_WidgetKind kind) { return kind >= 0 && kind < FL_WIDGET_COUNT ? widget_names[kind] : "unknown"; }
 bool agent_widget_from_name(const char *name, Fl_WidgetKind *kind)
 {
     for (int i = 0; i < FL_WIDGET_COUNT; ++i) if (!strcmp(name, widget_names[i])) {*kind = (Fl_WidgetKind)i; return true;}
+    if (!strcmp(name, "group")) {*kind = FL_WIDGET_ENTITY; return true;}
     return false;
 }
 bool agent_property_from_name(const char *name, Fl_AnimProperty *property)

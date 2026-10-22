@@ -2,6 +2,8 @@
 #include "fl_scene_edit.h"
 #include "project/fl_scope_authoring.h"
 #include "time/fl_evaluation.h"
+#include "components/fl_component.h"
+#include "components/fl_transform.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,6 +13,8 @@ typedef struct Fl_GestureTarget {
     Fl_Tick local_tick;
     Fl_TransformEdit applied;   /* last value written by this gesture */
     Fl_Affine inverse, parent_inverse;
+    Fl_Mat4 parent_inverse_model;
+    bool spin_center;           /* keep the box center fixed while a ring spins */
 } Fl_GestureTarget;
 struct Fl_SceneEdit {
     Fl_Project *project;
@@ -258,10 +262,14 @@ static bool snap_insertion(Fl_SceneEdit *edit, Fl_Id parent, double *x, double *
     return isfinite(*x) && isfinite(*y);
 }
 
+static bool axis_gesture(Fl_EditGesture mode) { return mode >= FL_GESTURE_AXIS_X && mode <= FL_GESTURE_AXIS_Z; }
+static bool ring_gesture(Fl_EditGesture mode) { return mode >= FL_GESTURE_RING_X && mode <= FL_GESTURE_RING_Z; }
+
 bool fl_scene_edit_begin(Fl_SceneEdit *edit, Fl_EditGesture mode, double x, double y)
 {
-    if (!edit || !edit->count || mode < FL_GESTURE_MOVE || mode > FL_GESTURE_ROTATE ||
-        (mode != FL_GESTURE_MOVE && edit->count != 1) || !isfinite(x) || !isfinite(y)) return false;
+    bool axis = axis_gesture(mode), ring = ring_gesture(mode);
+    if (!edit || !edit->count || mode < FL_GESTURE_MOVE || mode > FL_GESTURE_RING_Z || (ring && edit->count != 1) ||
+        (!axis && !ring && mode != FL_GESTURE_MOVE && edit->count != 1) || !isfinite(x) || !isfinite(y)) return false;
     clear_gesture(edit);
     fl_scene_edit_state(edit);
     if (edit->evaluation && !fl_evaluation_wait(edit->evaluation,edit->time)) return false;
@@ -282,13 +290,24 @@ bool fl_scene_edit_begin(Fl_SceneEdit *edit, Fl_EditGesture mode, double x, doub
         const Fl_SceneState *state=fl_scene_edit_state(edit);
         size_t index=(size_t)(entity-scene->entities);
         int properties[4]={FL_PROP_X,FL_PROP_Y,FL_PROP_WIDTH,FL_PROP_HEIGHT};
-        size_t property_count=mode==FL_GESTURE_ROTATE ? 1 : mode==FL_GESTURE_MOVE ? 2 : 4;
-        if (mode==FL_GESTURE_ROTATE) properties[0]=FL_PROP_ROTATION;
+        size_t property_count = 4;
+        if (mode==FL_GESTURE_ROTATE) { properties[0]=FL_PROP_ROTATION; property_count=1; }
+        else if (mode==FL_GESTURE_RING_X) { properties[0]=FL_PROP_RX; property_count=1; }
+        else if (mode==FL_GESTURE_RING_Y) { properties[0]=FL_PROP_RY; property_count=1; }
+        else if (mode==FL_GESTURE_RING_Z) { properties[0]=FL_PROP_RZ; property_count=1; }
+        else if (axis) { properties[0]=FL_PROP_X; properties[1]=FL_PROP_Y; properties[2]=FL_PROP_Z; property_count=3; }
+        else if (mode==FL_GESTURE_MOVE) property_count=2;
         for (size_t p=0;p<property_count;++p) if (fl_entity_component(entity,FL_COMPONENT_SAMPLED) || fl_scene_state_writer(state,index,properties[p],NULL,NULL)) {clear_gesture(edit); return false;}
         const Fl_ResolvedEntity *v = &geometry->entities[entity-scene->entities];
         Fl_GestureTarget *target = &edit->targets[edit->target_count];
         target->local_tick=state->entities[index].local_tick;
         target->initial = (Fl_TransformEdit){entity->id, v->pose, v->bounds}; target->applied = target->initial; target->inverse = v->inverse;
+        target->spin_center = !v->mesh && !fl_entity_component(entity, FL_COMPONENT_CAMERA);
+        if (parent) {
+            const Fl_ResolvedEntity *above = &geometry->entities[parent-scene->entities];
+            if (!above->invertible) { clear_gesture(edit); return false; }
+            target->parent_inverse_model = above->inverse_model;
+        } else target->parent_inverse_model = fl_mat4_identity();
         if (!v->invertible || !fl_affine_inverse(parent ? geometry->entities[parent-scene->entities].world : fl_affine_identity(), &target->parent_inverse)) {
             clear_gesture(edit); return false;
         }
@@ -300,6 +319,34 @@ bool fl_scene_edit_begin(Fl_SceneEdit *edit, Fl_EditGesture mode, double x, doub
     edit->gesture = mode; edit->start_x = x; edit->start_y = y;
     if (!edit->target_count || !fl_project_edit_begin(edit->project,"Transform selection",!edit->focus)) {clear_gesture(edit); return false;}
     edit->gesture_edit=true; return true;
+}
+
+static bool write_updates(Fl_SceneEdit *edit)
+{
+    bool changed = false;
+    for (size_t i = 0; i < edit->target_count; ++i)
+        changed |= memcmp(&edit->targets[i].applied, &edit->updates[i], sizeof(Fl_TransformEdit)) != 0;
+    if (!changed) return true;
+    edit->applying = true;
+    bool ok = false;
+    if (edit->focus && edit->target_count == 1) {
+        const Fl_SceneState *state = fl_scene_edit_state(edit);
+        const Fl_Scene *flat = state ? fl_scene_state_scene(state, NULL) : NULL;
+        const Fl_Entity *entity = fl_scene_entity(flat, edit->focus);
+        if (entity) {
+            size_t index = (size_t)(entity - flat->entities);
+            unsigned char pose_bytes[FL_POSE_BYTES], bounds_bytes[FL_BOUNDS_BYTES];
+            fl_pose_encode(&edit->updates[0].pose, pose_bytes);
+            fl_bounds_encode(&edit->updates[0].bounds, bounds_bytes);
+            Fl_Component components[2] = {{.type = FL_COMPONENT_POSE, .version = 1, .data = pose_bytes, .size = FL_POSE_BYTES},
+                                          {.type = FL_COMPONENT_BOUNDS, .version = 1, .data = bounds_bytes, .size = FL_BOUNDS_BYTES}};
+            ok = fl_scope_configure(edit->project, edit->scene, state->composition, index, NULL, entity->visible, components, 2, 0, edit->targets[0].local_tick);
+        }
+    } else ok = fl_project_apply(edit->project, &(Fl_Op){.kind = FL_OP_TRANSFORMS, .scene = edit->scene,
+        .transforms = edit->updates, .transform_count = edit->target_count, .keyed = true, .tick = edit->gesture_tick}, NULL);
+    edit->applying = false;
+    if (ok) for (size_t i = 0; i < edit->target_count; ++i) edit->targets[i].applied = edit->updates[i];
+    return ok;
 }
 
 bool fl_scene_edit_update(Fl_SceneEdit *edit, double x, double y)
@@ -348,27 +395,69 @@ bool fl_scene_edit_update(Fl_SceneEdit *edit, double x, double y)
         }
         edit->updates[i]=(Fl_TransformEdit){target->initial.entity,t,box};
     }
-    bool changed=false;
-    for (size_t i=0;i<edit->target_count;++i)
-        changed|=memcmp(&edit->targets[i].applied,&edit->updates[i],sizeof(Fl_TransformEdit))!=0;
-    if (!changed) return true;
-    edit->applying = true;
-    bool ok=false;
-    if (edit->focus && edit->target_count==1) {
-        const Fl_SceneState *state=fl_scene_edit_state(edit);
-        const Fl_Scene *flat=state ? fl_scene_state_scene(state,NULL) : NULL;
-        const Fl_Entity *entity=fl_scene_entity(flat,edit->focus);
-        if (entity) {
-            size_t index=(size_t)(entity-flat->entities); unsigned char pose_bytes[FL_POSE_BYTES], bounds_bytes[FL_BOUNDS_BYTES];
-            fl_pose_encode(&edit->updates[0].pose,pose_bytes); fl_bounds_encode(&edit->updates[0].bounds,bounds_bytes);
-            Fl_Component components[2]={{.type=FL_COMPONENT_POSE,.version=1,.data=pose_bytes,.size=FL_POSE_BYTES},{.type=FL_COMPONENT_BOUNDS,.version=1,.data=bounds_bytes,.size=FL_BOUNDS_BYTES}};
-            ok=fl_scope_configure(edit->project,edit->scene,state->composition,index,NULL,entity->visible,components,2,0,edit->targets[0].local_tick);
+    return write_updates(edit);
+}
+
+static Fl_Mat4 euler_matrix(const Fl_Pose *pose)
+{
+    return fl_mat4_mul(fl_mat4_rotation_z(pose->rz), fl_mat4_mul(fl_mat4_rotation_y(pose->ry), fl_mat4_rotation_x(pose->rx)));
+}
+
+static Fl_Mat4 rotation_about(Fl_Vec3 axis, double radians)
+{
+    double n = hypot(hypot(axis.x, axis.y), axis.z);
+    if (!(n > 1e-12)) return fl_mat4_identity();
+    double x = axis.x / n, y = axis.y / n, z = axis.z / n, c = cos(radians), s = sin(radians), t = 1 - c;
+    Fl_Mat4 m = fl_mat4_identity();
+    m.m[0] = t * x * x + c; m.m[4] = t * x * y - s * z; m.m[8] = t * x * z + s * y;
+    m.m[1] = t * y * x + s * z; m.m[5] = t * y * y + c; m.m[9] = t * y * z - s * x;
+    m.m[2] = t * z * x - s * y; m.m[6] = t * z * y + s * x; m.m[10] = t * z * z + c;
+    return m;
+}
+
+static void euler_from_matrix(Fl_Mat4 m, double *rx, double *ry, double *rz)
+{
+    double cy = hypot(m.m[0], m.m[1]);
+    *ry = atan2(-m.m[2], cy);
+    if (cy > 1e-6) { *rx = atan2(m.m[6], m.m[10]); *rz = atan2(m.m[1], m.m[0]); }
+    else { *rx = atan2(-m.m[4], m.m[5]); *rz = 0; }
+}
+
+/* Keep the box center where it was after the orientation changes. */
+static void hold_center(const Fl_Pose *initial, Fl_Pose *pose, const Fl_Bounds *box)
+{
+    Fl_Vec3 center = {box->width * 0.5, box->height * 0.5, 0};
+    Fl_Mat4 placed = fl_mat4_mul(fl_mat4_scale(initial->sx, initial->sy, initial->sz), fl_mat4_translation(-initial->px, -initial->py, -initial->pz));
+    Fl_Vec3 local = fl_mat4_point(placed, center);
+    Fl_Vec3 held = fl_mat4_point(fl_mat4_mul(fl_mat4_translation(initial->x, initial->y, initial->z), euler_matrix(initial)), local);
+    Fl_Vec3 spun = fl_mat4_vector(euler_matrix(pose), local);
+    pose->x = held.x - spun.x; pose->y = held.y - spun.y; pose->z = held.z - spun.z;
+}
+
+bool fl_scene_edit_update_spatial(Fl_SceneEdit *edit, Fl_Vec3 world_delta, Fl_Vec3 world_axis, double radians)
+{
+    if (!edit || !edit->target_count || !isfinite(world_delta.x) || !isfinite(world_delta.y) || !isfinite(world_delta.z) || !isfinite(radians)) return false;
+    bool axis = axis_gesture(edit->gesture), ring = ring_gesture(edit->gesture);
+    if (!axis && !ring) return false;
+    if (axis && edit->gesture_snap) {
+        world_delta.x = round(world_delta.x / FL_SCENE_GRID_SPACING) * FL_SCENE_GRID_SPACING;
+        world_delta.y = round(world_delta.y / FL_SCENE_GRID_SPACING) * FL_SCENE_GRID_SPACING;
+        world_delta.z = round(world_delta.z / FL_SCENE_GRID_SPACING) * FL_SCENE_GRID_SPACING;
+    }
+    for (size_t i = 0; i < edit->target_count; ++i) {
+        const Fl_GestureTarget *target = &edit->targets[i];
+        Fl_Pose t = target->initial.pose;
+        if (axis) {
+            Fl_Vec3 local = fl_mat4_vector(target->parent_inverse_model, world_delta);
+            t.x += local.x; t.y += local.y; t.z += local.z;
+        } else {
+            Fl_Mat4 spun = fl_mat4_mul(rotation_about(world_axis, radians), euler_matrix(&t));
+            euler_from_matrix(spun, &t.rx, &t.ry, &t.rz);
+            if (target->spin_center) hold_center(&target->initial.pose, &t, &target->initial.bounds);
         }
-    } else ok=fl_project_apply(edit->project, &(Fl_Op){.kind=FL_OP_TRANSFORMS,.scene=edit->scene,
-        .transforms=edit->updates,.transform_count=edit->target_count,.keyed=true,.tick=edit->gesture_tick},NULL);
-    edit->applying = false;
-    if (ok) for (size_t i=0;i<edit->target_count;++i) edit->targets[i].applied=edit->updates[i];
-    return ok;
+        edit->updates[i] = (Fl_TransformEdit){target->initial.entity, t, target->initial.bounds};
+    }
+    return write_updates(edit);
 }
 void fl_scene_edit_end(Fl_SceneEdit *edit, bool cancel)
 {

@@ -786,7 +786,7 @@ static void draw_entity(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_Scene
     VkDescriptorSet white = fl_scene_renderer_white(p);
     const Fl_Appearance placeholder = {.fill = FL_RENDER_PLACEHOLDER_FILL_RGBA, .stroke = FL_RENDER_PLACEHOLDER_STROKE_RGBA, .stroke_width = FL_RENDER_PLACEHOLDER_STROKE};
     const Fl_ResolvedEntity *v = &g->entities[index]; const Fl_Entity *e = &scene->entities[index];
-    if (!v->visible || v->kind == FL_WIDGET_GROUP || v->opacity <= 0) return;
+    if (!v->visible || v->kind == FL_WIDGET_ENTITY || v->opacity <= 0) return;
     Fl_Appearance look = state ? state->entities[index].appearance : fl_widget_appearance(e);
     look.fill[3] = (unsigned char)lround(look.fill[3] * v->opacity);
     look.stroke[3] = (unsigned char)lround(look.stroke[3] * v->opacity);

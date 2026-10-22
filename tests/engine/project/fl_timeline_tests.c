@@ -130,7 +130,7 @@ int main(int argc, char **argv)
     Fl_TimeAnchor at = fl_anchor_at(s, 6 * SECOND);
     CHECK(at.kind == FL_ANCHOR_BEAT_POSITION && at.beat == beat2 && fabs(at.position - 1.0/3) < 1e-12 && fl_anchor_resolve(s, &at) == 6 * SECOND);
 
-    CHECK(fl_widget_create(p, scene, 0, FL_WIDGET_GROUP, 0, 0, &group));
+    CHECK(fl_widget_create(p, scene, 0, FL_WIDGET_ENTITY, 0, 0, &group));
     CHECK(fl_widget_create(p, scene, group, FL_WIDGET_RECTANGLE, 10, 20, &box));
     Fl_TimeAnchor zero = {.kind=FL_ANCHOR_BEAT,.beat=beat1,.end=false,.offset=0}, one = {.kind=FL_ANCHOR_BEAT,.beat=beat1,.end=false,.offset=SECOND};
     CHECK(key(p, scene, box, FL_PROP_X, zero, 0, FL_EASE_LINEAR, &k));

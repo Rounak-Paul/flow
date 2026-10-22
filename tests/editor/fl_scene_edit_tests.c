@@ -1,5 +1,6 @@
 #include "flow_test.h"
 #include "fl_scene_edit.h"
+#include "components/fl_transform.h"
 #include "time/fl_composition.h"
 #include "project/fl_prototype_authoring.h"
 #include "components/fl_prototype_instance.h"
@@ -77,7 +78,7 @@ static void check_canvas_authoring(Fl_Project *p, Fl_SceneEdit *edit, Fl_Id scen
     second=read_transform(p,scene,inserted);
     CHECK(near(first.pose.x,second.pose.x)&&near(first.pose.y,second.pose.y));
     Fl_Id group;
-    CHECK(fl_widget_create(p,scene,0,FL_WIDGET_GROUP,0,0,&group));
+    CHECK(fl_widget_create(p,scene,0,FL_WIDGET_ENTITY,0,0,&group));
     Fl_TransformEdit transform={.entity=group,.pose={.x=100,.y=50,.rz=.3,.sx=2,.sy=2,.sz=1},.bounds={320,180,0}};
     CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_TRANSFORMS,.scene=scene,.transforms=&transform,.transform_count=1},NULL));
     CHECK(fl_scene_edit_insert(edit,FL_WIDGET_RECTANGLE,group,19,31));
@@ -183,7 +184,7 @@ int main(int argc,char **argv)
     char path[FL_PATH_MAX];CHECK(fl_fs_mkdir_p(argv[1]));CHECK(fl_fs_join(path,sizeof(path),argv[1],"project.flow.json"));fl_fs_remove(path);
     Fl_EventBus *bus=fl_event_bus_create(NULL);Fl_Project *p=fl_project_create(argv[1],"Editing",bus);CHECK(p);if (!p) return 1;
     Fl_Id scene=fl_project_scene_at(p,0)->id,parent,child;
-    CHECK(fl_widget_create(p,scene,0,FL_WIDGET_GROUP,100,100,&parent));
+    CHECK(fl_widget_create(p,scene,0,FL_WIDGET_ENTITY,100,100,&parent));
     CHECK(fl_widget_create(p,scene,parent,FL_WIDGET_RECTANGLE,10,20,&child));
     Fl_TransformEdit parent_transform={.entity=parent,.pose={.x=100,.y=100,.rz=1.5707963267948966,.sx=2,.sy=2,.sz=1},.bounds={320,180,0}};
     CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_TRANSFORMS,.scene=scene,.transforms=&parent_transform,.transform_count=1},NULL));
@@ -216,6 +217,25 @@ int main(int argc,char **argv)
     CHECK(fl_scene_edit_insert(edit,FL_WIDGET_TEXT,0,100,200));CHECK(fl_scene_edit_count(edit)==1);
     check_keyed_gesture(p,edit,scene);
     check_canvas_authoring(p,edit,scene);
+    Fl_Id box;
+    CHECK(fl_widget_create(p,scene,0,FL_WIDGET_RECTANGLE,10,20,&box));
+    CHECK(fl_scene_edit_select(edit,scene,box,false));
+    CHECK(fl_scene_edit_begin(edit,FL_GESTURE_AXIS_X,0,0));
+    CHECK(fl_scene_edit_update_spatial(edit,(Fl_Vec3){40,0,0},(Fl_Vec3){1,0,0},0));
+    t=read_transform(p,scene,box);CHECK(near(t.pose.x,50)&&near(t.pose.y,20)&&near(t.pose.z,0));
+    fl_scene_edit_end(edit,false);
+    CHECK(fl_scene_edit_begin(edit,FL_GESTURE_AXIS_Z,0,0));
+    CHECK(fl_scene_edit_update_spatial(edit,(Fl_Vec3){0,0,30},(Fl_Vec3){0,0,1},0));
+    t=read_transform(p,scene,box);CHECK(near(t.pose.z,30));
+    fl_scene_edit_end(edit,false);
+    before=read_transform(p,scene,box);
+    CHECK(fl_scene_edit_begin(edit,FL_GESTURE_RING_Z,0,0));
+    CHECK(fl_scene_edit_update_spatial(edit,(Fl_Vec3){0,0,0},(Fl_Vec3){0,0,1},1.5707963267948966));
+    t=read_transform(p,scene,box);
+    Fl_Vec3 center=fl_mat4_point(fl_pose_model(&t.pose),(Fl_Vec3){t.bounds.width*.5,t.bounds.height*.5,0});
+    Fl_Vec3 held=fl_mat4_point(fl_pose_model(&before.pose),(Fl_Vec3){before.bounds.width*.5,before.bounds.height*.5,0});
+    CHECK(near(center.x,held.x)&&near(center.y,held.y)&&near(center.z,held.z));
+    fl_scene_edit_end(edit,true);
     check_async_preview(p,bus,scene);
     check_scoped_editing(p,edit,scene);
     CHECK(fl_project_save(p));fl_scene_edit_destroy(edit);fl_project_destroy(p);CHECK(fl_event_bus_destroy(bus));fl_fs_remove(path);

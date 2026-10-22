@@ -20,7 +20,10 @@ struct Fl_ScenePreview {
     double eye_x, eye_y, eye_z;     /* editor camera; not stored in the document */
     double yaw, pitch;
     Fl_Id framed_scene, view_camera; /* view_camera 0 is the editor camera */
-    bool frame_pending, shot;        /* shot looks through view_camera */
+    bool frame_pending, shot, flat;  /* shot looks through view_camera; flat is the 2D canvas mode */
+    bool gizmo_armed;
+    Fl_EditGesture gizmo_gesture;
+    Fl_Vec3 gizmo_origin, gizmo_axis, gizmo_normal, gizmo_hit, gizmo_u, gizmo_v;
 };
 
 typedef struct PreviewView {
@@ -224,6 +227,15 @@ static void preview_redraw(Fl_ScenePreview *p, Ca_Viewport *viewport)
 }
 
 bool fl_scene_preview_shot(const Fl_ScenePreview *p) { return p && p->shot; }
+bool fl_scene_preview_flat(const Fl_ScenePreview *p) { return p && p->flat; }
+
+void fl_scene_preview_set_flat(Fl_ScenePreview *p, bool flat)
+{
+    if (!p || p->flat == flat) return;
+    p->flat = flat;
+    if (flat) p->frame_pending = true;
+    preview_redraw(p, NULL);
+}
 
 void fl_scene_preview_set_camera(Fl_ScenePreview *p, Fl_Id camera)
 {
@@ -293,7 +305,7 @@ void fl_scene_preview_pan(Fl_ScenePreview *p, Ca_Viewport *viewport, double dx, 
 
 void fl_scene_preview_look(Fl_ScenePreview *p, Ca_Viewport *viewport, double dx, double dy)
 {
-    if (!p || p->shot || !isfinite(dx) || !isfinite(dy) || (dx == 0 && dy == 0)) return;
+    if (!p || p->shot || p->flat || !isfinite(dx) || !isfinite(dy) || (dx == 0 && dy == 0)) return;
     p->yaw -= dx * 0.005; p->pitch -= dy * 0.005;
     if (p->pitch > 1.45) p->pitch = 1.45;
     if (p->pitch < -1.45) p->pitch = -1.45;
@@ -302,7 +314,7 @@ void fl_scene_preview_look(Fl_ScenePreview *p, Ca_Viewport *viewport, double dx,
 
 void fl_scene_preview_fly(Fl_ScenePreview *p, Ca_Viewport *viewport, double forward, double right, double up)
 {
-    if (!p || p->shot || !isfinite(forward) || !isfinite(right) || !isfinite(up)) return;
+    if (!p || p->shot || p->flat || !isfinite(forward) || !isfinite(right) || !isfinite(up)) return;
     PreviewView view; float h = 0;
     if (!editor_step(p, viewport, &view, &h)) return;
     double step = view.subject_distance * 0.02;
@@ -354,6 +366,8 @@ static bool handle_world(const Fl_ResolvedEntity *v, unsigned handle, double pix
     return true;
 }
 
+static Fl_EditGesture gizmo_pick(Fl_ScenePreview *p, Ca_Viewport *viewport, double x, double y);
+
 Fl_EditGesture fl_scene_preview_handle(Fl_ScenePreview *p, Ca_Viewport *viewport, double x, double y)
 {
     const Fl_SceneState *state = NULL;
@@ -364,6 +378,13 @@ Fl_EditGesture fl_scene_preview_handle(Fl_ScenePreview *p, Ca_Viewport *viewport
     if (!g || w <= 0 || h <= 0) return FL_GESTURE_MOVE;
     PreviewView view; Fl_SceneFrame gate = {0};
     if (!preview_view(p, scene, state, w, h, &gate, &view) || !view.perspective) return FL_GESTURE_MOVE;
+    if (!p->flat) {
+        if (!p->shot) {
+            Fl_EditGesture hit = gizmo_pick(p, viewport, x, y);
+            if (hit != FL_GESTURE_MOVE) return hit;
+        }
+        return FL_GESTURE_MOVE;
+    }
     float box_x, box_y, box_w, box_h;
     letterbox_rect(vx, vy, w, h, p->shot ? &gate : NULL, &box_x, &box_y, &box_w, &box_h);
     (void)box_x; (void)box_y; (void)box_w;
@@ -399,9 +420,176 @@ static bool vec_unit(Fl_Vec3 v, Fl_Vec3 *out)
     return true;
 }
 
+static double vec_dot(Fl_Vec3 a, Fl_Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+
+static bool gizmo_basis(Fl_Vec3 axis, Fl_Vec3 *u, Fl_Vec3 *v)
+{
+    Fl_Vec3 ref = fabs(axis.y) < 0.9 ? (Fl_Vec3){0, 1, 0} : (Fl_Vec3){1, 0, 0};
+    if (!vec_unit(vec_cross(axis, ref), u)) return false;
+    return vec_unit(vec_cross(axis, *u), v);
+}
+
+static bool facing_normal(Fl_Vec3 axis, Fl_Vec3 look, Fl_Vec3 *normal)
+{
+    double along = vec_dot(axis, look);
+    if (vec_unit((Fl_Vec3){look.x - axis.x * along, look.y - axis.y * along, look.z - axis.z * along}, normal)) return true;
+    Fl_Vec3 u, v;
+    if (!gizmo_basis(axis, &u, &v)) return false;
+    *normal = u;
+    return true;
+}
+
+static bool ray_plane(Fl_Vec3 origin, Fl_Vec3 direction, Fl_Vec3 point, Fl_Vec3 normal, Fl_Vec3 *hit)
+{
+    double denom = vec_dot(direction, normal);
+    if (fabs(denom) < 1e-8) return false;
+    double t = vec_dot((Fl_Vec3){point.x - origin.x, point.y - origin.y, point.z - origin.z}, normal) / denom;
+    *hit = (Fl_Vec3){origin.x + direction.x * t, origin.y + direction.y * t, origin.z + direction.z * t};
+    return isfinite(hit->x) && isfinite(hit->y) && isfinite(hit->z);
+}
+
+static double wrap_pi(double angle)
+{
+    const double pi = 3.14159265358979323846;
+    while (angle > pi) angle -= 2 * pi;
+    while (angle < -pi) angle += 2 * pi;
+    return angle;
+}
+
+static int gesture_axis(Fl_EditGesture gesture)
+{
+    if (gesture >= FL_GESTURE_AXIS_X && gesture <= FL_GESTURE_AXIS_Z) return (int)(gesture - FL_GESTURE_AXIS_X);
+    if (gesture >= FL_GESTURE_RING_X && gesture <= FL_GESTURE_RING_Z) return (int)(gesture - FL_GESTURE_RING_X);
+    return -1;
+}
+
+/* Local axes of the focused selection, and the point the gizmo spins around. */
+static bool gizmo_frame(Fl_ScenePreview *p, Fl_Vec3 *origin, Fl_Vec3 axes[3])
+{
+    const Fl_SceneState *state = NULL;
+    const Fl_Scene *scene = preview_scene(p, &state);
+    const Fl_SceneGeometry *g = fl_scene_edit_geometry(p->edit);
+    if (!scene || !g || g->count != scene->entity_count) return false;
+    Fl_Id id = fl_scene_edit_focus(p->edit);
+    if (!id || !fl_scene_edit_contains(p->edit, id)) id = fl_scene_edit_primary(p->edit);
+    const Fl_Entity *entity = fl_scene_entity(scene, id);
+    if (!entity) return false;
+    const Fl_ResolvedEntity *v = &g->entities[entity - scene->entities];
+    bool camera = fl_entity_component(entity, FL_COMPONENT_CAMERA) != NULL;
+    Fl_Vec3 local = v->mesh || camera ? (Fl_Vec3){0, 0, 0} : (Fl_Vec3){v->bounds.width * 0.5, v->bounds.height * 0.5, 0};
+    *origin = fl_mat4_point(v->model, local);
+    Fl_Vec3 raw[3] = {{v->model.m[0], v->model.m[1], v->model.m[2]}, {v->model.m[4], v->model.m[5], v->model.m[6]}, {v->model.m[8], v->model.m[9], v->model.m[10]}};
+    for (int i = 0; i < 3; ++i) if (!vec_unit(raw[i], &axes[i])) return false;
+    return isfinite(origin->x) && isfinite(origin->y) && isfinite(origin->z);
+}
+
+static bool pointer_ray(Fl_ScenePreview *p, Ca_Viewport *viewport, const PreviewView *view, double x, double y, Fl_Vec3 *origin, Fl_Vec3 *direction)
+{
+    double ndc_x, ndc_y;
+    return picture_ndc(p, viewport, x, y, true, &ndc_x, &ndc_y) && view_ray(view, ndc_x, ndc_y, origin, direction);
+}
+
+static double segment_px(double px, double py, double ax, double ay, double bx, double by)
+{
+    double abx = bx - ax, aby = by - ay, ab2 = abx * abx + aby * aby;
+    double t = ab2 > 0 ? ((px - ax) * abx + (py - ay) * aby) / ab2 : 0;
+    if (t < 0) t = 0;
+    if (t > 1) t = 1;
+    return hypot(px - (ax + abx * t), py - (ay + aby * t));
+}
+
+static Fl_EditGesture gizmo_pick(Fl_ScenePreview *p, Ca_Viewport *viewport, double x, double y)
+{
+    const Fl_SceneState *state = NULL;
+    const Fl_Scene *scene = preview_scene(p, &state);
+    float vx, vy, w, h;
+    ca_viewport_screen_rect(viewport, &vx, &vy, &w, &h);
+    (void)vx; (void)vy;
+    PreviewView view; Fl_SceneFrame gate = {0};
+    Fl_Vec3 origin, axes[3];
+    if (w <= 0 || h <= 0 || !preview_view(p, scene, state, w, h, &gate, &view) || !gizmo_frame(p, &origin, axes)) return FL_GESTURE_MOVE;
+    double ppw = pixels_per_world(&view, h, origin);
+    if (!(ppw > 0)) return FL_GESTURE_MOVE;
+    double reach = 78.0 / ppw, ring = 52.0 / ppw, ox, oy;
+    if (!project_window(&view, viewport, false, &gate, origin, &ox, &oy)) return FL_GESTURE_MOVE;
+    double best = 10;
+    Fl_EditGesture hit = FL_GESTURE_MOVE;
+    for (int i = 0; i < 3; ++i) {
+        Fl_Vec3 tip = {origin.x + axes[i].x * reach, origin.y + axes[i].y * reach, origin.z + axes[i].z * reach};
+        double tx, ty;
+        if (!project_window(&view, viewport, false, &gate, tip, &tx, &ty)) continue;
+        double distance = segment_px(x, y, ox, oy, tx, ty);
+        if (distance < best) { best = distance; hit = (Fl_EditGesture)(FL_GESTURE_AXIS_X + i); }
+    }
+    if (hit != FL_GESTURE_MOVE || fl_scene_edit_count(p->edit) != 1) return hit;
+    Fl_Vec3 ray_o, ray_d;
+    if (!pointer_ray(p, viewport, &view, x, y, &ray_o, &ray_d)) return hit;
+    best = 8;
+    for (int i = 0; i < 3; ++i) {
+        Fl_Vec3 plane_hit;
+        if (!ray_plane(ray_o, ray_d, origin, axes[i], &plane_hit)) continue;
+        Fl_Vec3 offset = {plane_hit.x - origin.x, plane_hit.y - origin.y, plane_hit.z - origin.z};
+        double radial = hypot(hypot(offset.x, offset.y), offset.z);
+        if (fabs(radial - ring) * ppw < best && radial * ppw > 16) { best = fabs(radial - ring) * ppw; hit = (Fl_EditGesture)(FL_GESTURE_RING_X + i); }
+    }
+    return hit;
+}
+
+bool fl_scene_preview_gizmo_arm(Fl_ScenePreview *p, Ca_Viewport *viewport, Fl_EditGesture gesture, double x, double y)
+{
+    int index = gesture_axis(gesture);
+    const Fl_SceneState *state = NULL;
+    const Fl_Scene *scene = p ? preview_scene(p, &state) : NULL;
+    float vx, vy, w, h;
+    if (!p || !viewport || p->flat || p->shot || index < 0) return false;
+    ca_viewport_screen_rect(viewport, &vx, &vy, &w, &h);
+    (void)vx; (void)vy;
+    PreviewView view; Fl_SceneFrame gate = {0};
+    Fl_Vec3 origin, axes[3], ray_o, ray_d, hit;
+    if (w <= 0 || h <= 0 || !preview_view(p, scene, state, w, h, &gate, &view) || !gizmo_frame(p, &origin, axes)) return false;
+    bool ring = gesture >= FL_GESTURE_RING_X && gesture <= FL_GESTURE_RING_Z;
+    p->gizmo_origin = origin;
+    p->gizmo_axis = axes[index];
+    p->gizmo_gesture = gesture;
+    if (ring) {
+        p->gizmo_normal = axes[index];
+        if (!gizmo_basis(axes[index], &p->gizmo_u, &p->gizmo_v)) return false;
+    } else if (!facing_normal(axes[index], view.look, &p->gizmo_normal)) return false;
+    if (!pointer_ray(p, viewport, &view, x, y, &ray_o, &ray_d) || !ray_plane(ray_o, ray_d, origin, p->gizmo_normal, &hit)) return false;
+    p->gizmo_hit = hit;
+    p->gizmo_armed = true;
+    return true;
+}
+
+bool fl_scene_preview_gizmo_delta(Fl_ScenePreview *p, Ca_Viewport *viewport, double x, double y, Fl_Vec3 *world_delta, Fl_Vec3 *world_axis, double *radians)
+{
+    const Fl_SceneState *state = NULL;
+    const Fl_Scene *scene = p ? preview_scene(p, &state) : NULL;
+    float vx, vy, w, h;
+    if (!p || !p->gizmo_armed || !viewport || !world_delta || !world_axis || !radians) return false;
+    ca_viewport_screen_rect(viewport, &vx, &vy, &w, &h);
+    (void)vx; (void)vy;
+    PreviewView view; Fl_SceneFrame gate = {0};
+    Fl_Vec3 ray_o, ray_d, hit;
+    if (w <= 0 || h <= 0 || !preview_view(p, scene, state, w, h, &gate, &view)) return false;
+    if (!pointer_ray(p, viewport, &view, x, y, &ray_o, &ray_d) || !ray_plane(ray_o, ray_d, p->gizmo_origin, p->gizmo_normal, &hit)) return false;
+    *world_axis = p->gizmo_axis;
+    if (p->gizmo_gesture >= FL_GESTURE_RING_X && p->gizmo_gesture <= FL_GESTURE_RING_Z) {
+        *world_delta = (Fl_Vec3){0, 0, 0};
+        double start = atan2(vec_dot(p->gizmo_hit, p->gizmo_v), vec_dot(p->gizmo_hit, p->gizmo_u));
+        double now = atan2(vec_dot(hit, p->gizmo_v), vec_dot(hit, p->gizmo_u));
+        *radians = wrap_pi(now - start);
+        return isfinite(*radians);
+    }
+    double distance = vec_dot((Fl_Vec3){hit.x - p->gizmo_hit.x, hit.y - p->gizmo_hit.y, hit.z - p->gizmo_hit.z}, p->gizmo_axis);
+    *world_delta = (Fl_Vec3){p->gizmo_axis.x * distance, p->gizmo_axis.y * distance, p->gizmo_axis.z * distance};
+    *radians = 0;
+    return isfinite(distance);
+}
+
 /* Screen-facing ribbon from a to b, about 1.5 logical pixels wide at the nearer end. */
 static void draw_frustum_edge(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, const Fl_SceneFrame *gate, const PreviewView *view,
-                              float viewport_h, VkDescriptorSet white, Fl_Vec3 a, Fl_Vec3 b)
+                              float viewport_h, VkDescriptorSet white, Fl_Vec3 a, Fl_Vec3 b, const unsigned char color[4])
 {
     Fl_Vec3 dir = {b.x - a.x, b.y - a.y, b.z - a.z};
     if (!(hypot(hypot(dir.x, dir.y), dir.z) > 1e-6)) return;
@@ -417,7 +605,7 @@ static void draw_frustum_edge(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, c
     m.m[4] = side.x; m.m[5] = side.y; m.m[6] = side.z;
     m.m[8] = normal.x; m.m[9] = normal.y; m.m[10] = normal.z;
     m.m[12] = a.x - side.x * 0.5; m.m[13] = a.y - side.y * 0.5; m.m[14] = a.z - side.z * 0.5;
-    Fl_Appearance stroke = {.stroke = {120, 196, 255, 230}, .stroke_width = 1};
+    Fl_Appearance stroke = {.stroke = {color[0], color[1], color[2], color[3]}, .stroke_width = 1};
     fl_scene_renderer_model(renderer, cmd, gate, m, 1, 1, FL_WIDGET_LINE, stroke, white, NULL);
 }
 
@@ -469,9 +657,10 @@ static void draw_camera_frustum(Fl_SceneRenderer *renderer, VkCommandBuffer cmd,
         far_corner[i] = frustum_corner(origin, right, up, look, far_draw, sx[i] * far_w, sy[i] * far_h);
     }
     for (int i = 0; i < 4; ++i) {
-        if (draw_near) draw_frustum_edge(renderer, cmd, gate, view, viewport_h, white, near_corner[i], near_corner[(i + 1) % 4]);
-        draw_frustum_edge(renderer, cmd, gate, view, viewport_h, white, far_corner[i], far_corner[(i + 1) % 4]);
-        draw_frustum_edge(renderer, cmd, gate, view, viewport_h, white, draw_near ? near_corner[i] : origin, far_corner[i]);
+        const unsigned char blue[4] = {120, 196, 255, 230};
+        if (draw_near) draw_frustum_edge(renderer, cmd, gate, view, viewport_h, white, near_corner[i], near_corner[(i + 1) % 4], blue);
+        draw_frustum_edge(renderer, cmd, gate, view, viewport_h, white, far_corner[i], far_corner[(i + 1) % 4], blue);
+        draw_frustum_edge(renderer, cmd, gate, view, viewport_h, white, draw_near ? near_corner[i] : origin, far_corner[i], blue);
     }
 }
 
@@ -484,6 +673,41 @@ static Fl_Mat4 billboard(Fl_Vec3 right, Fl_Vec3 up, Fl_Vec3 point, double size)
     m.m[13] = point.y - (right.y + up.y) * size * 0.5;
     m.m[14] = point.z - (right.z + up.z) * size * 0.5;
     return m;
+}
+
+static void draw_gizmo(Fl_ScenePreview *p, Fl_SceneRenderer *renderer, VkCommandBuffer cmd, const Fl_SceneFrame *gate, const PreviewView *view, float viewport_h, VkDescriptorSet white)
+{
+    Fl_Vec3 origin, axes[3];
+    if (!gizmo_frame(p, &origin, axes)) return;
+    double ppw = pixels_per_world(view, viewport_h, origin);
+    if (!(ppw > 0)) return;
+    double reach = 78.0 / ppw, ring = 52.0 / ppw;
+    static const unsigned char colors[3][4] = {{232, 84, 84, 255}, {88, 196, 120, 255}, {84, 156, 240, 255}};
+    if (fl_scene_edit_count(p->edit) == 1) for (int i = 0; i < 3; ++i) {
+        Fl_Vec3 u, v, prev;
+        if (!gizmo_basis(axes[i], &u, &v)) continue;
+        for (int step = 0; step <= 28; ++step) {
+            double angle = step / 28.0 * 6.283185307179586;
+            Fl_Vec3 point = {origin.x + (u.x * cos(angle) + v.x * sin(angle)) * ring,
+                             origin.y + (u.y * cos(angle) + v.y * sin(angle)) * ring,
+                             origin.z + (u.z * cos(angle) + v.z * sin(angle)) * ring};
+            if (step) draw_frustum_edge(renderer, cmd, gate, view, viewport_h, white, prev, point, colors[i]);
+            prev = point;
+        }
+    }
+    for (int i = 0; i < 3; ++i) {
+        Fl_Vec3 tip = {origin.x + axes[i].x * reach, origin.y + axes[i].y * reach, origin.z + axes[i].z * reach};
+        Fl_Vec3 neck = {origin.x + axes[i].x * reach * 0.78, origin.y + axes[i].y * reach * 0.78, origin.z + axes[i].z * reach * 0.78};
+        Fl_Vec3 side = vec_cross(axes[i], view->look);
+        if (!vec_unit(side, &side)) side = vec_cross(axes[i], view->up);
+        if (!vec_unit(side, &side)) continue;
+        side.x *= reach * 0.09; side.y *= reach * 0.09; side.z *= reach * 0.09;
+        Fl_Vec3 left = {neck.x + side.x, neck.y + side.y, neck.z + side.z};
+        Fl_Vec3 right = {neck.x - side.x, neck.y - side.y, neck.z - side.z};
+        draw_frustum_edge(renderer, cmd, gate, view, viewport_h, white, origin, tip, colors[i]);
+        draw_frustum_edge(renderer, cmd, gate, view, viewport_h, white, left, tip, colors[i]);
+        draw_frustum_edge(renderer, cmd, gate, view, viewport_h, white, right, tip, colors[i]);
+    }
 }
 
 void fl_scene_preview_render(Ca_Viewport *viewport, void *data)
@@ -555,6 +779,7 @@ void fl_scene_preview_render(Ca_Viewport *viewport, void *data)
                 outline.stroke_width = edge > 0 && axis > 1e-9 ? FL_STYLE_OUTLINE_WIDTH / (edge * axis) : 0;
                 fl_scene_renderer_model(p->renderer, cmd, &gate, face, gw, gh, FL_WIDGET_RECTANGLE, outline, white, NULL);
             }
+            if (p->flat) {
             Fl_Appearance handle = {.fill = FL_STYLE_GIZMO_RGBA, .font_size = 48};
             for (unsigned i = 0; i < 5; ++i) {
                 const Fl_Entity *e = fl_scene_entity(scene, fl_scene_edit_focus(p->edit));
@@ -567,6 +792,7 @@ void fl_scene_preview_render(Ca_Viewport *viewport, void *data)
                 if (!handle_world(entity, i, handle_scale, &world) || !(handle_scale > 0)) break;
                 fl_scene_renderer_model(p->renderer, cmd, &gate, billboard(view.right, view.up, world, FL_STYLE_HANDLE_SIZE / handle_scale), 1, 1, FL_WIDGET_RECTANGLE, handle, white, NULL);
             }
+            } else if (!p->shot) draw_gizmo(p, p->renderer, cmd, &gate, &view, logical_h, white);
         }
     }
     vkCmdEndRendering(cmd);

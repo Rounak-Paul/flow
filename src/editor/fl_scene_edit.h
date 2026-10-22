@@ -12,7 +12,11 @@ typedef struct Fl_SnapChange { Fl_SceneEdit *edit; } Fl_SnapChange;
 typedef struct Fl_SelectionChange { Fl_SceneEdit *edit; } Fl_SelectionChange;
 /* Current-time notifications carry the controller and the new scene time. */
 typedef struct Fl_TimeChange { Fl_SceneEdit *edit; Fl_Tick tick; } Fl_TimeChange;
-typedef enum Fl_EditGesture { FL_GESTURE_MOVE, FL_GESTURE_NW, FL_GESTURE_NE, FL_GESTURE_SE, FL_GESTURE_SW, FL_GESTURE_ROTATE } Fl_EditGesture;
+typedef enum Fl_EditGesture {
+    FL_GESTURE_MOVE, FL_GESTURE_NW, FL_GESTURE_NE, FL_GESTURE_SE, FL_GESTURE_SW, FL_GESTURE_ROTATE,
+    FL_GESTURE_AXIS_X, FL_GESTURE_AXIS_Y, FL_GESTURE_AXIS_Z,
+    FL_GESTURE_RING_X, FL_GESTURE_RING_Y, FL_GESTURE_RING_Z
+} Fl_EditGesture;
 /* Create the shared selection/gesture owner. jobs enables asynchronous scripted previews; NULL samples inline. */
 Fl_SceneEdit *fl_scene_edit_create(Fl_Project *project, Fl_EventBus *bus, Fl_JobSystem *jobs);
 /* Release selection and gesture state after all borrowing panels are destroyed. */
@@ -42,6 +46,8 @@ const Fl_SceneGeometry *fl_scene_edit_geometry(Fl_SceneEdit *edit);
 bool fl_scene_edit_begin(Fl_SceneEdit *edit, Fl_EditGesture mode, double x, double y);
 /* Apply the captured gesture at scene x/y as one validated transform operation. */
 bool fl_scene_edit_update(Fl_SceneEdit *edit, double x, double y);
+/* Apply an axis or ring drag. world_delta is the world translation from the press. A ring uses world_axis and radians, measured from the press. */
+bool fl_scene_edit_update_spatial(Fl_SceneEdit *edit, Fl_Vec3 world_delta, Fl_Vec3 world_axis, double radians);
 /* End a gesture; cancel restores its initial transforms if no external mutation intervened. */
 void fl_scene_edit_end(Fl_SceneEdit *edit, bool cancel);
 /* Create a widget at a scene-local point under parent and select it. */

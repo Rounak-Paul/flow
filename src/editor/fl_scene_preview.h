@@ -30,6 +30,14 @@ void fl_scene_preview_fly(Fl_ScenePreview *preview, Ca_Viewport *viewport, doubl
 void fl_scene_preview_set_camera(Fl_ScenePreview *preview, Fl_Id camera);
 /* True while the viewport is looking through a hierarchy camera. */
 bool fl_scene_preview_shot(const Fl_ScenePreview *preview);
+/* 2D works on the canvas with box handles. 3D flies and uses the axis gizmo. */
+void fl_scene_preview_set_flat(Fl_ScenePreview *preview, bool flat);
+bool fl_scene_preview_flat(const Fl_ScenePreview *preview);
+/* Remember the gizmo axis under the press. False when the pointer misses its drag plane. */
+bool fl_scene_preview_gizmo_arm(Fl_ScenePreview *preview, Ca_Viewport *viewport, Fl_EditGesture gesture, double window_x, double window_y);
+/* World translation, frozen axis and radians from the armed press to this window point. */
+bool fl_scene_preview_gizmo_delta(Fl_ScenePreview *preview, Ca_Viewport *viewport, double window_x, double window_y,
+                                  Fl_Vec3 *world_delta, Fl_Vec3 *world_axis, double *radians);
 /* Put the editor camera back in front of the output gate. */
 void fl_scene_preview_reset_view(Fl_ScenePreview *preview);
 /* Convert window pixels to scene pixels on the z = 0 plane; allow_outside supports dragging beyond the artboard. */
