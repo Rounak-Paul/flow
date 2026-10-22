@@ -4,8 +4,9 @@
 #include "style.h"
 #include "core/fl_log.h"
 #include "fl_scene_preview.h"
-#include "fl_canvas_view.h"
+#include "fl_playback.h"
 #include "fl_scene_thumbnails.h"
+#include "components/fl_spatial.h"
 #include <ca_icons.h>
 #include <ca_components.h>
 #include <math.h>
@@ -25,7 +26,9 @@ struct Fl_ScenePanel {
     Ca_Div *hierarchy;
     Ca_Div *scene_strip;
     Ca_Effect *keys;
-    bool gesturing, panning;
+    bool gesturing, playing;
+    int navigating;             /* 1 looks, 2 pans; 0 is idle */
+    Fl_Playback *playback;
     double pan_dx, pan_dy;
     double drag_offset_x,drag_offset_y,drag_scale_x,drag_scale_y;
     Fl_Row *rows;
@@ -94,23 +97,6 @@ static bool apply(Fl_ScenePanel *p, Fl_Op op, Fl_Id *id)
     return ok;
 }
 
-typedef struct Fl_AspectPreset { const char *name; uint64_t width, height; } Fl_AspectPreset;
-static const Fl_AspectPreset aspect_presets[] = {
-    {"Canvas", 0, 0}, {"16:9", 16, 9}, {"9:16", 9, 16}, {"1:1", 1, 1},
-    {"4:3", 4, 3}, {"3:4", 3, 4}, {"21:9", 21, 9}
-};
-
-/* Apply the selected target ratio to the active scene without changing its canvas or entities. */
-static void aspect_chosen(Ca_Select *select, void *data)
-{
-    Fl_ScenePanel *p = data;
-    int index = ca_select_get(select);
-    if (index < 0 || (size_t)index >= sizeof(aspect_presets) / sizeof(*aspect_presets)) return;
-    const Fl_AspectPreset *preset = &aspect_presets[index];
-    apply(p, (Fl_Op){.kind = FL_OP_SCENE_ASPECT, .scene = fl_scene_edit_scene(p->edit),
-        .aspect_width = preset->width, .aspect_height = preset->height}, NULL);
-}
-
 /* Toggle authoring snap independently of document contents. */
 static void toggle_snap(Ca_Button *button, void *data)
 {
@@ -118,7 +104,7 @@ static void toggle_snap(Ca_Button *button, void *data)
     fl_scene_edit_set_snap(p->edit,!fl_scene_edit_snap(p->edit));
 }
 
-/* Reset the saved camera to the canvas center. */
+/* Put the editor camera back in front of the output gate. */
 static void reset_canvas(Ca_Button *button, void *data)
 {
     (void)button; Fl_ScenePanel *p=data; fl_scene_preview_reset_view(p->preview);
@@ -139,32 +125,21 @@ static bool snap_changed(const Fl_Event *event, void *data)
     return false;
 }
 
-/* Emit a right-aligned target selector; unlisted stored ratios remain visible as Custom. */
-static void build_aspect_selector(Fl_ScenePanel *p, const Fl_Scene *scene)
+/* Right-align the editor-camera controls. Aspect lives on each camera entity. */
+static void build_view_tools(Fl_ScenePanel *p)
 {
-    const char *options[sizeof(aspect_presets) / sizeof(*aspect_presets) + 1];
-    int count = (int)(sizeof(aspect_presets) / sizeof(*aspect_presets)), selected = -1;
-    for (int i = 0; i < count; ++i) {
-        options[i] = aspect_presets[i].name;
-        if (scene && ((!scene->aspect_width && i == 0) ||
-            (scene->aspect_width && aspect_presets[i].width &&
-             scene->aspect_width * aspect_presets[i].height == scene->aspect_height * aspect_presets[i].width))) selected = i;
-    }
-    char custom[64];
-    if (scene && selected < 0) {
-        snprintf(custom, sizeof(custom), "%llu:%llu", (unsigned long long)scene->aspect_width,
-            (unsigned long long)scene->aspect_height);
-        selected = count; options[count++] = custom;
-    }
     ca_div_begin(&(Ca_DivDesc){.style = FL_CLASS_TOOLBAR_SPACER}); ca_div_end();
     fl_button(&(Fl_ButtonDesc){.text=CA_ICON_NF_MD_FIT_TO_PAGE_OUTLINE,.id="scene-fit-canvas",
-        .on_click=reset_canvas,.click_data=p, .kind = FL_BUTTON_ICON, .tooltip = "Center the view. Right-drag pans. Scroll zooms a camera."});
+        .on_click=reset_canvas,.click_data=p, .kind = FL_BUTTON_ICON,
+        .tooltip = "Frame the scene. Right-drag looks. Middle-drag pans. Scroll dollies. Hold right-click and use WASD, Q and E to fly."});
     fl_button(&(Fl_ButtonDesc){.text=CA_ICON_NF_MD_MAGNET,.id="scene-toggle-snap",
         .on_click=toggle_snap,.click_data=p, .kind = FL_BUTTON_ICON, .active = fl_scene_edit_snap(p->edit), .tooltip = fl_scene_edit_snap(p->edit) ? "Grid snapping on (64 units)" : "Grid snapping off"});
-    ca_text(&(Ca_TextDesc){.text = "Target", .style = FL_CLASS_LABEL});
-    ca_select(&(Ca_SelectDesc){.options = options, .option_count = count, .selected = selected < 0 ? 0 : selected,
-        .id = "scene-target-aspect", .style = FL_CLASS_ASPECT_SELECT, .disabled = !scene,
-        .on_change = aspect_chosen, .change_data = p});
+    if (p->playing) {
+        const Fl_Scene *scene = fl_project_scene(p->project, fl_scene_edit_scene(p->edit));
+        Fl_Pose pose = fl_pose_identity(); Fl_Camera camera;
+        bool shot = fl_scene_view_camera(scene, fl_scene_edit_state(p->edit), &pose, &camera, NULL);
+        ca_text(&(Ca_TextDesc){.text = shot ? "Playing camera" : "Playing", .style = FL_CLASS_LABEL});
+    }
 }
 
 /* Select a card or hierarchy row by stable identity. */
@@ -285,8 +260,8 @@ static void entity_menu(int index, void *data)
 static void stage_start(const Ca_DragEvent *event,void *data)
 {
     Fl_ScenePanel *p=data;double x,y;
-    if (p->viewport && event->button==1) {
-        p->panning=true; p->pan_dx=p->pan_dy=0; return;
+    if (p->viewport && !fl_scene_preview_shot(p->preview) && (event->button==1 || event->button==2)) {
+        p->navigating=event->button==1 ? 1 : 2; p->pan_dx=p->pan_dy=0; return;
     }
     if (!p->viewport) return;
     bool placed=fl_scene_preview_point(p->preview,p->viewport,event->start_x,event->start_y,true,&x,&y);
@@ -311,8 +286,10 @@ static void stage_start(const Ca_DragEvent *event,void *data)
 static void stage_move(const Ca_DragEvent *event,void *data)
 {
     Fl_ScenePanel *p=data;
-    if (p->panning) {
-        if (p->viewport) fl_scene_preview_pan(p->preview,p->viewport,event->dx-p->pan_dx,event->dy-p->pan_dy);
+    if (p->navigating) {
+        double dx=event->dx-p->pan_dx, dy=event->dy-p->pan_dy;
+        if (p->viewport && p->navigating==1) fl_scene_preview_look(p->preview,p->viewport,dx,dy);
+        else if (p->viewport) fl_scene_preview_pan(p->preview,p->viewport,dx,dy);
         p->pan_dx=event->dx; p->pan_dy=event->dy; return;
     }
     if (p->gesturing) {
@@ -325,30 +302,37 @@ static void stage_move(const Ca_DragEvent *event,void *data)
 static void stage_end(const Ca_DragEvent *event,void *data)
 {
     Fl_ScenePanel *p=data;
-    if (p->panning) {stage_move(event,p);p->panning=false;return;}
+    if (p->navigating) {stage_move(event,p);p->navigating=0;return;}
     if (!p->gesturing) return;
     stage_move(event,p);fl_scene_edit_end(p->edit,false);p->gesturing=false;
 }
-/* Scroll pans a flat scene. A perspective camera trucks sideways and dollies on the vertical delta. */
+/* Horizontal scroll trucks. Vertical scroll dollies. Playback keeps the shot camera still. */
 static void stage_scroll(double dx, double dy, void *data)
 {
     Fl_ScenePanel *p=data;
-    if (!p->viewport||p->gesturing||p->panning) return;
-    if (fl_scene_preview_camera_view(p->preview)) {
-        if (dx) fl_scene_preview_pan(p->preview,p->viewport,dx*32,0);
-        if (dy) fl_scene_preview_zoom(p->preview,p->viewport,dy*32);
-        return;
-    }
-    fl_scene_preview_pan(p->preview,p->viewport,dx*32,dy*32);
+    if (!p->viewport||p->gesturing||p->navigating||fl_scene_preview_shot(p->preview)) return;
+    if (dx) fl_scene_preview_pan(p->preview,p->viewport,dx*32,0);
+    if (dy) fl_scene_preview_zoom(p->preview,p->viewport,dy*32);
 }
 
 /* Escape rolls back only the active viewport gesture. */
 static void check_keys(void *data)
 {
     Fl_ScenePanel *p=data;
-    if (p->panning&&p->window&&ca_window_focused(p->window)&&ca_window_key_down(p->window,CA_KEY_ESCAPE)) {
-        if (p->viewport) fl_scene_preview_pan(p->preview,p->viewport,-p->pan_dx,-p->pan_dy);
-        p->panning=false;
+    if (p->navigating&&p->window&&ca_window_focused(p->window)&&ca_window_key_down(p->window,CA_KEY_ESCAPE)) {
+        if (p->viewport && p->navigating==1) fl_scene_preview_look(p->preview,p->viewport,-p->pan_dx,-p->pan_dy);
+        else if (p->viewport) fl_scene_preview_pan(p->preview,p->viewport,-p->pan_dx,-p->pan_dy);
+        p->navigating=0;
+    }
+    if (!p->playing && !p->gesturing && !p->navigating && p->viewport && p->window && ca_window_focused(p->window) && ca_window_mouse_button_down(p->window,1)) {
+        double forward=0, right=0, up=0;
+        if (ca_window_key_down(p->window,CA_KEY_W)) forward+=1;
+        if (ca_window_key_down(p->window,CA_KEY_S)) forward-=1;
+        if (ca_window_key_down(p->window,CA_KEY_D)) right+=1;
+        if (ca_window_key_down(p->window,CA_KEY_A)) right-=1;
+        if (ca_window_key_down(p->window,CA_KEY_E)) up+=1;
+        if (ca_window_key_down(p->window,CA_KEY_Q)) up-=1;
+        if (forward||right||up) fl_scene_preview_fly(p->preview,p->viewport,forward,right,up);
     }
     if (p->gesturing&&p->window&&ca_window_focused(p->window)&&ca_window_key_down(p->window,CA_KEY_ESCAPE)) {
         fl_scene_edit_end(p->edit,true);p->gesturing=false;
@@ -375,6 +359,30 @@ Fl_ScenePanel *fl_scene_panel_create(Fl_SceneEdit *edit, Fl_Fonts *fonts, Fl_Job
         fl_event_unsubscribe_owner(bus,p); fl_scene_preview_destroy(p->preview); free(p); return NULL;
     }
     return p;
+}
+
+static bool playback_changed(const Fl_Event *event, void *data)
+{
+    Fl_ScenePanel *p = data;
+    const Fl_PlaybackChange *change = event->payload;
+    if (!change || change->playback != p->playback) return false;
+    p->playing = change->playing;
+    if (p->navigating) p->navigating = 0;
+    fl_scene_preview_set_shot(p->preview, p->playing);
+    if (p->viewport) ca_viewport_request_redraw(p->viewport);
+    if (p->dock) ca_dock_invalidate_panel(p->dock, "scene");
+    return false;
+}
+
+void fl_scene_panel_set_playback(Fl_ScenePanel *p, Fl_Playback *playback)
+{
+    if (!p || !playback || p->playback) return;
+    p->playback = playback;
+    p->playing = fl_playback_playing(playback);
+    fl_scene_preview_set_shot(p->preview, p->playing);
+    Fl_EventType type = fl_event_type_find(p->bus, FL_EVENT_PLAYBACK_CHANGED);
+    if (type != FL_EVENT_TYPE_INVALID)
+        fl_event_subscribe(p->bus, &(Fl_SubscribeDesc){.type = type, .fn = playback_changed, .user_data = p, .owner = p});
 }
 
 void fl_scene_panel_teardown(void *data)
@@ -477,6 +485,7 @@ static void toggle_visibility(Ca_Button *button, void *data)
 static const char *kind_icon(const Fl_Entity *e, bool open)
 {
     const Fl_WidgetDef *def = fl_widget_for_entity(e);
+    if (fl_entity_component(e, FL_COMPONENT_CAMERA)) return CA_ICON_NF_MD_CAMERA;
     switch (def ? def->kind : FL_WIDGET_GROUP) {
     case FL_WIDGET_RECTANGLE: return CA_ICON_NF_FA_SQUARE;
     case FL_WIDGET_ELLIPSE: return CA_ICON_NF_FA_CIRCLE;
@@ -582,6 +591,19 @@ static void build_hierarchy(Fl_ScenePanel *p, const Fl_Scene *s)
         }
         ca_text(&(Ca_TextDesc){.text = kind_icon(e, branch && !collapsed), .style = FL_CLASS_TREE_ICON});
         ca_text(&(Ca_TextDesc){.text = e->name, .style = (flags[i] & ENTITY_HIDDEN_ABOVE) ? FL_CLASS_TREE_NAME_MUTED : FL_CLASS_TREE_NAME});
+        Fl_Camera camera;
+        if (fl_camera_decode(fl_entity_component(e, FL_COMPONENT_CAMERA), &camera)) {
+            char ratio[32];
+            if (camera.aspect_w && camera.aspect_h) snprintf(ratio, sizeof(ratio), "%u:%u", camera.aspect_w, camera.aspect_h);
+            else snprintf(ratio, sizeof(ratio), "Scene");
+            ca_text(&(Ca_TextDesc){.text = ratio, .style = FL_CLASS_MUTED});
+            bool shot = e->visible;
+            if (shot) for (size_t earlier = 0; earlier < i; ++earlier) {
+                Fl_Camera previous;
+                if (s->entities[earlier].visible && fl_camera_decode(fl_entity_component(&s->entities[earlier], FL_COMPONENT_CAMERA), &previous)) { shot = false; break; }
+            }
+            if (shot) ca_text(&(Ca_TextDesc){.text = "Shot", .style = FL_CLASS_LABEL});
+        }
         const char *eye_style = !e->visible ? FL_CLASS_TREE_EYE_HIDDEN : (flags[i] & ENTITY_HIDDEN_BELOW) ? FL_CLASS_TREE_EYE_MIXED : FL_CLASS_TREE_EYE;
         char key[56]; snprintf(key, sizeof(key), "%s-eye", id);
         ca_btn_begin(&(Ca_BtnDesc){.text = e->visible ? CA_ICON_NF_FA_EYE : CA_ICON_NF_FA_EYE_SLASH,
@@ -611,7 +633,7 @@ void fl_scene_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
     ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_SCENE});
     ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_SCENE_TOOLBAR});
     fl_button(&(Fl_ButtonDesc){.text = "+ Scene", .on_click = add_scene, .click_data = p});
-    build_aspect_selector(p, s);
+    build_view_tools(p);
     ca_div_end();
     ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_SCENE_GUTTER});
     p->scene_strip = ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_SCENE_STRIP});
@@ -653,7 +675,7 @@ void fl_scene_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
     ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_VIEW});
     ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_VIEW_GUTTER});
     ca_div_begin(&(Ca_DivDesc){.direction=CA_VERTICAL,.id="scene-stage",.style=FL_CLASS_STAGE,
-        .on_drag_start=stage_start,.on_drag=stage_move,.on_drag_end=stage_end,.drag_data=p,.drag_buttons=3,
+        .on_drag_start=stage_start,.on_drag=stage_move,.on_drag_end=stage_end,.drag_data=p,.drag_buttons=7,
         .on_scroll=stage_scroll,.scroll_data=p});
     p->viewport = ca_viewport(&(Ca_ViewportDesc){.on_render = fl_scene_preview_render, .render_data = p->preview, .id = "scene-viewport", .style = FL_CLASS_VIEWPORT});
     if (p->viewport) ca_viewport_request_redraw(p->viewport);

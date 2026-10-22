@@ -18,13 +18,19 @@ typedef struct Fl_ScenePreviewDesc {
 Fl_ScenePreview *fl_scene_preview_create(const Fl_ScenePreviewDesc *desc);
 /* Record scene primitives and selection handles into viewport; data is the preview. */
 void fl_scene_preview_render(Ca_Viewport *viewport, void *data);
-/* Translate the canvas by logical pixel deltas dx/dy. A flat scene moves its frame; a perspective camera trucks in the view plane. */
+/* Truck the editor camera in the view plane. dx/dy are logical pixels; positive dx moves the view right. */
 void fl_scene_preview_pan(Fl_ScenePreview *preview, Ca_Viewport *viewport, double dx, double dy);
-/* Dolly a perspective camera. dy is the same logical scroll delta pan receives; positive dy moves closer. */
+/* Dolly the editor camera. Positive dy moves closer. Ignored while a shot camera is showing. */
 void fl_scene_preview_zoom(Fl_ScenePreview *preview, Ca_Viewport *viewport, double dy);
-/* True when the active view is a perspective camera, so pan and scroll stay in the viewport. */
-bool fl_scene_preview_camera_view(Fl_ScenePreview *preview);
-/* Reset the viewport navigation and the flat scene frame. */
+/* Yaw and pitch the editor camera. dx/dy are logical pixels. */
+void fl_scene_preview_look(Fl_ScenePreview *preview, Ca_Viewport *viewport, double dx, double dy);
+/* Fly the editor camera. forward, right and up are axes in camera space, typically -1, 0 or 1. */
+void fl_scene_preview_fly(Fl_ScenePreview *preview, Ca_Viewport *viewport, double forward, double right, double up);
+/* While shot is set, the viewport shows the scene's camera instead of the editor camera. */
+void fl_scene_preview_set_shot(Fl_ScenePreview *preview, bool shot);
+/* True while playback is showing the scene camera. */
+bool fl_scene_preview_shot(const Fl_ScenePreview *preview);
+/* Put the editor camera back in front of the output gate. */
 void fl_scene_preview_reset_view(Fl_ScenePreview *preview);
 /* Convert window pixels to scene pixels on the z = 0 plane; allow_outside supports dragging beyond the artboard. */
 bool fl_scene_preview_point(Fl_ScenePreview *preview, Ca_Viewport *viewport, double window_x, double window_y,

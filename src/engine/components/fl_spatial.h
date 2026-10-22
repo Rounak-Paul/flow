@@ -1,5 +1,6 @@
 #pragma once
 #include "fl_transform.h"
+#include "doc/fl_scene_frame.h"
 
 #define FL_CAMERA_BYTES 48u
 #define FL_MATERIAL_BYTES 32u
@@ -14,6 +15,7 @@ typedef enum Fl_LightKind { FL_LIGHT_DIRECTIONAL = 0, FL_LIGHT_POINT = 1, FL_LIG
 typedef struct Fl_Camera {
     bool perspective;
     double fov_y, near_z, far_z, ortho_height, exposure;
+    unsigned aspect_w, aspect_h; /* film gate; both zero keep the scene ratio */
 } Fl_Camera;
 typedef struct Fl_Material {
     unsigned char base[4];
@@ -64,6 +66,8 @@ void fl_scene_camera(const Fl_Scene *scene, const Fl_SceneState *state, double f
                      double frame_width, double frame_height, Fl_Mat4 *view_proj, Fl_Vec3 *right, Fl_Vec3 *up, double *bloom);
 /* The first visible camera entity. False when the view is the scene frame. */
 bool fl_scene_view_camera(const Fl_Scene *scene, const Fl_SceneState *state, Fl_Pose *pose, Fl_Camera *camera, double *bloom);
+/* Output gate. A shot camera's aspect replaces the scene ratio; camera_x/y still offset it. */
+Fl_SceneFrame fl_scene_gate(const Fl_Scene *scene, const Fl_SceneState *state);
 
 /* Deterministic emission. out receives at most capacity alive particles in emitter-local space. */
 size_t fl_particles_sample(const Fl_Particles *system, double seconds, Fl_Particle *out, size_t capacity);

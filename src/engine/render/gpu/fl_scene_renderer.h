@@ -42,13 +42,15 @@ void fl_scene_renderer_prepare(Fl_SceneRenderer *renderer, const Fl_Project *pro
 /* Make this frame's host uniform writes visible to vertex and fragment shaders.
    Record it before vkCmdBeginRendering. A barrier inside dynamic rendering is invalid. */
 void fl_scene_renderer_sync_uniforms(Fl_SceneRenderer *renderer, VkCommandBuffer cmd);
-/* Bind the primitive pipeline for a colour format and the whole target as viewport/scissor.
+/* Bind the primitive pipeline for a colour format. The viewport is the whole target, or the letterbox set for the main target.
    depth selects the pipeline that matches a D32 attachment on the current rendering pass. */
 bool fl_scene_renderer_begin(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, VkFormat format, uint32_t width, uint32_t height, bool depth);
 /* Depth image for a target of this size, transitioned for use as a depth attachment. NULL when it cannot be created. */
 VkImageView fl_scene_renderer_depth(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, uint32_t width, uint32_t height);
 /* View used by later primitive draws. right/up orient particle billboards. bloom is the active camera's post strength. */
 void fl_scene_renderer_set_view(Fl_SceneRenderer *renderer, Fl_Mat4 view_proj, Fl_Vec3 right, Fl_Vec3 up, double bloom);
+/* Letterbox later passes on the main target. A zero size clears it. Offscreen layers stay full-frame. */
+void fl_scene_renderer_set_viewport(Fl_SceneRenderer *renderer, float x, float y, float width, float height);
 /* Fill target (scene units) with the backdrop colour; frame is the visible world rectangle the target maps into. */
 void fl_scene_renderer_background(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, const Fl_SceneFrame *frame, const Fl_SceneFrame *target,
                                   const unsigned char color[4]);

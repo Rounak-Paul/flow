@@ -1,6 +1,7 @@
 #include "fl_timeline_internal.h"
 #include "schema/fl_widgets.h"
 #include "schema/fl_properties.h"
+#include "components/fl_spatial.h"
 #include "time/fl_scene_state.h"
 #include <math.h>
 #include <string.h>
@@ -22,7 +23,7 @@ bool fl_keyed_value_changed(const Fl_Scene *scene, const Fl_Track *track, Fl_Tic
    Rewritten components point at the caller's scratch buffers. Returns the number of writes. */
 size_t fl_keyed_components(const Fl_Scene *s, const Fl_Entity *e, Fl_Component *components, size_t count,
                                unsigned char pose_bytes[FL_POSE_BYTES], unsigned char bounds_bytes[FL_BOUNDS_BYTES], unsigned char appearance[24], unsigned char opacity[8], unsigned char style[91],
-                               Fl_KeyWrite *writes, Fl_Tick tick)
+                               unsigned char camera_bytes[FL_CAMERA_BYTES], Fl_KeyWrite *writes, Fl_Tick tick)
 {
     if (!s || !e || count>64 || (count && !components)) return SIZE_MAX;
     for (size_t i=0;i<count;++i) {
@@ -83,6 +84,19 @@ size_t fl_keyed_components(const Fl_Scene *s, const Fl_Entity *e, Fl_Component *
                 fl_entity_state_apply(&proposed,(Fl_AnimProperty)p,kept[p]);
             }
             memcpy(proposed.style.crop,proposed.crop,sizeof(proposed.crop)); fl_style_encode(&proposed.style,style); c->data=style;
+        } else if (c->type == FL_COMPONENT_CAMERA) {
+            Fl_Camera next, base;
+            if (!fl_camera_decode(c, &next) || !fl_camera_decode(fl_entity_component(e, FL_COMPONENT_CAMERA), &base) || !camera_bytes) continue;
+            double proposed[7] = {next.fov_y, next.near_z, next.far_z, next.exposure, next.ortho_height, (double)next.aspect_w, (double)next.aspect_h};
+            const double kept[7] = {base.fov_y, base.near_z, base.far_z, base.exposure, base.ortho_height, (double)base.aspect_w, (double)base.aspect_h};
+            static const Fl_AnimProperty channels[7] = {FL_PROP_FOV, FL_PROP_NEAR, FL_PROP_FAR, FL_PROP_EXPOSURE, FL_PROP_ORTHO, FL_PROP_ASPECT_W, FL_PROP_ASPECT_H};
+            for (int k = 0; k < 7; ++k) if (fl_scene_track(s, e->id, channels[k])) {
+                writes[n++] = (Fl_KeyWrite){e->id, channels[k], {proposed[k], 0, 0, 0}};
+                proposed[k] = kept[k];
+            }
+            next.fov_y = proposed[0]; next.near_z = proposed[1]; next.far_z = proposed[2]; next.exposure = proposed[3]; next.ortho_height = proposed[4];
+            next.aspect_w = (unsigned)proposed[5]; next.aspect_h = (unsigned)proposed[6];
+            fl_camera_encode(&next, camera_bytes); c->data = camera_bytes;
         } else if (c->type == FL_COMPONENT_OPACITY) {
             double next;
             if (!fl_opacity_decode(c, &next)) continue;

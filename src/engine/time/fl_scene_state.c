@@ -92,6 +92,8 @@ void fl_entity_state_apply(Fl_EntityState *e, Fl_AnimProperty property, const do
     case FL_PROP_FAR: e->camera.far_z=v[0]; break;
     case FL_PROP_EXPOSURE: e->camera.exposure=v[0]; break;
     case FL_PROP_ORTHO: e->camera.ortho_height=v[0]; break;
+    case FL_PROP_ASPECT_W: e->camera.aspect_w=(unsigned)fmin(255, fmax(0, v[0])); break;
+    case FL_PROP_ASPECT_H: e->camera.aspect_h=(unsigned)fmin(255, fmax(0, v[0])); break;
     case FL_PROP_ROUGHNESS: e->material.roughness=v[0]; break;
     case FL_PROP_METALLIC: e->material.metallic=v[0]; break;
     case FL_PROP_EMISSIVE: e->material.emissive=v[0]; break;
@@ -253,7 +255,7 @@ void fl_entity_state_values(const Fl_EntityState *s, double values[FL_PROP_COUNT
         s->crop[0], s->crop[1], s->crop[2], s->crop[3], s->style.radius, s->style.blur, s->style.gradient_angle, s->style.shadow_blur, s->style.shadow_x, s->style.shadow_y, 0, 0, s->media_seconds,
         s->camera.fov_y, s->camera.near_z, s->camera.far_z, s->camera.exposure, s->camera.ortho_height,
         s->material.roughness, s->material.metallic, s->material.emissive, s->light.intensity, s->light.range, s->light.spot_angle, 0,
-        s->particles.rate, s->particles.life, s->particles.size, s->particles.speed, 0, s->post.bloom};
+        s->particles.rate, s->particles.life, s->particles.size, s->particles.speed, 0, s->post.bloom, s->camera.aspect_w, s->camera.aspect_h};
     for (int p = 0; p < FL_PROP_COUNT; ++p) values[p][0] = channels[p];
     for (int c = 0; c < 4; ++c) {
         values[FL_PROP_FILL][c] = s->appearance.fill[c]; values[FL_PROP_STROKE][c] = s->appearance.stroke[c];

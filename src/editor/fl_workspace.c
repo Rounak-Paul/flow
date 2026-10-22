@@ -319,6 +319,7 @@ Fl_Workspace *fl_workspace_create(const Fl_WorkspaceDesc *desc)
     workspace->widgets=fl_widget_library_create(workspace->edit,workspace->scene,desc->bus);
     workspace->player=fl_audio_player_create(&(Fl_AudioPlayerDesc){.bus=desc->bus});
     workspace->playback=workspace->edit ? fl_playback_create(&(Fl_PlaybackDesc){.instance=workspace->instance,.edit=workspace->edit,.bus=desc->bus}) : NULL;
+    if (workspace->scene && workspace->playback) fl_scene_panel_set_playback(workspace->scene, workspace->playback);
     workspace->timeline=workspace->playback ? fl_timeline_panel_create(workspace->edit,workspace->playback,desc->bus) : NULL;
     workspace->assets=workspace->player&&workspace->timeline ? fl_asset_panel_create(workspace->edit,workspace->scene,workspace->importer,desc->jobs,
                                                                 workspace->player,workspace->timeline,desc->bus) : NULL;

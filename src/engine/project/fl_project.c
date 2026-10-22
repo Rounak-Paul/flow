@@ -513,14 +513,14 @@ static bool apply_operation(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
         if (!e || !op->name || !op->name[0] || !references_valid(p, s, op->components, op->component_count) ||
             op->component_count > 64) return false;
         Fl_Component keyed[64];
-        unsigned char pose_bytes[FL_POSE_BYTES], bounds_bytes[FL_BOUNDS_BYTES], appearance_bytes[24], opacity_bytes[8], style_bytes[91];
+        unsigned char pose_bytes[FL_POSE_BYTES], bounds_bytes[FL_BOUNDS_BYTES], appearance_bytes[24], opacity_bytes[8], style_bytes[91], camera_bytes[FL_CAMERA_BYTES];
         Fl_KeyWrite writes[FL_PROP_COUNT];
         size_t write_count = 0;
         const Fl_Component *components = op->components;
         if (op->keyed && op->component_count) {
             memcpy(keyed, op->components, op->component_count * sizeof(*keyed));
             components = keyed;
-            write_count = fl_keyed_components(s, e, keyed, op->component_count, pose_bytes, bounds_bytes, appearance_bytes, opacity_bytes, style_bytes, writes, op->tick);
+            write_count = fl_keyed_components(s, e, keyed, op->component_count, pose_bytes, bounds_bytes, appearance_bytes, opacity_bytes, style_bytes, camera_bytes, writes, op->tick);
             if (write_count==SIZE_MAX) return false;
         }
         Fl_Entity prepared = {.name = copy_string(op->name)};

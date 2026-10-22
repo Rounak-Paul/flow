@@ -5,7 +5,16 @@
 #include <string.h>
 
 #define SAMPLE_HEADER 16u
-#define SAMPLE_RECORD (24u+FL_PROP_COUNT*32u)
+#define SAMPLE_RECORD (24u + (unsigned)FL_PROP_COUNT * 32u)
+
+static unsigned sample_channels(const Fl_Component *component)
+{
+    return component && component->version == 1 ? FL_SAMPLED_CHANNELS_V1 : (unsigned)FL_PROP_COUNT;
+}
+static size_t sample_record(const Fl_Component *component)
+{
+    return 24u + (size_t)sample_channels(component) * 32u;
+}
 
 /* Decode canonical words without alignment or host endianness assumptions. */
 static uint64_t sample_word(const unsigned char *bytes)
@@ -16,24 +25,28 @@ static uint64_t sample_word(const unsigned char *bytes)
 /* Borrow the checked record table shape before random access. */
 static bool sample_shape(const Fl_Component *component, size_t *count, bool *text)
 {
-    if (!component || component->type!=FL_COMPONENT_SAMPLED || component->version!=FL_SAMPLED_ANIMATION_VERSION || !component->data || component->size<SAMPLE_HEADER || component->size>FL_SAMPLED_ANIMATION_LIMIT) return false;
+    if (!component || component->type!=FL_COMPONENT_SAMPLED || (component->version!=1 && component->version!=FL_SAMPLED_ANIMATION_VERSION) || !component->data || component->size<SAMPLE_HEADER || component->size>FL_SAMPLED_ANIMATION_LIMIT) return false;
     uint64_t n=sample_word(component->data), flags=sample_word(component->data+8);
-    if (!n || n>FL_SAMPLED_ANIMATION_KEYS || flags>1 || n>(component->size-SAMPLE_HEADER)/SAMPLE_RECORD) return false;
+    size_t record=sample_record(component);
+    if (!n || n>FL_SAMPLED_ANIMATION_KEYS || flags>1 || n>(component->size-SAMPLE_HEADER)/record) return false;
     *count=(size_t)n; *text=flags!=0; return true;
 }
 
 /* Decode one immutable pose while retaining component ownership of its text bytes. */
 static bool sample_key(const Fl_Component *component, size_t count, size_t index, bool text, Fl_SampledKey *out)
 {
-    const unsigned char *record=component->data+SAMPLE_HEADER+index*SAMPLE_RECORD;
+    size_t stride=sample_record(component);
+    const unsigned char *record=component->data+SAMPLE_HEADER+index*stride;
     uint64_t tick=sample_word(record); if (tick>INT64_MAX) return false;
     Fl_SampledKey key={.tick=(Fl_Tick)tick}; size_t offset=8;
-    for (int p=0;p<FL_PROP_COUNT;++p) for (unsigned c=0;c<4;++c,offset+=8) {
+    unsigned channels=sample_channels(component);
+    for (unsigned p=0;p<channels;++p) for (unsigned c=0;c<4;++c,offset+=8) {
         uint64_t bits=sample_word(record+offset); memcpy(&key.values[p][c],&bits,8);
     }
+    for (int p=(int)channels;p<FL_PROP_COUNT;++p) key.values[p][0]=fl_property_definition((Fl_AnimProperty)p)->minimum;
     uint64_t start=sample_word(record+offset), size=sample_word(record+offset+8);
     if (text) {
-        if (start<SAMPLE_HEADER+count*SAMPLE_RECORD || start>component->size || size>component->size-start) return false;
+        if (start<SAMPLE_HEADER+count*stride || start>component->size || size>component->size-start) return false;
         key.text=(const char *)component->data+(size_t)start; key.text_size=(size_t)size;
     } else if (start || size) return false;
     *out=key; return true;
@@ -88,7 +101,8 @@ bool fl_sampled_animation_sample(const Fl_Component *component, Fl_Tick tick, Fl
 {
     size_t count; bool has_text; if (!out || !sample_shape(component,&count,&has_text)) return false;
     size_t lo=0,hi=count;
-    while (lo<hi) {size_t mid=lo+(hi-lo)/2; if ((Fl_Tick)sample_word(component->data+SAMPLE_HEADER+mid*SAMPLE_RECORD)<=tick) lo=mid+1; else hi=mid;}
+    size_t stride=sample_record(component);
+    while (lo<hi) {size_t mid=lo+(hi-lo)/2; if ((Fl_Tick)sample_word(component->data+SAMPLE_HEADER+mid*stride)<=tick) lo=mid+1; else hi=mid;}
     size_t before=lo ? lo-1 : 0; Fl_SampledKey key;
     if (!sample_key(component,count,before,has_text,&key)) return false;
     if (lo && lo<count) {
@@ -138,6 +152,7 @@ bool fl_sampled_animation_read(Fl_Json *context, const cJSON *samples, Fl_Compon
         valid=fl_json_object(context,sample,"tick values") && fl_json_int(context,fl_json_member(context,sample,"tick",0),&keys[index].tick) && fl_json_object(context,values,fields);
         for (int p=0;valid && p<FL_PROP_COUNT;++p) {
             const Fl_PropertyDef *definition=fl_property_definition((Fl_AnimProperty)p); const cJSON *value=cJSON_GetObjectItemCaseSensitive(values,definition->name);
+            if (!value) {keys[index].values[p][0]=definition->minimum; continue;}
             if (definition->channels==1) valid=fl_json_number(context,value,&keys[index].values[p][0]);
             else {
                 valid=cJSON_IsArray(value) && cJSON_GetArraySize(value)==(int)definition->channels;

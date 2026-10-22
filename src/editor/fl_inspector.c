@@ -12,6 +12,7 @@
 #include "components/fl_animation.h"
 #include "components/fl_style.h"
 #include "components/fl_video_clip.h"
+#include "components/fl_spatial.h"
 #include "platform/fl_fs.h"
 #include "style.h"
 #include <ctype.h>
@@ -82,7 +83,10 @@ struct Fl_Inspector {
     Fl_Id *image_options;
     size_t image_option_count;
     Fl_EventType project_event, time_event, playback_event;
-    bool visible,dirty,refresh,applying;
+    bool visible,dirty,refresh,applying,has_camera;
+    Fl_Camera camera;
+    Fl_Id camera_component;
+    Fl_InspectorField camera_fields[5];
     char message[160];
 };
 
@@ -564,7 +568,8 @@ static void apply(Ca_Button *button,void *data)
     unsigned char bytes[FL_POSE_BYTES],bounds_bytes[FL_BOUNDS_BYTES],style[24],typography[3+FL_TYPOGRAPHY_FAMILY_MAX],image[8],alpha[8];
     fl_pose_encode(&pose,bytes);fl_bounds_encode(&box,bounds_bytes);fl_appearance_encode(&appearance,style);fl_opacity_encode(opacity,alpha);
     unsigned char style_bytes[FL_STYLE_BYTES],clip_bytes[FL_VIDEO_CLIP_BYTES];
-    Fl_Component components[12]={{.type=FL_COMPONENT_POSE, .version=1, .size=FL_POSE_BYTES, .data=bytes},{.type=FL_COMPONENT_BOUNDS, .version=1, .size=FL_BOUNDS_BYTES, .data=bounds_bytes},{.type=FL_COMPONENT_OPACITY, .version=1, .size=8, .data=alpha}};size_t count=3;
+    unsigned char camera_bytes[FL_CAMERA_BYTES];
+    Fl_Component components[16]={{.type=FL_COMPONENT_POSE, .version=1, .size=FL_POSE_BYTES, .data=bytes},{.type=FL_COMPONENT_BOUNDS, .version=1, .size=FL_BOUNDS_BYTES, .data=bounds_bytes},{.type=FL_COMPONENT_OPACITY, .version=1, .size=8, .data=alpha}};size_t count=3;
     if (def&&def->kind!=FL_WIDGET_GROUP&&!def->has_image&&!def->has_video) components[count++]=(Fl_Component){.type = FL_COMPONENT_APPEARANCE, .version = 1, .size = 24, .data = style};
     if (def&&def->has_text) {
         size_t size=fl_typography_encode(&p->typography,typography);
@@ -596,6 +601,25 @@ static void apply(Ca_Button *button,void *data)
         if (memcmp(probe,plain_bytes,sizeof(probe))||fl_entity_component(entity,FL_COMPONENT_STYLE)) {
             memcpy(style_bytes,probe,sizeof(probe));components[count++]=(Fl_Component){.type = FL_COMPONENT_STYLE, .version = 1, .size = FL_STYLE_BYTES, .data = style_bytes};
         }
+    }
+    if (p->has_camera) {
+        Fl_Camera next=p->camera, authored;
+        double parsed[5];
+        for (int i=0;i<5;++i) if (!number(p->camera_fields[i].value,&parsed[i])) {status(p,"Check the camera's field of view, clip planes, exposure and ortho height.");return;}
+        next.fov_y=parsed[0]*3.14159265358979323846/180; next.near_z=parsed[1]; next.far_z=parsed[2]; next.exposure=parsed[3]; next.ortho_height=parsed[4];
+        if (fl_camera_decode(fl_entity_component(entity,FL_COMPONENT_CAMERA),&authored)) {
+            const Fl_SceneState *state=fl_scene_edit_state(p->edit);
+            size_t index=(size_t)(entity-scene->entities);
+            static const Fl_AnimProperty driven_props[]={FL_PROP_FOV,FL_PROP_NEAR,FL_PROP_FAR,FL_PROP_EXPOSURE,FL_PROP_ORTHO,FL_PROP_ASPECT_W,FL_PROP_ASPECT_H};
+            double *slots[]={&next.fov_y,&next.near_z,&next.far_z,&next.exposure,&next.ortho_height};
+            const double authored_optics[]={authored.fov_y,authored.near_z,authored.far_z,authored.exposure,authored.ortho_height};
+            for (int i=0;i<5;++i) if (fl_scene_state_writer(state,index,driven_props[i],NULL,NULL)) slots[i][0]=authored_optics[i];
+            if (fl_scene_state_writer(state,index,FL_PROP_ASPECT_W,NULL,NULL)) next.aspect_w=authored.aspect_w;
+            if (fl_scene_state_writer(state,index,FL_PROP_ASPECT_H,NULL,NULL)) next.aspect_h=authored.aspect_h;
+        }
+        fl_camera_encode(&next,camera_bytes);
+        if (!fl_camera_decode(&(Fl_Component){.type=FL_COMPONENT_CAMERA,.version=1,.size=FL_CAMERA_BYTES,.data=camera_bytes},&next)) {status(p,"The camera values are out of range.");return;}
+        components[count++]=(Fl_Component){.type=FL_COMPONENT_CAMERA,.version=1,.size=FL_CAMERA_BYTES,.data=camera_bytes,.id=p->camera_component};
     }
     if (def&&def->has_video) {
         Fl_VideoClip clip={.rate=1};fl_video_clip_decode(fl_entity_component(entity,FL_COMPONENT_VIDEO),&clip);
@@ -779,6 +803,16 @@ static bool load(Fl_Inspector *p,const Fl_Scene *scene,const Fl_Entity *entity)
     p->loop=clip.loop;
     const double clip_values[]={(double)clip.start/FL_TICKS_PER_SECOND,(double)clip.offset/FL_TICKS_PER_SECOND,clip.rate};
     for (size_t i=0;i<3;++i) {snprintf(text,sizeof(text),"%.9g",clip_values[i]);if (!field_set(&p->fields[VIDEO_START+i],text)) return false;}
+    const Fl_Component *camera_component=fl_entity_component(entity,FL_COMPONENT_CAMERA);
+    p->camera=fl_camera_default();
+    p->has_camera=now ? now->has_camera : fl_camera_decode(camera_component,&p->camera);
+    if (p->has_camera && now) p->camera=now->camera;
+    else if (p->has_camera) fl_camera_decode(camera_component,&p->camera);
+    p->camera_component=camera_component ? camera_component->id : 0;
+    if (p->has_camera) {
+        const double optics[]={p->camera.fov_y*180/3.14159265358979323846,p->camera.near_z,p->camera.far_z,p->camera.exposure,p->camera.ortho_height};
+        for (int i=0;i<5;++i) {snprintf(text,sizeof(text),"%.9g",optics[i]); if (!field_set(&p->camera_fields[i],text)) return false; p->camera_fields[i].dirty=false;}
+    }
     Fl_Script script;
     bool same=p->entity==entity->id && p->scene==scene->id;
     if (!same) p->script_new=false;
@@ -862,6 +896,7 @@ Fl_Inspector *fl_inspector_create(Fl_SceneEdit *edit,Fl_Fonts *fonts,Fl_Playback
     p->binding_name.owner=p; p->event_name.owner=p; p->event_value.owner=p;
     p->edit=edit;p->fonts=fonts;p->playback=playback;p->bus=bus;p->refresh=true;
     for (int i=0;i<FIELD_COUNT;++i) p->fields[i].owner=p;
+    for (int i=0;i<5;++i) p->camera_fields[i].owner=p;
     for (unsigned i=0;i<4;++i) p->bake_fields[i].owner=p;
     for (size_t i=0;i<FL_STYLE_FONT_LIST_LIMIT;++i) p->choices[i].owner=p;
     p->project_event=fl_event_type_find(bus,FL_EVENT_PROJECT_CHANGED);
@@ -885,6 +920,7 @@ void fl_inspector_destroy(Fl_Inspector *p)
     fl_event_unsubscribe_owner(p->bus,p); fl_bake_destroy(p->bake);
     for (unsigned i=0;i<4;++i) free(p->bake_fields[i].value);
     for (int i=0;i<FIELD_COUNT;++i) free(p->fields[i].value);
+    for (int i=0;i<5;++i) free(p->camera_fields[i].value);
     for (size_t i=0;i<5;++i) free(p->clock_fields[i].value);
     free(p->event_name.value); free(p->event_value.value); cJSON_Delete(p->event_draft);
     free(p->binding_name.value); free(p->binding_options); cJSON_Delete(p->binding_draft);
@@ -1135,6 +1171,77 @@ static void script_section(Fl_Inspector *p, const Fl_Scene *scene)
     fl_button(&(Fl_ButtonDesc){.text="Edit script",.id="inspector-script-edit",.on_click=script_edit,.click_data=p,.disabled=p->dirty});
 }
 
+static void camera_projection(Ca_Select *select, void *data)
+{
+    Fl_Inspector *p=data; p->camera.perspective=ca_select_get(select)==0;
+    if (!p->camera.perspective && !(p->camera.ortho_height>0)) {
+        const Fl_Scene *scene=inspector_scene(p);
+        p->camera.ortho_height=scene && scene->height ? (double)scene->height : 1080;
+        char text[32]; snprintf(text,sizeof(text),"%.9g",p->camera.ortho_height);
+        if (field_set(&p->camera_fields[4],text)) p->camera_fields[4].dirty=true;
+    }
+    drafted(p);
+}
+
+static void camera_aspect(Ca_Select *select, void *data)
+{
+    static const unsigned presets[][2]={{0,0},{16,9},{9,16},{1,1},{4,3},{3,4},{21,9}};
+    Fl_Inspector *p=data; int index=ca_select_get(select);
+    if (index<0 || (size_t)index>=sizeof(presets)/sizeof(*presets)) return;
+    p->camera.aspect_w=presets[index][0]; p->camera.aspect_h=presets[index][1]; drafted(p);
+}
+
+static bool camera_driven(Fl_Inspector *p, const Fl_Entity *entity, Fl_AnimProperty property)
+{
+    const Fl_SceneState *state=fl_scene_edit_state(p->edit);
+    const Fl_Scene *scene=inspector_scene(p);
+    const Fl_Entity *shown=fl_scene_entity(scene, entity->id);
+    return shown && fl_scene_state_writer(state, (size_t)(shown-scene->entities), property, NULL, NULL);
+}
+
+/* Projection, film gate and optics for a camera entity. Aspect moved here from the scene toolbar. */
+static void camera_section(Fl_Inspector *p, const Fl_Entity *entity)
+{
+    if (!p->has_camera) return;
+    ca_text(&(Ca_TextDesc){.text="Camera",.style=FL_CLASS_HEADING});
+    static const char *const projection[]={"Perspective","Orthographic"};
+    ca_div_begin(&(Ca_DivDesc){.direction=CA_HORIZONTAL,.style=FL_CLASS_PROPERTY_ROW});
+    ca_text(&(Ca_TextDesc){.text="Projection",.style=FL_CLASS_PROPERTY_LABEL});
+    ca_select(&(Ca_SelectDesc){.options=projection,.option_count=2,.selected=p->camera.perspective?0:1,.id="camera-projection",
+        .style=FL_CLASS_PROPERTY_SELECT,.on_change=camera_projection,.change_data=p});
+    ca_div_end();
+    static const char *const presets[]={"Scene","16:9","9:16","1:1","4:3","3:4","21:9"};
+    static const unsigned ratios[][2]={{0,0},{16,9},{9,16},{1,1},{4,3},{3,4},{21,9}};
+    int selected=0; char custom[32]; const char *options[8];
+    int count=7;
+    for (int i=0;i<7;++i) {
+        options[i]=presets[i];
+        if (p->camera.aspect_w==ratios[i][0] && p->camera.aspect_h==ratios[i][1]) selected=i;
+    }
+    bool listed=false;
+    for (int i=0;i<7;++i) if (p->camera.aspect_w==ratios[i][0] && p->camera.aspect_h==ratios[i][1]) listed=true;
+    if (!listed) {snprintf(custom,sizeof(custom),"%u:%u",p->camera.aspect_w,p->camera.aspect_h); options[count]=custom; selected=count++;}
+    bool aspect_locked=camera_driven(p,entity,FL_PROP_ASPECT_W)||camera_driven(p,entity,FL_PROP_ASPECT_H);
+    ca_div_begin(&(Ca_DivDesc){.direction=CA_HORIZONTAL,.style=FL_CLASS_PROPERTY_ROW});
+    ca_text(&(Ca_TextDesc){.text="Aspect",.style=FL_CLASS_PROPERTY_LABEL});
+    ca_select(&(Ca_SelectDesc){.options=options,.option_count=count,.selected=selected,.id="camera-aspect",
+        .style=FL_CLASS_PROPERTY_SELECT,.on_change=camera_aspect,.change_data=p,.disabled=aspect_locked});
+    ca_div_end();
+    static const char *const labels[]={"Field of view °","Near","Far","Exposure","Ortho height"};
+    static const Fl_AnimProperty props[]={FL_PROP_FOV,FL_PROP_NEAR,FL_PROP_FAR,FL_PROP_EXPOSURE,FL_PROP_ORTHO};
+    for (int i=0;i<5;++i) {
+        if (i==0 && !p->camera.perspective) continue;
+        if (i==4 && p->camera.perspective) continue;
+        ca_div_begin(&(Ca_DivDesc){.direction=CA_HORIZONTAL,.style=FL_CLASS_PROPERTY_ROW});
+        ca_text(&(Ca_TextDesc){.text=labels[i],.style=FL_CLASS_PROPERTY_LABEL});
+        char id[32]; snprintf(id,sizeof(id),"camera-property-%d",i);
+        ca_input(&(Ca_InputDesc){.text=p->camera_fields[i].value,.id=id,.style=FL_CLASS_PROPERTY_INPUT,.input_mode=CA_INPUT_FLOAT,
+            .on_change=edited,.change_data=&p->camera_fields[i],.disabled=camera_driven(p,entity,props[i])});
+        ca_div_end();
+    }
+    ca_text(&(Ca_TextDesc){.text="Aspect Scene uses the scene ratio. The first visible camera is the shot while playing, and export looks through it.",.style=FL_CLASS_MUTED,.wrap=true});
+}
+
 void fl_inspector_build(Ca_Dock *dock,Ca_Window *window,void *data)
 {
     Fl_Inspector *p=data;p->dock=dock;p->window=window;
@@ -1162,6 +1269,7 @@ void fl_inspector_build(Ca_Dock *dock,Ca_Window *window,void *data)
     const char *labels[]={"X","Y","Z","Width","Height","Depth","Rotation °","Rotate X °","Rotate Y °","Scale X","Scale Y","Scale Z"};
     for (size_t i=0;i<12;++i) field(p,X+(int)i,labels[i],true);
     field(p,OPACITY,"Opacity",true);
+    camera_section(p,entity);
     if (def&&(def->has_fill||def->has_stroke)) ca_text(&(Ca_TextDesc){.text="Appearance",.style=FL_CLASS_HEADING});
     if (def&&def->has_fill) field(p,FILL,"Fill",false);
     if (def&&def->has_stroke) {field(p,STROKE,"Stroke",false);field(p,STROKE_WIDTH,"Stroke px",true);}

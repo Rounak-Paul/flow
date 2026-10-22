@@ -55,6 +55,8 @@ static const Fl_PropertyDef properties[FL_PROP_COUNT] = {
     [FL_PROP_SPEED] = {"speed", "Speed", "particles", FL_COMPONENT_PARTICLES, "particles", "speed", 1, 0, 100000},
     [FL_PROP_PARTICLE_COLOR] = {"particle_color", "Colour", "particles", FL_COMPONENT_PARTICLES, "particles", "color", 4, 0, 255},
     [FL_PROP_BLOOM] = {"bloom", "Bloom", "post", FL_COMPONENT_POST, "post", "bloom", 1, 0, 8},
+    [FL_PROP_ASPECT_W] = {"aspect_w", "Aspect width", "camera", FL_COMPONENT_CAMERA, "camera", "aspect_w", 1, 0, 255},
+    [FL_PROP_ASPECT_H] = {"aspect_h", "Aspect height", "camera", FL_COMPONENT_CAMERA, "camera", "aspect_h", 1, 0, 255},
 };
 
 const Fl_PropertyDef *fl_property_definition(Fl_AnimProperty property)
@@ -85,7 +87,8 @@ bool fl_property_supported(const Fl_Entity *entity, Fl_AnimProperty property)
     if (!entity || !channel) return false;
     if (property <= FL_PROP_PIVOT_Z || property == FL_PROP_OPACITY) return fl_entity_component(entity, FL_COMPONENT_POSE) != NULL;
     if (property >= FL_PROP_WIDTH && property <= FL_PROP_DEPTH) return fl_entity_component(entity, FL_COMPONENT_BOUNDS) != NULL;
-    if (property >= FL_PROP_FOV && property <= FL_PROP_ORTHO) return fl_entity_component(entity, FL_COMPONENT_CAMERA) != NULL;
+    if ((property >= FL_PROP_FOV && property <= FL_PROP_ORTHO) || property == FL_PROP_ASPECT_W || property == FL_PROP_ASPECT_H)
+        return fl_entity_component(entity, FL_COMPONENT_CAMERA) != NULL;
     if (property >= FL_PROP_ROUGHNESS && property <= FL_PROP_EMISSIVE) return fl_entity_component(entity, FL_COMPONENT_MATERIAL) != NULL;
     if (property >= FL_PROP_INTENSITY && property <= FL_PROP_LIGHT_COLOR) return fl_entity_component(entity, FL_COMPONENT_LIGHT) != NULL;
     if (property >= FL_PROP_EMIT_RATE && property <= FL_PROP_PARTICLE_COLOR) return fl_entity_component(entity, FL_COMPONENT_PARTICLES) != NULL;

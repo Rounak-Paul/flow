@@ -26,13 +26,15 @@ void fl_camera_encode(const Fl_Camera *camera, unsigned char out[FL_CAMERA_BYTES
     Fl_Camera c = camera ? *camera : fl_camera_default();
     memset(out, 0, FL_CAMERA_BYTES);
     out[0] = c.perspective ? 1 : 0;
+    out[2] = (unsigned char)(c.aspect_w > 255 ? 255 : c.aspect_w);
+    out[3] = (unsigned char)(c.aspect_h > 255 ? 255 : c.aspect_h);
     put_double(out + 8, c.fov_y); put_double(out + 16, c.near_z); put_double(out + 24, c.far_z);
     put_double(out + 32, c.ortho_height); put_double(out + 40, c.exposure);
 }
 bool fl_camera_decode(const Fl_Component *c, Fl_Camera *out)
 {
     if (!c || !out || c->type != FL_COMPONENT_CAMERA || c->version != 1 || c->size != FL_CAMERA_BYTES || !c->data || c->data[0] > 1) return false;
-    Fl_Camera camera = {.perspective = c->data[0] != 0};
+    Fl_Camera camera = {.perspective = c->data[0] != 0, .aspect_w = c->data[2], .aspect_h = c->data[3]};
     if (!get_double(c->data + 8, &camera.fov_y) || !get_double(c->data + 16, &camera.near_z) || !get_double(c->data + 24, &camera.far_z) ||
         !get_double(c->data + 32, &camera.ortho_height) || !get_double(c->data + 40, &camera.exposure)) return false;
     if (camera.fov_y <= 0.05 || camera.fov_y >= 3 || camera.near_z <= 0 || camera.far_z <= camera.near_z || camera.ortho_height < 0 || camera.exposure <= 0 || camera.exposure > 64) return false;
@@ -208,6 +210,23 @@ void fl_scene_camera(const Fl_Scene *scene, const Fl_SceneState *state, double f
     if (bloom) *bloom = strength;
 }
 
+Fl_SceneFrame fl_scene_gate(const Fl_Scene *scene, const Fl_SceneState *state)
+{
+    Fl_SceneFrame frame = fl_scene_frame(scene);
+    if (!scene) return frame;
+    Fl_Pose pose = fl_pose_identity(); Fl_Camera camera;
+    if (!fl_scene_view_camera(scene, state, &pose, &camera, NULL)) return frame;
+    uint64_t aspect_w = camera.aspect_w && camera.aspect_h ? camera.aspect_w : scene->aspect_width;
+    uint64_t aspect_h = camera.aspect_w && camera.aspect_h ? camera.aspect_h : scene->aspect_height;
+    double width = (double)scene->width, height = (double)scene->height;
+    if (aspect_w && aspect_h) {
+        double ratio = (double)aspect_w / (double)aspect_h;
+        if (width / height > ratio) width = height * ratio;
+        else height = width / ratio;
+    }
+    return (Fl_SceneFrame){(scene->width - width) * .5 + scene->camera_x, (scene->height - height) * .5 + scene->camera_y, width, height};
+}
+
 bool fl_spatial_create(Fl_Project *project, Fl_Id scene, Fl_Id parent, const char *kind, double x, double y, double z, Fl_Id *out_id)
 {
     if (!kind || !isfinite(x) || !isfinite(y) || !isfinite(z)) return false;
@@ -223,6 +242,7 @@ bool fl_spatial_create(Fl_Project *project, Fl_Id scene, Fl_Id parent, const cha
         pose.x = s ? (double)s->width * 0.5 : 0; pose.y = s ? (double)s->height * 0.5 : 0;
         pose.z = s ? (double)s->height : 1080; pose.x += x; pose.y += y; pose.z += z;
         Fl_Camera camera = fl_camera_default(); camera.perspective = true;
+        if (s && s->aspect_width <= 255 && s->aspect_height <= 255) { camera.aspect_w = (unsigned)s->aspect_width; camera.aspect_h = (unsigned)s->aspect_height; }
         fl_camera_encode(&camera, extra); extra_type = FL_COMPONENT_CAMERA; extra_size = FL_CAMERA_BYTES;
         bounds = (Fl_Bounds){0}; name = "Camera";
     } else if (!strcmp(kind, "plane") || !strcmp(kind, "cube") || !strcmp(kind, "sphere")) {

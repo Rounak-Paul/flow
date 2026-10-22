@@ -136,6 +136,7 @@ struct Fl_SceneRenderer {
     uint32_t mesh_plane, mesh_cube, mesh_sphere, mesh_plane_count, mesh_cube_count, mesh_sphere_count;
     Fl_Mat4 view_proj;
     Fl_Vec3 cam_right, cam_up;
+    float crop_x, crop_y, crop_w, crop_h;
     double bloom;
     float draw_mvp[16];
     VkFormat pass_format;
@@ -637,6 +638,18 @@ bool fl_scene_renderer_begin(Fl_SceneRenderer *p, VkCommandBuffer cmd, VkFormat 
     if (!pipeline) return false;
     VkRect2D area = {{0, 0}, {width, height}};
     VkViewport view = {0, 0, (float)width, (float)height, 0, 1};
+    if (format != LAYER_FORMAT && p->crop_w > 1 && p->crop_h > 1) {
+        float x = p->crop_x, y = p->crop_y, cw = p->crop_w, ch = p->crop_h;
+        if (x < 0) x = 0;
+        if (y < 0) y = 0;
+        if (x + cw > (float)width) cw = (float)width - x;
+        if (y + ch > (float)height) ch = (float)height - y;
+        if (cw > 1 && ch > 1) {
+            view.x = x; view.y = y; view.width = cw; view.height = ch;
+            area.offset.x = (int32_t)x; area.offset.y = (int32_t)y;
+            area.extent.width = (uint32_t)cw; area.extent.height = (uint32_t)ch;
+        }
+    }
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline); vkCmdSetViewport(cmd, 0, 1, &view); vkCmdSetScissor(cmd, 0, 1, &area);
     return true;
 }
@@ -645,6 +658,12 @@ void fl_scene_renderer_set_view(Fl_SceneRenderer *p, Fl_Mat4 view_proj, Fl_Vec3 
 {
     if (!p) return;
     p->view_proj = view_proj; p->cam_right = right; p->cam_up = up; p->bloom = bloom;
+}
+
+void fl_scene_renderer_set_viewport(Fl_SceneRenderer *p, float x, float y, float width, float height)
+{
+    if (!p) return;
+    p->crop_x = x; p->crop_y = y; p->crop_w = width; p->crop_h = height;
 }
 
 static void use_model(Fl_SceneRenderer *p, Fl_Mat4 model)

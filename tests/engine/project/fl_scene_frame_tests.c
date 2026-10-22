@@ -1,5 +1,6 @@
 #include "flow_test.h"
 #include "doc/fl_scene_frame.h"
+#include "components/fl_spatial.h"
 #include "doc/fl_binary.h"
 #include "schema/fl_widgets.h"
 #include <stdio.h>
@@ -84,6 +85,22 @@ int main(int argc, char **argv)
     project = fl_project_open(directory, NULL); CHECK(project);
     scene = fl_project_scene(project, id);
     CHECK(scene && scene->background[0] == 10 && scene->background[1] == 20 && scene->background[2] == 30 && scene->background[3] == 255);
+    Fl_Id camera_id = 0;
+    CHECK(fl_spatial_create(project, id, 0, "camera", 0, 0, 0, &camera_id));
+    scene = fl_project_scene(project, id);
+    Fl_Camera camera;
+    const Fl_Component *camera_component = fl_entity_component(fl_scene_entity(scene, camera_id), FL_COMPONENT_CAMERA);
+    CHECK(fl_camera_decode(camera_component, &camera) && camera.aspect_w == 9 && camera.aspect_h == 16);
+    CHECK(fabs(fl_scene_frame(scene).width / fl_scene_frame(scene).height - 9.0 / 16.0) < 1e-8);
+    camera.aspect_w = 1; camera.aspect_h = 1;
+    unsigned char camera_bytes[FL_CAMERA_BYTES];
+    fl_camera_encode(&camera, camera_bytes);
+    CHECK(fl_project_apply(project, &(Fl_Op){.kind = FL_OP_COMPONENT_SET, .scene = id, .entity = camera_id,
+        .component = {.type = FL_COMPONENT_CAMERA, .version = 1, .size = FL_CAMERA_BYTES, .data = camera_bytes, .id = camera_component->id}}, NULL));
+    scene = fl_project_scene(project, id);
+    Fl_SceneFrame square = fl_scene_frame(scene);
+    CHECK(fabs(square.width - 1080) < 1e-6 && fabs(square.height - 1080) < 1e-6);
+    CHECK(fabs(square.x - 545) < 1e-6 && fabs(square.y + 75) < 1e-6);
     fl_project_destroy(project);
     return FLOW_TEST_RESULT("fl_scene_frame_tests");
 }

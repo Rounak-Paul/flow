@@ -19,7 +19,7 @@ typedef struct Field { const char *name; size_t offset; FieldKind kind; } Field;
 typedef struct Schema { const char *name; size_t size; const Field *fields; } Schema;
 static const Field pose[] = {{"x",0,NUMBER},{"y",8,NUMBER},{"z",16,NUMBER},{"rx",24,NUMBER},{"ry",32,NUMBER},{"rz",40,NUMBER},{"scale_x",48,NUMBER},{"scale_y",56,NUMBER},{"scale_z",64,NUMBER},{"pivot_x",72,NUMBER},{"pivot_y",80,NUMBER},{"pivot_z",88,NUMBER},{0}};
 static const Field bounds[] = {{"width",0,NUMBER},{"height",8,NUMBER},{"depth",16,NUMBER},{0}};
-static const Field camera_fields[] = {{"perspective",0,BYTE},{"fov",8,NUMBER},{"near",16,NUMBER},{"far",24,NUMBER},{"ortho_height",32,NUMBER},{"exposure",40,NUMBER},{0}};
+static const Field camera_fields[] = {{"perspective",0,BYTE},{"aspect_w",2,BYTE},{"aspect_h",3,BYTE},{"fov",8,NUMBER},{"near",16,NUMBER},{"far",24,NUMBER},{"ortho_height",32,NUMBER},{"exposure",40,NUMBER},{0}};
 static const Field material_fields[] = {{"base",0,COLOR},{"roughness",8,NUMBER},{"metallic",16,NUMBER},{"emissive",24,NUMBER},{0}};
 static const Field light_fields[] = {{"kind",0,BYTE},{"color",4,COLOR},{"intensity",8,NUMBER},{"range",16,NUMBER},{"spot_angle",24,NUMBER},{0}};
 static const Field particle_fields[] = {{"capacity",0,UNSIGNED},{"seed",8,UNSIGNED},{"rate",16,NUMBER},{"life",24,NUMBER},{"size",32,NUMBER},{"speed",40,NUMBER},{"color",48,COLOR},{0}};
@@ -214,7 +214,7 @@ bool fl_document_component_read(Fl_Json *c, const cJSON *o, Fl_Id entity, Fl_Com
     }
     if (out->type==FL_COMPONENT_SAMPLED) {
         Fl_Id id=out->id;
-        bool valid=out->version==FL_SAMPLED_ANIMATION_VERSION && fl_sampled_animation_read(c,fl_json_member(c,o,"samples",cJSON_Array),out);
+        bool valid=(out->version==1 || out->version==FL_SAMPLED_ANIMATION_VERSION) && fl_sampled_animation_read(c,fl_json_member(c,o,"samples",cJSON_Array),out);
         out->id=id; return valid || fl_json_fail(c,"Invalid sampled animation schema");
     }
     if (out->type==FL_COMPONENT_COMPOSITION) {
@@ -278,7 +278,9 @@ bool fl_document_component_read(Fl_Json *c, const cJSON *o, Fl_Id entity, Fl_Com
     if (!s) {
         size_t i=0; for (const cJSON *v=raw->child;v;v=v->next,++i) {uint64_t n; if (!fl_json_uint(c,v,&n) || n>255) return fl_json_fail(c,"Invalid byte"); bytes[i]=(unsigned char)n;}
     } else for (const Field *f=s->fields;f->name;++f) {
-        const cJSON *v=fl_json_member(c,o,f->name,0); unsigned char *p=bytes+f->offset; uint64_t n=0;
+        const cJSON *v=cJSON_GetObjectItemCaseSensitive(o,f->name); unsigned char *p=bytes+f->offset; uint64_t n=0;
+        if (!v && out->type==FL_COMPONENT_CAMERA && (!strcmp(f->name,"aspect_w") || !strcmp(f->name,"aspect_h"))) continue;
+        v=fl_json_member(c,o,f->name,0);
         if (f->kind==NUMBER) {double d; if (!fl_json_number(c,v,&d)) return false; memcpy(&n,&d,8); put_word(p,n);}
         else if (f->kind==UNSIGNED) {if (!fl_json_uint(c,v,&n)) return false; put_word(p,n);}
         else if (f->kind==SIGNED) {int64_t d; if (!fl_json_int(c,v,&d)) return false; memcpy(&n,&d,8); put_word(p,n);}

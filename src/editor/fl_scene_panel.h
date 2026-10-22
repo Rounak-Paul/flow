@@ -1,5 +1,6 @@
 #pragma once
 #include "fl_scene_edit.h"
+#include "fl_playback.h"
 #include "core/fl_job.h"
 #include "text/fl_fonts.h"
 #include <ca_dock.h>
@@ -12,6 +13,8 @@ typedef struct Fl_SceneDropTarget {
 } Fl_SceneDropTarget;
 /* Create a scene workspace controller borrowing edit, fonts, jobs and bus until destroy. */
 Fl_ScenePanel *fl_scene_panel_create(Fl_SceneEdit *edit, Fl_Fonts *fonts, Fl_JobSystem *jobs, Fl_EventBus *bus);
+/* Show the scene camera in the viewport while playback is running. */
+void fl_scene_panel_set_playback(Fl_ScenePanel *panel, Fl_Playback *playback);
 /* Unsubscribe and free panel state after its dock has been destroyed. */
 void fl_scene_panel_destroy(Fl_ScenePanel *panel);
 /* Dock callbacks: build the three scene regions and detach borrowed UI handles. */
