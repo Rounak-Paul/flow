@@ -13,6 +13,8 @@
 #include "components/fl_style.h"
 #include "components/fl_video_clip.h"
 #include "components/fl_spatial.h"
+#include "components/fl_motion.h"
+#include "components/fl_path.h"
 #include "platform/fl_fs.h"
 #include "style.h"
 #include <ctype.h>
@@ -23,7 +25,10 @@
 #include <string.h>
 
 enum { NAME,X,Y,Z,WIDTH,HEIGHT,DEPTH,ROTATION,RX,RY,SCALE_X,SCALE_Y,SCALE_Z,FILL,STROKE,STROKE_WIDTH,FONT_SIZE,CONTENT,FONT_FILTER,OPACITY,RADIUS,SHADOW_BLUR,SHADOW_X,SHADOW_Y,SHADOW_COLOR,GRADIENT_TO,GRADIENT_ANGLE,CROP_X,CROP_Y,CROP_W,CROP_H,
-       VIDEO_START,VIDEO_OFFSET,VIDEO_RATE,BLUR,FIELD_COUNT };
+       VIDEO_START,VIDEO_OFFSET,VIDEO_RATE,BLUR,
+       PIVOT_X,PIVOT_Y,PIVOT_Z,GLOW,BLEND,RADIAL,GRADIENT_MID,GRADIENT_MID_POS,
+       TRACKING,STAGGER,RISE,TEXT_FADE,TEXT_DURATION,TRIM_START,TRIM_END,
+       VIGNETTE,GRAIN,LIFT,GAMMA,GAIN,FIELD_COUNT };
 #define WEIGHT_OPTIONS 32
 typedef struct Fl_InspectorField { struct Fl_Inspector *owner; char *value; bool dirty; } Fl_InspectorField;
 typedef struct Fl_ParameterField { Fl_InspectorField input; char *name, *label; char type[12]; } Fl_ParameterField;
@@ -553,6 +558,9 @@ static void apply(Ca_Button *button,void *data)
     for (size_t i=0;i<12;++i) if (!number(p->fields[X+i].value,&values[i])) {status(p,"Enter finite numbers for every transform field.");return;}
     for (size_t i=0;i<12;++i) if (!p->fields[X+i].dirty) values[i]=p->loaded_numbers[X+i];
     Fl_Pose pose={values[0],values[1],values[2],values[7]*3.14159265358979323846/180,values[8]*3.14159265358979323846/180,values[6]*3.14159265358979323846/180,values[9],values[10],values[11],0,0,0};
+    double pivot[3];
+    if (!number(p->fields[PIVOT_X].value,&pivot[0])||!number(p->fields[PIVOT_Y].value,&pivot[1])||!number(p->fields[PIVOT_Z].value,&pivot[2])) {status(p,"Enter finite numbers for the pivot.");return;}
+    pose.px=pivot[0]; pose.py=pivot[1]; pose.pz=pivot[2];
     Fl_Bounds box={values[3],values[4],values[5]};
     if (box.width<0||box.height<0||box.depth<0) {status(p,"Width, height and depth must be non-negative.");return;}
     const Fl_WidgetDef *def=fl_widget_for_entity(entity);Fl_Appearance appearance=fl_widget_appearance(entity);
@@ -568,8 +576,9 @@ static void apply(Ca_Button *button,void *data)
     unsigned char bytes[FL_POSE_BYTES],bounds_bytes[FL_BOUNDS_BYTES],style[24],typography[3+FL_TYPOGRAPHY_FAMILY_MAX],image[8],alpha[8];
     fl_pose_encode(&pose,bytes);fl_bounds_encode(&box,bounds_bytes);fl_appearance_encode(&appearance,style);fl_opacity_encode(opacity,alpha);
     unsigned char style_bytes[FL_STYLE_BYTES],clip_bytes[FL_VIDEO_CLIP_BYTES];
-    unsigned char camera_bytes[FL_CAMERA_BYTES];
-    Fl_Component components[16]={{.type=FL_COMPONENT_POSE, .version=1, .size=FL_POSE_BYTES, .data=bytes},{.type=FL_COMPONENT_BOUNDS, .version=1, .size=FL_BOUNDS_BYTES, .data=bounds_bytes},{.type=FL_COMPONENT_OPACITY, .version=1, .size=8, .data=alpha}};size_t count=3;
+    unsigned char camera_bytes[FL_CAMERA_BYTES], motion_bytes[FL_MOTION_BYTES], post_bytes[FL_POST_BYTES];
+    unsigned char path_bytes[24 + 48 * 49];
+    Fl_Component components[24]={{.type=FL_COMPONENT_POSE, .version=1, .size=FL_POSE_BYTES, .data=bytes},{.type=FL_COMPONENT_BOUNDS, .version=1, .size=FL_BOUNDS_BYTES, .data=bounds_bytes},{.type=FL_COMPONENT_OPACITY, .version=1, .size=8, .data=alpha}};size_t count=3;
     if (def&&def->kind!=FL_WIDGET_ENTITY&&!def->has_image&&!def->has_video) components[count++]=(Fl_Component){.type = FL_COMPONENT_APPEARANCE, .version = 1, .size = 24, .data = style};
     if (def&&def->has_text) {
         size_t size=fl_typography_encode(&p->typography,typography);
@@ -594,6 +603,11 @@ static void apply(Ca_Button *button,void *data)
         look.gradient=to&&to[0];
         if (ok&&look.gradient) ok=color(to,look.gradient_to);
         look.align=p->align;look.clip=p->clip;
+        double blend=0, radial=0;
+        ok=ok&&number(p->fields[GLOW].value,&look.glow)&&number(p->fields[BLEND].value,&blend)&&number(p->fields[RADIAL].value,&radial)&&number(p->fields[GRADIENT_MID_POS].value,&look.gradient_mid_pos);
+        look.blend=(unsigned char)blend; look.radial=radial>=0.5;
+        const char *mid=p->fields[GRADIENT_MID].value;
+        if (ok&&mid&&mid[0]) ok=color(mid,look.gradient_mid);
         unsigned char probe[FL_STYLE_BYTES];fl_style_encode(&look,probe);
         Fl_Component probe_component={.type = FL_COMPONENT_STYLE, .version = 1, .size = FL_STYLE_BYTES, .data = probe};
         if (!ok||!fl_widget_component_valid(&probe_component)) {status(p,"Check radius, blur, shadow, gradient and crop values.");return;}
@@ -601,6 +615,22 @@ static void apply(Ca_Button *button,void *data)
         if (memcmp(probe,plain_bytes,sizeof(probe))||fl_entity_component(entity,FL_COMPONENT_STYLE)) {
             memcpy(style_bytes,probe,sizeof(probe));components[count++]=(Fl_Component){.type = FL_COMPONENT_STYLE, .version = 1, .size = FL_STYLE_BYTES, .data = style_bytes};
         }
+    }
+    if (def&&def->has_text) {
+        Fl_TextMotion motion=fl_motion_default();
+        if (!number(p->fields[TRACKING].value,&motion.tracking)||!number(p->fields[STAGGER].value,&motion.stagger)||!number(p->fields[RISE].value,&motion.rise)||
+            !number(p->fields[TEXT_FADE].value,&motion.fade)||!number(p->fields[TEXT_DURATION].value,&motion.duration)) {status(p,"Check tracking, stagger, rise, fade and duration.");return;}
+        fl_motion_encode(&motion,motion_bytes);
+        if (!fl_motion_decode(&(Fl_Component){.type=FL_COMPONENT_TEXT_MOTION,.version=1,.size=FL_MOTION_BYTES,.data=motion_bytes},&motion)) {status(p,"Text motion values are out of range.");return;}
+        if (fl_motion_active(&motion)||motion.duration!=fl_motion_default().duration||fl_entity_component(entity,FL_COMPONENT_TEXT_MOTION))
+            components[count++]=(Fl_Component){.type=FL_COMPONENT_TEXT_MOTION,.version=1,.size=FL_MOTION_BYTES,.data=motion_bytes};
+    }
+    if (def&&def->kind==FL_WIDGET_PATH) {
+        Fl_Path path; if (!fl_path_decode(fl_entity_component(entity,FL_COMPONENT_PATH),&path)) {status(p,"This path cannot be edited.");return;}
+        if (!number(p->fields[TRIM_START].value,&path.trim_start)||!number(p->fields[TRIM_END].value,&path.trim_end)) {status(p,"Trim is 0..1.");return;}
+        size_t size=fl_path_encode(&path,path_bytes,sizeof(path_bytes));
+        if (!size) {status(p,"Trim must stay between 0 and 1, with start before end.");return;}
+        components[count++]=(Fl_Component){.type=FL_COMPONENT_PATH,.version=1,.size=size,.data=path_bytes};
     }
     if (p->has_camera) {
         Fl_Camera next=p->camera, authored;
@@ -620,6 +650,14 @@ static void apply(Ca_Button *button,void *data)
         fl_camera_encode(&next,camera_bytes);
         if (!fl_camera_decode(&(Fl_Component){.type=FL_COMPONENT_CAMERA,.version=1,.size=FL_CAMERA_BYTES,.data=camera_bytes},&next)) {status(p,"The camera values are out of range.");return;}
         components[count++]=(Fl_Component){.type=FL_COMPONENT_CAMERA,.version=1,.size=FL_CAMERA_BYTES,.data=camera_bytes,.id=p->camera_component};
+        Fl_Post grade=fl_post_default(); fl_post_decode(fl_entity_component(entity,FL_COMPONENT_POST),&grade);
+        double parsed_grade[5];
+        static const int grade_ids[]={VIGNETTE,GRAIN,LIFT,GAMMA,GAIN};
+        for (int i=0;i<5;++i) if (!number(p->fields[grade_ids[i]].value,&parsed_grade[i])) {status(p,"Check vignette, grain, lift, gamma and gain.");return;}
+        grade.vignette=parsed_grade[0]; grade.grain=parsed_grade[1]; grade.lift=parsed_grade[2]; grade.gamma=parsed_grade[3]; grade.gain=parsed_grade[4];
+        fl_post_encode(&grade,post_bytes);
+        if (!fl_post_decode(&(Fl_Component){.type=FL_COMPONENT_POST,.version=1,.size=FL_POST_BYTES,.data=post_bytes},&grade)) {status(p,"Grade values are out of range.");return;}
+        components[count++]=(Fl_Component){.type=FL_COMPONENT_POST,.version=1,.size=FL_POST_BYTES,.data=post_bytes};
     }
     if (def&&def->has_video) {
         Fl_VideoClip clip={.rate=1};fl_video_clip_decode(fl_entity_component(entity,FL_COMPONENT_VIDEO),&clip);
@@ -799,6 +837,24 @@ static bool load(Fl_Inspector *p,const Fl_Scene *scene,const Fl_Entity *entity)
     if (!field_set(&p->fields[GRADIENT_TO],text)) return false;
     snprintf(text,sizeof(text),"%.9g",look.gradient_angle*180/3.14159265358979323846);if (!field_set(&p->fields[GRADIENT_ANGLE],text)) return false;
     for (size_t i=0;i<4;++i) {p->loaded_numbers[CROP_X+i]=look.crop[i];snprintf(text,sizeof(text),"%.9g",look.crop[i]);if (!field_set(&p->fields[CROP_X+i],text)) return false;}
+    const double pivot_values[]={pose.px,pose.py,pose.pz,look.glow,(double)look.blend,look.radial?1:0};
+    static const int pivot_fields[]={PIVOT_X,PIVOT_Y,PIVOT_Z,GLOW,BLEND,RADIAL};
+    for (size_t i=0;i<6;++i) {p->loaded_numbers[pivot_fields[i]]=pivot_values[i];snprintf(text,sizeof(text),"%.9g",pivot_values[i]);if (!field_set(&p->fields[pivot_fields[i]],text)) return false;}
+    if (look.gradient_mid[3]) snprintf(text,sizeof(text),"#%02X%02X%02X%02X",look.gradient_mid[0],look.gradient_mid[1],look.gradient_mid[2],look.gradient_mid[3]); else text[0]=0;
+    if (!field_set(&p->fields[GRADIENT_MID],text)) return false;
+    p->loaded_numbers[GRADIENT_MID_POS]=look.gradient_mid_pos; snprintf(text,sizeof(text),"%.9g",look.gradient_mid_pos); if (!field_set(&p->fields[GRADIENT_MID_POS],text)) return false;
+    Fl_TextMotion motion=now&&now->has_motion?now->motion:fl_motion_default();
+    const double motion_values[]={motion.tracking,motion.stagger,motion.rise,motion.fade,motion.duration};
+    static const int motion_fields[]={TRACKING,STAGGER,RISE,TEXT_FADE,TEXT_DURATION};
+    for (size_t i=0;i<5;++i) {p->loaded_numbers[motion_fields[i]]=motion_values[i];snprintf(text,sizeof(text),"%.9g",motion_values[i]);if (!field_set(&p->fields[motion_fields[i]],text)) return false;}
+    double trim0=now?now->trim_start:0, trim1=now&&now->has_path?now->trim_end:1;
+    p->loaded_numbers[TRIM_START]=trim0; p->loaded_numbers[TRIM_END]=trim1;
+    snprintf(text,sizeof(text),"%.9g",trim0); if (!field_set(&p->fields[TRIM_START],text)) return false;
+    snprintf(text,sizeof(text),"%.9g",trim1); if (!field_set(&p->fields[TRIM_END],text)) return false;
+    Fl_Post grade=now&&now->has_post?now->post:fl_post_default();
+    const double grade_values[]={grade.vignette,grade.grain,grade.lift,grade.gamma?grade.gamma:1,grade.gain?grade.gain:1};
+    static const int grade_fields[]={VIGNETTE,GRAIN,LIFT,GAMMA,GAIN};
+    for (size_t i=0;i<5;++i) {p->loaded_numbers[grade_fields[i]]=grade_values[i];snprintf(text,sizeof(text),"%.9g",grade_values[i]);if (!field_set(&p->fields[grade_fields[i]],text)) return false;}
     Fl_VideoClip clip={.rate=1};fl_video_clip_decode(fl_entity_component(entity,FL_COMPONENT_VIDEO),&clip);
     p->loop=clip.loop;
     const double clip_values[]={(double)clip.start/FL_TICKS_PER_SECOND,(double)clip.offset/FL_TICKS_PER_SECOND,clip.rate};
@@ -857,7 +913,10 @@ static void field(Fl_Inspector *p,int index,const char *label,bool numeric)
 {
     static const int animated[FIELD_COUNT]={-1,FL_PROP_X,FL_PROP_Y,FL_PROP_Z,FL_PROP_WIDTH,FL_PROP_HEIGHT,FL_PROP_DEPTH,FL_PROP_ROTATION,FL_PROP_RX,FL_PROP_RY,FL_PROP_SCALE_X,
         FL_PROP_SCALE_Y,FL_PROP_SCALE_Z,FL_PROP_FILL,FL_PROP_STROKE,FL_PROP_STROKE_WIDTH,FL_PROP_FONT_SIZE,-1,-1,FL_PROP_OPACITY,FL_PROP_RADIUS,FL_PROP_SHADOW_BLUR,FL_PROP_SHADOW_X,FL_PROP_SHADOW_Y,FL_PROP_SHADOW_COLOR,FL_PROP_GRADIENT_TO,FL_PROP_GRADIENT_ANGLE,
-        FL_PROP_CROP_X,FL_PROP_CROP_Y,FL_PROP_CROP_W,FL_PROP_CROP_H,-1,-1,-1,FL_PROP_BLUR};
+        FL_PROP_CROP_X,FL_PROP_CROP_Y,FL_PROP_CROP_W,FL_PROP_CROP_H,-1,-1,-1,FL_PROP_BLUR,
+        FL_PROP_PIVOT_X,FL_PROP_PIVOT_Y,FL_PROP_PIVOT_Z,FL_PROP_GLOW,FL_PROP_BLEND,FL_PROP_RADIAL,FL_PROP_GRADIENT_MID,FL_PROP_GRADIENT_MID_POS,
+        FL_PROP_TRACKING,FL_PROP_STAGGER,FL_PROP_RISE,FL_PROP_TEXT_FADE,FL_PROP_TEXT_DURATION,FL_PROP_TRIM_START,FL_PROP_TRIM_END,
+        FL_PROP_VIGNETTE,FL_PROP_GRAIN,FL_PROP_LIFT,FL_PROP_GAMMA,FL_PROP_GAIN};
     const Fl_Scene *scene=inspector_scene(p);
     bool keyed=animated[index]>=0&&fl_scene_track(scene,p->entity,(Fl_AnimProperty)animated[index]);
     const Fl_SceneState *state=fl_scene_edit_state(p->edit); const Fl_Scene *flat=state ? fl_scene_state_scene(state,scene) : NULL;
@@ -1038,15 +1097,16 @@ static void style_section(Fl_Inspector *p,const Fl_WidgetDef *def)
 {
     if (!def) return;
     ca_text(&(Ca_TextDesc){.text="Style",.style=FL_CLASS_HEADING});
-    bool box=def->kind==FL_WIDGET_RECTANGLE||def->kind==FL_WIDGET_ENTITY||def->has_image||def->has_video,shape=def->kind==FL_WIDGET_RECTANGLE||def->kind==FL_WIDGET_ELLIPSE,filled=shape||fl_widget_is_polygon(def->kind);
+    bool box=def->kind==FL_WIDGET_RECTANGLE||def->kind==FL_WIDGET_ENTITY||def->has_image||def->has_video,shape=def->kind==FL_WIDGET_RECTANGLE||def->kind==FL_WIDGET_ELLIPSE,filled=shape||fl_widget_is_polygon(def->kind)||def->kind==FL_WIDGET_PATH||def->kind==FL_WIDGET_EFFECT;
     if (box) field(p,RADIUS,"Radius",true);
     ca_checkbox(&(Ca_CheckboxDesc){.text="Clip children",.checked=p->clip,.on_change=clip_changed,.change_data=p,.id="property-clip"});
     field(p,BLUR,"Blur",true);
-    if (filled) {field(p,GRADIENT_TO,"Gradient to",false);field(p,GRADIENT_ANGLE,"Gradient °",true);}
+    if (filled) {field(p,GRADIENT_TO,"Gradient to",false);field(p,GRADIENT_MID,"Gradient mid",false);field(p,GRADIENT_MID_POS,"Mid position",true);field(p,GRADIENT_ANGLE,"Gradient °",true);field(p,RADIAL,"Radial",true);field(p,BLEND,"Blend",true);field(p,GLOW,"Glow",true);}
     if (shape||def->has_image||def->has_video) {
         field(p,SHADOW_BLUR,"Shadow blur",true);field(p,SHADOW_X,"Shadow X",true);field(p,SHADOW_Y,"Shadow Y",true);field(p,SHADOW_COLOR,"Shadow colour",false);
     }
     if (def->has_text) {
+        field(p,TRACKING,"Tracking",true); field(p,STAGGER,"Stagger",true); field(p,RISE,"Rise",true); field(p,TEXT_FADE,"Fade",true); field(p,TEXT_DURATION,"Duration",true);
         static const char *const options[]={"Left","Center","Right"};
         ca_div_begin(&(Ca_DivDesc){.direction=CA_HORIZONTAL,.style=FL_CLASS_PROPERTY_ROW});
         ca_text(&(Ca_TextDesc){.text="Align",.style=FL_CLASS_PROPERTY_LABEL});
@@ -1057,6 +1117,7 @@ static void style_section(Fl_Inspector *p,const Fl_WidgetDef *def)
     if (def->has_image||def->has_video) {
         field(p,CROP_X,"Crop X",true);field(p,CROP_Y,"Crop Y",true);field(p,CROP_W,"Crop width",true);field(p,CROP_H,"Crop height",true);
     }
+    if (def->kind==FL_WIDGET_PATH) {field(p,TRIM_START,"Trim start",true); field(p,TRIM_END,"Trim end",true);}
     if (def->has_video) {
         field(p,VIDEO_START,"Start (s)",true);field(p,VIDEO_OFFSET,"Offset (s)",true);field(p,VIDEO_RATE,"Rate",true);
         ca_checkbox(&(Ca_CheckboxDesc){.text="Loop",.checked=p->loop,.on_change=loop_changed,.change_data=p,.id="property-loop"});
@@ -1241,6 +1302,7 @@ static void camera_section(Fl_Inspector *p, const Fl_Entity *entity)
             .on_change=edited,.change_data=&p->camera_fields[i],.disabled=camera_driven(p,entity,props[i])});
         ca_div_end();
     }
+    field(p,VIGNETTE,"Vignette",true); field(p,GRAIN,"Grain",true); field(p,LIFT,"Lift",true); field(p,GAMMA,"Gamma",true); field(p,GAIN,"Gain",true);
     ca_text(&(Ca_TextDesc){.text="This ratio is the camera's picture. Export uses the first visible camera.",.style=FL_CLASS_MUTED,.wrap=true});
 }
 
@@ -1270,6 +1332,7 @@ void fl_inspector_build(Ca_Dock *dock,Ca_Window *window,void *data)
     ca_text(&(Ca_TextDesc){.text="Transform",.style=FL_CLASS_HEADING});
     const char *labels[]={"X","Y","Z","Width","Height","Depth","Rotation °","Rotate X °","Rotate Y °","Scale X","Scale Y","Scale Z"};
     for (size_t i=0;i<12;++i) field(p,X+(int)i,labels[i],true);
+    field(p,PIVOT_X,"Pivot X",true); field(p,PIVOT_Y,"Pivot Y",true); field(p,PIVOT_Z,"Pivot Z",true);
     field(p,OPACITY,"Opacity",true);
     camera_section(p,entity);
     if (def&&(def->has_fill||def->has_stroke)) ca_text(&(Ca_TextDesc){.text="Appearance",.style=FL_CLASS_HEADING});

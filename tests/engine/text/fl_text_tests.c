@@ -64,7 +64,7 @@ static void test_raster(void)
     const Fl_FontFace *face = fl_font_catalog_match(catalog, "Inter", 400, false);
     const unsigned char text[] = "Flow\nText";
     uint32_t w, h, bw, bh, iw, ih;
-    Fl_TextStyle regular = {face, 32, false, false, 0}, bold = {face, 32, true, false, 0}, italic = {face, 32, false, true, 0};
+    Fl_TextStyle regular = {face, 32, false, false, 0, 0}, bold = {face, 32, true, false, 0, 0}, italic = {face, 32, false, true, 0, 0};
     unsigned char *a = fl_text_rasterize(r, &regular, text, sizeof(text) - 1, 200, 100, &w, &h);
     unsigned char *b = fl_text_rasterize(r, &bold, text, sizeof(text) - 1, 200, 100, &bw, &bh);
     unsigned char *c = fl_text_rasterize(r, &italic, text, sizeof(text) - 1, 200, 100, &iw, &ih);
@@ -84,8 +84,8 @@ static void test_raster(void)
     unsigned char *replaced = fl_text_rasterize(r, &regular, invalid, 3, 100, 50, &w, &h);
     CHECK(replaced != NULL); free(replaced);
     CHECK(!fl_text_rasterize(r, &regular, text, 4, 0, 10, &w, &h));
-    CHECK(!fl_text_rasterize(r, &(Fl_TextStyle){face, 0.5, false, false, 0}, text, 4, 10, 10, &w, &h));
-    CHECK(!fl_text_rasterize(r, &(Fl_TextStyle){NULL, 12, false, false, 0}, text, 4, 10, 10, &w, &h));
+    CHECK(!fl_text_rasterize(r, &(Fl_TextStyle){face, 0.5, false, false, 0, 0}, text, 4, 10, 10, &w, &h));
+    CHECK(!fl_text_rasterize(r, &(Fl_TextStyle){NULL, 12, false, false, 0, 0}, text, 4, 10, 10, &w, &h));
     fl_text_rasterizer_flush(r);
     unsigned char *again = fl_text_rasterize(r, &regular, text, 4, 50, 50, &w, &h);
     CHECK(again != NULL); free(again);
@@ -116,7 +116,7 @@ static void test_layout(void)
     const unsigned char text[] = "Align me";
     uint32_t w, h, first_left, last_left, first_centre, last_centre, first_right, last_right;
     for (int align = 0; align < 3; ++align) {
-        Fl_TextStyle style = {face, 32, false, false, align};
+        Fl_TextStyle style = {face, 32, false, false, align, 0};
         unsigned char *mask = fl_text_rasterize(r, &style, text, sizeof(text) - 1, 400, 60, &w, &h);
         CHECK(mask != NULL);
         if (!mask) continue;
@@ -126,7 +126,7 @@ static void test_layout(void)
     }
     CHECK(first_left < 6 && last_left < 200 && last_right > 390 && first_right > 200);
     CHECK(first_centre > first_left + 80 && last_centre < last_right - 80 && abs((int)(first_centre + last_centre) - 400) < 12);
-    Fl_TextStyle left = {face, 40, false, false, 0};
+    Fl_TextStyle left = {face, 40, false, false, 0, 0};
     const unsigned char wrap[] = "alpha beta";
     uint32_t w1, h1, w2, h2;
     unsigned char *one = fl_text_rasterize(r, &left, wrap, sizeof(wrap) - 1, 600, 120, &w1, &h1);

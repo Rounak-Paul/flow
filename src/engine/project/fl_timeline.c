@@ -388,7 +388,7 @@ bool fl_timeline_apply(const Fl_Project *p, Fl_Scene *s, const Fl_Op *op, uint64
             Fl_Tick start, end, time = fl_anchor_resolve(s, &anchor);
             if (!fl_scene_beat_range(s, anchor.beat, &start, &end) || time < start || time > end) return false;
         }
-        Fl_Keyframe value = {0, anchor, {op->value[0], op->value[1], op->value[2], op->value[3]}, op->ease};
+        Fl_Keyframe value = {0, anchor, {op->value[0], op->value[1], op->value[2], op->value[3]}, op->ease, {op->ease_param[0], op->ease_param[1], op->ease_param[2], op->ease_param[3]}};
         if (op->key) {
             const Fl_Track *owner;
             Fl_Keyframe *key = (Fl_Keyframe *)fl_scene_key(s, op->key, &owner);
@@ -508,7 +508,8 @@ void fl_timeline_commit(Fl_Scene *s, const Fl_KeyWrite *writes, size_t count, Fl
         Fl_Keyframe *key = key_at(s, t, tick);
         if (key) { memcpy(key->value, writes[i].value, sizeof(key->value)); continue; }
         Fl_Ease ease = t->key_count ? t->keys[t->key_count - 1].ease : FL_EASE_IN_OUT;
-        Fl_Keyframe added = {(*next_id)++, fl_anchor_at(s, tick), {0}, ease};
+        Fl_Keyframe added = {(*next_id)++, fl_anchor_at(s, tick), {0}, ease, {0}};
+        if (t->key_count) memcpy(added.ease_param, t->keys[t->key_count - 1].ease_param, sizeof(added.ease_param));
         memcpy(added.value, writes[i].value, sizeof(added.value));
         t->keys[t->key_count++] = added;
     }

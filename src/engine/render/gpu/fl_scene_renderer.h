@@ -82,6 +82,9 @@ typedef struct Fl_PrimitiveStyle {
     unsigned char gradient_to[4];   /* sRGB RGBA8, blended from the appearance fill */
     double gradient_angle;          /* radians; 0 runs left to right */
     double crop[4];                 /* images and videos: visible source region x, y, width, height as fractions */
+    bool radial;
+    double gradient_mid_pos;
+    unsigned char gradient_mid[4];
 } Fl_PrimitiveStyle;
 
 /* Draw one affine primitive (editor aids use this); mask is the sampled coverage/picture descriptor. */
@@ -99,7 +102,7 @@ void fl_scene_renderer_model(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, co
 void fl_scene_renderer_grid_plane(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, double origin_x, double origin_y,
                                   double extent, double spacing, const unsigned char minor[4], const unsigned char major[4]);
 /* Issue a pre-built 28-float push block with mask, for full-target passes such as the editor grid. */
-void fl_scene_renderer_push(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, const float push[28], VkDescriptorSet mask);
+void fl_scene_renderer_push(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, const float push[32], VkDescriptorSet mask);
 /* Descriptor of the solid white texel used by untextured primitives. */
 VkDescriptorSet fl_scene_renderer_white(const Fl_SceneRenderer *renderer);
 /* Decode an sRGB channel to linear light as the shaders expect. */

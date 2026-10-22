@@ -74,6 +74,7 @@ static void write_tracks(const Fl_Animation *a, Fl_Binary *b)
             fl_binary_u64(b, key->id); fl_time_anchor_write(&key->at, b);
             for (int c = 0; c < 4; ++c) put_double(b, key->value[c]);
             fl_binary_u64(b, key->ease);
+            for (int c = 0; c < 4; ++c) put_double(b, key->ease_param[c]);
         }
     }
 }
@@ -87,7 +88,7 @@ static bool read_tracks(Fl_Animation *a, Fl_Binary *b)
         Fl_Track *t = &a->tracks[a->track_count++];
         t->id = fl_binary_get_u64(b);
         uint64_t component = fl_binary_get_u64(b), property = fl_binary_get_u64(b), keys = fl_binary_get_u64(b);
-        if (b->failed || property >= FL_PROP_COUNT || keys > SIZE_MAX / sizeof(Fl_Keyframe) || keys > (b->size - b->cursor) / 88) {b->failed = true; break;}
+        if (b->failed || property >= FL_PROP_COUNT || keys > SIZE_MAX / sizeof(Fl_Keyframe) || keys > (b->size - b->cursor) / 120) {b->failed = true; break;}
         t->component = component; t->property = (Fl_AnimProperty)property;
         t->keys = keys ? calloc((size_t)keys, sizeof(*t->keys)) : NULL;
         if (keys && !t->keys) {b->failed = true; break;}
@@ -98,6 +99,7 @@ static bool read_tracks(Fl_Animation *a, Fl_Binary *b)
             if (!fl_time_anchor_read(&key->at, b)) {b->failed = true; break;}
             for (int c = 0; c < 4; ++c) key->value[c] = get_double(b);
             uint64_t ease = fl_binary_get_u64(b); key->ease = (Fl_Ease)ease;
+            for (int c = 0; c < 4; ++c) key->ease_param[c] = get_double(b);
             if (ease >= FL_EASE_COUNT) b->failed = true;
         }
     }

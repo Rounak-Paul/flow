@@ -23,7 +23,12 @@ void fl_camera_canvas_aspect(const Fl_Scene *scene, unsigned *aspect_w, unsigned
 }
 Fl_Material fl_material_default(void) {return (Fl_Material){.base = {220, 224, 232, 255}, .roughness = 0.55};}
 Fl_Light fl_light_default(void) {return (Fl_Light){.color = {255, 248, 236, 255}, .intensity = 2, .spot_angle = 0.5};}
-Fl_Particles fl_particles_default(void) {return (Fl_Particles){128, 1, 24, 1.6, 14, 90, {255, 176, 64, 255}};}
+Fl_Particles fl_particles_default(void)
+{
+    Fl_Particles p = {128, 1, 24, 1.6, 14, 90, {255, 176, 64, 255}, 14, 40, 0.7, 0, 0, 0, 0, 0, {255, 176, 64, 255}};
+    return p;
+}
+Fl_Post fl_post_default(void) {return (Fl_Post){0, 0, 0, 0, 1, 1};}
 
 static void put_double(unsigned char *out, double value)
 {
@@ -96,29 +101,44 @@ void fl_particles_encode(const Fl_Particles *particles, unsigned char out[FL_PAR
     for (unsigned b = 0; b < 8; ++b) {out[b] = (unsigned char)(capacity >> (8 * b)); out[8 + b] = (unsigned char)(seed >> (8 * b));}
     put_double(out + 16, p.rate); put_double(out + 24, p.life); put_double(out + 32, p.size); put_double(out + 40, p.speed);
     memcpy(out + 48, p.color, 4);
+    put_double(out + 56, p.size_end); put_double(out + 64, p.gravity); put_double(out + 72, p.spread);
+    put_double(out + 80, p.burst); put_double(out + 88, p.blend);
+    put_double(out + 96, p.force_x); put_double(out + 104, p.force_y); put_double(out + 112, p.force_z);
+    memcpy(out + 120, p.color_end, 4);
 }
 bool fl_particles_decode(const Fl_Component *c, Fl_Particles *out)
 {
     if (!c || !out || c->type != FL_COMPONENT_PARTICLES || c->version != 1 || c->size != FL_PARTICLES_BYTES || !c->data) return false;
     Fl_Particles p = {0}; uint64_t capacity = 0, seed = 0;
     for (unsigned b = 0; b < 8; ++b) {capacity |= (uint64_t)c->data[b] << (8 * b); seed |= (uint64_t)c->data[8 + b] << (8 * b);}
-    if (capacity > 4096) return false;
+    if (capacity > 8192) return false;
     p.capacity = (uint32_t)capacity; p.seed = (uint32_t)seed;
     if (!get_double(c->data + 16, &p.rate) || !get_double(c->data + 24, &p.life) || !get_double(c->data + 32, &p.size) || !get_double(c->data + 40, &p.speed)) return false;
     memcpy(p.color, c->data + 48, 4);
-    if (!p.capacity || p.capacity > 4096 || p.rate < 0 || p.rate > 10000 || p.life <= 0 || p.life > 120 || p.size <= 0 || p.size > 4096 || p.speed < 0 || p.speed > 100000) return false;
+    if (!get_double(c->data + 56, &p.size_end) || !get_double(c->data + 64, &p.gravity) || !get_double(c->data + 72, &p.spread) ||
+        !get_double(c->data + 80, &p.burst) || !get_double(c->data + 88, &p.blend) || !get_double(c->data + 96, &p.force_x) ||
+        !get_double(c->data + 104, &p.force_y) || !get_double(c->data + 112, &p.force_z)) return false;
+    memcpy(p.color_end, c->data + 120, 4);
+    if (!p.capacity || p.capacity > 8192 || p.rate < 0 || p.rate > 10000 || p.life <= 0 || p.life > 120 || p.size <= 0 || p.size > 4096 || p.speed < 0 || p.speed > 100000) return false;
+    if (p.size_end < 0 || p.size_end > 4096 || p.spread < 0 || p.spread > 4 || (p.burst != 0 && p.burst != 1) || (p.blend != 0 && p.blend != 1)) return false;
     *out = p; return true;
 }
 
 void fl_post_encode(const Fl_Post *post, unsigned char out[FL_POST_BYTES])
 {
-    put_double(out, post ? post->bloom : 0);
+    Fl_Post p = post ? *post : fl_post_default();
+    if (!post) p = fl_post_default();
+    put_double(out, p.bloom); put_double(out + 8, p.vignette); put_double(out + 16, p.grain);
+    put_double(out + 24, p.lift); put_double(out + 32, p.gamma); put_double(out + 40, p.gain);
 }
 bool fl_post_decode(const Fl_Component *c, Fl_Post *out)
 {
-    double bloom;
-    if (!c || !out || c->type != FL_COMPONENT_POST || c->version != 1 || c->size != FL_POST_BYTES || !c->data || !get_double(c->data, &bloom) || bloom < 0 || bloom > 8) return false;
-    *out = (Fl_Post){bloom}; return true;
+    Fl_Post p = fl_post_default();
+    if (!c || !out || c->type != FL_COMPONENT_POST || c->version != 1 || c->size != FL_POST_BYTES || !c->data) return false;
+    if (!get_double(c->data, &p.bloom) || !get_double(c->data + 8, &p.vignette) || !get_double(c->data + 16, &p.grain) ||
+        !get_double(c->data + 24, &p.lift) || !get_double(c->data + 32, &p.gamma) || !get_double(c->data + 40, &p.gain)) return false;
+    if (p.bloom < 0 || p.bloom > 8 || p.vignette < 0 || p.vignette > 2 || p.grain < 0 || p.grain > 1 || p.lift < -1 || p.lift > 1 || p.gamma < 0.2 || p.gamma > 4 || p.gain < 0 || p.gain > 4) return false;
+    *out = p; return true;
 }
 bool fl_mesh_decode(const Fl_Component *c, Fl_MeshShape *out)
 {
@@ -156,22 +176,30 @@ static uint32_t mix_hash(uint32_t x)
 size_t fl_particles_sample(const Fl_Particles *system, double seconds, Fl_Particle *out, size_t capacity)
 {
     if (!system || !out || !capacity || system->rate <= 0 || system->life <= 0) return 0;
-    size_t alive = (size_t)(system->rate * system->life);
+    double window = system->burst > 0.5 ? system->life : system->life;
+    size_t alive = system->burst > 0.5 ? system->capacity : (size_t)(system->rate * window);
     if (alive > system->capacity) alive = system->capacity;
     if (alive > capacity) alive = capacity;
-    if (alive > 4096) alive = 4096;
+    if (alive > 2048) alive = 2048;
     size_t count = 0;
+    double spread_scale = system->spread > 0 ? system->spread : 0.7;
     for (size_t i = 0; i < alive; ++i) {
-        double stagger = system->life * (double)i / (double)alive;
-        double age = seconds >= 0 ? fmod(seconds + stagger, system->life) : 0;
-        if (age < 0) age += system->life;
+        double stagger = window * (double)i / (double)(alive ? alive : 1);
+        double age = system->burst > 0.5 ? seconds : (seconds >= 0 ? fmod(seconds + stagger, window) : 0);
+        if (system->burst > 0.5 && (age < 0 || age > system->life)) continue;
+        if (age < 0) age += window;
         uint32_t h = mix_hash(system->seed ^ (uint32_t)(i * 0x9e3779b9u));
         double u = (h & 65535) / 65535.0, v = ((h >> 16) & 65535) / 65535.0;
-        double theta = u * 6.283185307179586, spread = (v - 0.5) * 0.7;
-        double dx = cos(theta) * spread, dz = sin(theta) * spread, dy = -sqrt(fmax(0, 1 - spread * spread));
+        double theta = u * 6.283185307179586, spread = (v - 0.5) * spread_scale;
+        double len = sqrt(fmax(0, 1 - spread * spread));
+        double dx = cos(theta) * spread, dz = sin(theta) * spread, dy = -len;
         double travel = system->speed * age;
-        out[count++] = (Fl_Particle){dx * travel, dy * travel + 40 * age * age, dz * travel, age, system->life, system->size,
-                                     {system->color[0], system->color[1], system->color[2], system->color[3]}};
+        double t = system->life > 0 ? fmin(1, age / system->life) : 1;
+        double size = system->size + (system->size_end - system->size) * t;
+        unsigned char color[4];
+        for (int c = 0; c < 4; ++c) color[c] = (unsigned char)lround(system->color[c] + ((int)system->color_end[c] - (int)system->color[c]) * t);
+        out[count++] = (Fl_Particle){dx * travel + system->force_x * age, dy * travel + system->gravity * age * age + system->force_y * age,
+                                     dz * travel + system->force_z * age, age, system->life, size, {color[0], color[1], color[2], color[3]}};
     }
     return count;
 }
@@ -305,7 +333,8 @@ bool fl_spatial_create(Fl_Project *project, Fl_Id scene, Fl_Id parent, const cha
     if (bounds.width || bounds.height || bounds.depth) components[count++] = (Fl_Component){.type = FL_COMPONENT_BOUNDS, .version = 1, .size = FL_BOUNDS_BYTES, .data = bounds_bytes};
     components[count++] = (Fl_Component){.type = extra_type, .version = 1, .size = extra_size, .data = extra};
     if (extra_type == FL_COMPONENT_CAMERA) {
-        fl_post_encode(&(Fl_Post){0.35}, post);
+        Fl_Post grade = fl_post_default(); grade.bloom = 0.35;
+        fl_post_encode(&grade, post);
         components[count++] = (Fl_Component){.type = FL_COMPONENT_POST, .version = 1, .size = FL_POST_BYTES, .data = post};
     }
     return fl_project_apply(project, &(Fl_Op){.kind = FL_OP_ENTITY_ADD, .scene = scene, .parent = parent, .name = name, .components = components, .component_count = count}, out_id);

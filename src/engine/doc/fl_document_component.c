@@ -7,6 +7,9 @@
 #include "components/fl_style.h"
 #include "components/fl_transform.h"
 #include "components/fl_spatial.h"
+#include "components/fl_path.h"
+#include "components/fl_motion.h"
+#include "components/fl_effect.h"
 #include "schema/fl_widgets.h"
 #include "schema/fl_properties.h"
 #include <math.h>
@@ -22,18 +25,19 @@ static const Field bounds[] = {{"width",0,NUMBER},{"height",8,NUMBER},{"depth",1
 static const Field camera_fields[] = {{"perspective",0,BYTE},{"aspect_w",2,BYTE},{"aspect_h",3,BYTE},{"fov",8,NUMBER},{"near",16,NUMBER},{"far",24,NUMBER},{"ortho_height",32,NUMBER},{"exposure",40,NUMBER},{0}};
 static const Field material_fields[] = {{"base",0,COLOR},{"roughness",8,NUMBER},{"metallic",16,NUMBER},{"emissive",24,NUMBER},{0}};
 static const Field light_fields[] = {{"kind",0,BYTE},{"color",4,COLOR},{"intensity",8,NUMBER},{"range",16,NUMBER},{"spot_angle",24,NUMBER},{0}};
-static const Field particle_fields[] = {{"capacity",0,UNSIGNED},{"seed",8,UNSIGNED},{"rate",16,NUMBER},{"life",24,NUMBER},{"size",32,NUMBER},{"speed",40,NUMBER},{"color",48,COLOR},{0}};
-static const Field post_fields[] = {{"bloom",0,NUMBER},{0}};
+static const Field particle_fields[] = {{"capacity",0,UNSIGNED},{"seed",8,UNSIGNED},{"rate",16,NUMBER},{"life",24,NUMBER},{"size",32,NUMBER},{"speed",40,NUMBER},{"color",48,COLOR},{"size_end",56,NUMBER},{"gravity",64,NUMBER},{"spread",72,NUMBER},{"burst",80,NUMBER},{"blend",88,NUMBER},{"force_x",96,NUMBER},{"force_y",104,NUMBER},{"force_z",112,NUMBER},{"color_end",120,COLOR},{0}};
+static const Field post_fields[] = {{"bloom",0,NUMBER},{"vignette",8,NUMBER},{"grain",16,NUMBER},{"lift",24,NUMBER},{"gamma",32,NUMBER},{"gain",40,NUMBER},{0}};
+static const Field motion_fields[] = {{"tracking",0,NUMBER},{"stagger",8,NUMBER},{"rise",16,NUMBER},{"fade",24,NUMBER},{"duration",32,NUMBER},{0}};
 static const Field mesh_fields[] = {{"shape",0,BYTE},{0}};
 static const Field rectangle[] = {{"color",0,COLOR},{0}};
 static const Field appearance[] = {{"fill",0,COLOR},{"stroke",4,COLOR},{"stroke_width",8,NUMBER},{"font_size",16,NUMBER},{0}};
 static const Field geometry[] = {{"shape",0,BYTE},{0}};
 static const Field image[] = {{"asset",0,UNSIGNED},{0}};
 static const Field opacity[] = {{"value",0,NUMBER},{0}};
-static const Field style[] = {{"radius",0,NUMBER},{"gradient_angle",8,NUMBER},{"shadow_blur",16,NUMBER},{"shadow_x",24,NUMBER},{"shadow_y",32,NUMBER},{"gradient_to",40,COLOR},{"shadow_color",44,COLOR},{"gradient",48,FLAG},{"align",49,BYTE},{"crop_x",50,NUMBER},{"crop_y",58,NUMBER},{"crop_width",66,NUMBER},{"crop_height",74,NUMBER},{"clip",82,FLAG},{"blur",83,NUMBER},{0}};
+static const Field style[] = {{"radius",0,NUMBER},{"gradient_angle",8,NUMBER},{"shadow_blur",16,NUMBER},{"shadow_x",24,NUMBER},{"shadow_y",32,NUMBER},{"gradient_to",40,COLOR},{"shadow_color",44,COLOR},{"gradient",48,FLAG},{"align",49,BYTE},{"crop_x",50,NUMBER},{"crop_y",58,NUMBER},{"crop_width",66,NUMBER},{"crop_height",74,NUMBER},{"clip",82,FLAG},{"blur",83,NUMBER},{"blend",91,BYTE},{"radial",92,FLAG},{"glow",93,NUMBER},{"gradient_mid",101,COLOR},{"gradient_mid_pos",105,NUMBER},{0}};
 static const Field video[] = {{"asset",0,UNSIGNED},{"start",8,SIGNED},{"offset",16,SIGNED},{"rate",24,NUMBER},{"loop",32,FLAG},{0}};
-static const Schema schemas[] = {{0}, {"pose",FL_POSE_BYTES,pose},{"rectangle",4,rectangle},{"text",0,NULL},{"appearance",24,appearance},{"geometry",1,geometry},{"typography",0,NULL},{"image",8,image},{"opacity",8,opacity},{"animation",0,NULL},{"script",0,NULL},{"style",91,style},{"video",33,video},{"prototype",0,NULL},{"composition",0,NULL},{"sampled",0,NULL},{"events",0,NULL},{"bounds",FL_BOUNDS_BYTES,bounds},{"camera",FL_CAMERA_BYTES,camera_fields},{"mesh",FL_MESH_BYTES,mesh_fields},{"material",FL_MATERIAL_BYTES,material_fields},{"light",FL_LIGHT_BYTES,light_fields},{"particles",FL_PARTICLES_BYTES,particle_fields},{"post",FL_POST_BYTES,post_fields}};
-static const char *const ease_names[] = {"linear","in","out","in_out","hold"};
+static const Schema schemas[] = {{0}, {"pose",FL_POSE_BYTES,pose},{"rectangle",4,rectangle},{"text",0,NULL},{"appearance",24,appearance},{"geometry",1,geometry},{"typography",0,NULL},{"image",8,image},{"opacity",8,opacity},{"animation",0,NULL},{"script",0,NULL},{"style",FL_STYLE_BYTES,style},{"video",33,video},{"prototype",0,NULL},{"composition",0,NULL},{"sampled",0,NULL},{"events",0,NULL},{"bounds",FL_BOUNDS_BYTES,bounds},{"camera",FL_CAMERA_BYTES,camera_fields},{"mesh",FL_MESH_BYTES,mesh_fields},{"material",FL_MATERIAL_BYTES,material_fields},{"light",FL_LIGHT_BYTES,light_fields},{"particles",FL_PARTICLES_BYTES,particle_fields},{"post",FL_POST_BYTES,post_fields},{"path",0,NULL},{"text_motion",FL_MOTION_BYTES,motion_fields},{"effect",0,NULL}};
+static const char *const ease_names[] = {"linear","in","out","in_out","hold","cubic","spring"};
 
 /* Read/write a canonical little-endian word without alignment assumptions. */
 static uint64_t word(const unsigned char *p) {uint64_t n = 0; for (unsigned i=0;i<8;++i) n |= (uint64_t)p[i] << (8*i); return n;}
@@ -82,6 +86,7 @@ static cJSON *animation_write(Fl_Json *c, const Fl_Animation *animation)
             const Fl_Keyframe *key=&t->keys[k]; cJSON *item=cJSON_CreateObject();
             fl_json_add(c,item,"id",fl_json_u64(key->id)); fl_json_add(c,item,"at",fl_document_anchor_write(c,&key->at));
             fl_json_add(c,item,"value",numbers(c,key->value,4)); fl_json_add(c,item,"ease",cJSON_CreateString(ease_names[key->ease]));
+            if (key->ease==FL_EASE_CUBIC || key->ease==FL_EASE_SPRING) fl_json_add(c,item,"curve",numbers(c,key->ease_param,4));
             fl_json_add(c,keys,NULL,item);
         }
         fl_json_add(c,o,"keys",keys); fl_json_add(c,tracks,NULL,o);
@@ -112,13 +117,18 @@ static bool animation_read(Fl_Json *c, const cJSON *array, Fl_Id entity, Fl_Comp
         size_t k=0;
         for (const cJSON *v=keys->child;v;v=v->next,++k) {
             Fl_Keyframe *key=&t->keys[k];
-            if (!fl_json_object(c,v,"id at value ease") || !fl_json_uint(c,fl_json_member(c,v,"id",0),&key->id) ||
+            if (!fl_json_object(c,v,"id at value ease curve") || !fl_json_uint(c,fl_json_member(c,v,"id",0),&key->id) ||
                 !fl_document_anchor_read(c,fl_json_member(c,v,"at",cJSON_Object),&key->at)) return false;
             const cJSON *values=fl_json_member(c,v,"value",cJSON_Array), *ease=fl_json_member(c,v,"ease",cJSON_String);
             if (!values || cJSON_GetArraySize(values)!=4 || !ease) return fl_json_fail(c,"Invalid key value/ease");
             size_t j=0; for (const cJSON *n=values->child;n;n=n->next,++j) if (!fl_json_number(c,n,&key->value[j])) return false;
             key->ease=FL_EASE_COUNT;
             for (int j2=0;j2<FL_EASE_COUNT;++j2) if (!strcmp(ease->valuestring,ease_names[j2])) key->ease=(Fl_Ease)j2;
+            const cJSON *curve=cJSON_GetObjectItemCaseSensitive(v,"curve");
+            if (curve) {
+                if (!cJSON_IsArray(curve) || cJSON_GetArraySize(curve)!=4) return fl_json_fail(c,"A curve is four numbers");
+                size_t ci=0; for (const cJSON *n=curve->child;n;n=n->next,++ci) if (!fl_json_number(c,n,&key->ease_param[ci])) return false;
+            }
         }
     }
     return fl_animation_valid(a) || fl_json_fail(c,"Invalid animation schema");
@@ -157,7 +167,12 @@ cJSON *fl_document_component_write(Fl_Json *c, const Fl_Component *component)
             fl_json_add(c,o,"overrides",fl_json_parse(c,script.overrides,script.overrides_size));
         }
     } else if (component->type==FL_COMPONENT_ANIMATION) fl_json_add(c,o,"tracks",animation_write(c,(const Fl_Animation *)component->data));
-    else if (component->type==FL_COMPONENT_TEXT) {
+    else if (component->type==FL_COMPONENT_PATH || component->type==FL_COMPONENT_EFFECT) {
+        cJSON *extra = component->type==FL_COMPONENT_PATH ? fl_path_write(c, component) : fl_effect_write(c, component);
+        cJSON *child = extra ? extra->child : NULL;
+        while (child) { cJSON *next = child->next; cJSON_DetachItemViaPointer(extra, child); cJSON_AddItemToObject(o, child->string, child); child = next; }
+        cJSON_Delete(extra);
+    } else if (component->type==FL_COMPONENT_TEXT) {
         char *text=malloc(component->size+1);
         if (text) {if (component->size) memcpy(text,component->data,component->size); text[component->size]=0; fl_json_add(c,o,"text",cJSON_CreateString(text)); free(text);}
         else fl_json_fail(c,"Cannot allocate text");
@@ -196,13 +211,15 @@ bool fl_document_component_read(Fl_Json *c, const cJSON *o, Fl_Id entity, Fl_Com
     if (!s && out->type<sizeof(schemas)/sizeof(*schemas)) return fl_json_fail(c,"Native components require named types");
     if (!fl_json_uint(c,fl_json_member(c,o,"id",0),&out->id)) return false;
     if (!fl_json_uint(c,fl_json_member(c,o,"version",0),&out->version)) return false;
-    char fields[512]="id type version";
+    char fields[2048]="id type version";
     if (out->type==FL_COMPONENT_EVENTS) strcat(fields," events");
     else if (out->type==FL_COMPONENT_SAMPLED) strcat(fields," samples");
     else if (out->type==FL_COMPONENT_COMPOSITION) strcat(fields," time document overrides");
     else if (out->type==FL_COMPONENT_PROTOTYPE) strcat(fields," asset time overrides");
     else if (out->type==FL_COMPONENT_SCRIPT) strcat(fields," asset enabled layer time parameters bindings overrides");
     else if (out->type==FL_COMPONENT_ANIMATION) strcat(fields," tracks");
+    else if (out->type==FL_COMPONENT_PATH) strcat(fields," trim_start trim_end commands");
+    else if (out->type==FL_COMPONENT_EFFECT) strcat(fields," kind uniforms source");
     else if (out->type==FL_COMPONENT_TEXT) strcat(fields," text");
     else if (out->type==FL_COMPONENT_TYPOGRAPHY) strcat(fields," family weight italic");
     else if (s && s->fields) for (const Field *f=s->fields;f->name;++f) {strcat(fields," "); strcat(fields,f->name);}
@@ -254,6 +271,14 @@ bool fl_document_component_read(Fl_Json *c, const cJSON *o, Fl_Id entity, Fl_Com
         script.parameters=text; script.parameters_size=strlen(text); Fl_Id id=out->id; uint64_t version=out->version;
         bool ok=version==FL_SCRIPT_VERSION && fl_script_encode(&script,out); cJSON_free(text); cJSON_free(binding_text); cJSON_free(override_text); out->id=id;
         return ok || fl_json_fail(c,"Invalid Script schema or parameter budget");
+    }
+    if (out->type==FL_COMPONENT_PATH) {
+        Fl_Id id=out->id; bool ok=out->version==1 && fl_path_read(c,o,out); out->id=id; out->type=FL_COMPONENT_PATH;
+        return ok && fl_widget_component_valid(out);
+    }
+    if (out->type==FL_COMPONENT_EFFECT) {
+        Fl_Id id=out->id; bool ok=out->version==1 && fl_effect_read(c,o,out); out->id=id; out->type=FL_COMPONENT_EFFECT;
+        return ok && fl_widget_component_valid(out);
     }
     if (out->type==FL_COMPONENT_ANIMATION) return animation_read(c,fl_json_member(c,o,"tracks",cJSON_Array),entity,out) && fl_widget_component_valid(out);
     if (out->type==FL_COMPONENT_TEXT) {

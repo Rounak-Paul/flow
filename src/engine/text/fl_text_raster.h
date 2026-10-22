@@ -10,7 +10,14 @@ typedef struct Fl_TextStyle {
     double size;
     bool synthetic_bold, synthetic_italic;
     int align;                  /* 0 left, 1 centre, 2 right (Fl_TextAlign) */
+    double tracking;            /* extra pixels between glyphs, in the same space as size */
 } Fl_TextStyle;
+
+#define FL_RASTER_GLYPHS 96u
+typedef struct Fl_RasterGlyph {
+    int x, y, w, h;
+    unsigned char *coverage;   /* w*h, caller frees */
+} Fl_RasterGlyph;
 
 /* Create a rasterizer; NULL on failure. */
 Fl_TextRasterizer *fl_text_rasterizer_create(void);
@@ -28,3 +35,7 @@ void fl_text_rasterizer_flush(Fl_TextRasterizer *rasterizer);
 unsigned char *fl_text_rasterize(Fl_TextRasterizer *rasterizer, const Fl_TextStyle *style,
                                  const unsigned char *text, size_t length, double width, double height,
                                  uint32_t *out_width, uint32_t *out_height);
+/* One coverage mask per glyph, in layout order, capped at cap. Returns the count. */
+size_t fl_text_rasterize_glyphs(Fl_TextRasterizer *rasterizer, const Fl_TextStyle *style,
+                                const unsigned char *text, size_t length, double tracking,
+                                Fl_RasterGlyph *out, size_t cap);

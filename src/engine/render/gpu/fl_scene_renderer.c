@@ -8,6 +8,12 @@
 #include "media/fl_video_decode.h"
 #include "platform/fl_paths.h"
 #include "text/fl_text_raster.h"
+#include "components/fl_path.h"
+#include "components/fl_effect.h"
+#include "components/fl_path.h"
+#include "components/fl_effect.h"
+#include "components/fl_path.h"
+#include "components/fl_effect.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,7 +22,8 @@
 #define LOG_TAG "renderer"
 #define KIND_IMAGE 6
 #define IMAGE_MAX_SIDE 8192u
-#define PIPELINE_FORMATS 16u
+#define PIPELINE_FORMATS 48u
+#define PUSH_FLOATS 32u
 #define UBO_ALIGN 256u
 #define UBO_SLOTS 8192u
 #define PIPE_FLAT 0
@@ -24,6 +31,8 @@
 #define PIPE_PARTICLE 2
 #define PIPE_ADD 3
 #define PIPE_MESH 4
+#define PIPE_MUL 5
+#define PIPE_SCREEN 6
 #define LAYER_SLOTS 4u
 #define LAYER_DEPTH 3u
 #define LAYER_FORMAT VK_FORMAT_R16G16B16A16_SFLOAT
@@ -38,8 +47,13 @@ typedef struct Fl_CachedText {
     double width, height, font_size;
     Fl_Typography typography;
     int align;
-    Fl_GpuImage *image;
+    double tracking;
+    int glyph_count;
+    int glyph_box[FL_RASTER_GLYPHS][4];
+    Fl_GpuImage *image, *glyphs[FL_RASTER_GLYPHS];
 } Fl_CachedText;
+typedef struct Fl_CachedPath { Fl_Id entity; uint64_t hash; Fl_GpuImage *image; } Fl_CachedPath;
+typedef struct Fl_EffectPipe { uint64_t hash; VkFormat format; int depth; VkPipeline pipeline; } Fl_EffectPipe;
 /* Workers own copied source paths and one bounded decoded frame; no project pointers cross threads. */
 typedef struct Fl_VideoDecode {
     char path[FL_PATH_MAX];
@@ -137,7 +151,11 @@ struct Fl_SceneRenderer {
     Fl_Mat4 view_proj;
     Fl_Vec3 cam_right, cam_up;
     float crop_x, crop_y, crop_w, crop_h;
-    double bloom;
+    double bloom, vignette, grain, lift, gamma, gain;
+    Fl_CachedPath *paths;
+    size_t path_count;
+    Fl_EffectPipe effects[8];
+    size_t effect_count;
     float draw_mvp[16];
     VkFormat pass_format;
     bool pass_depth;
@@ -156,6 +174,7 @@ static void polygon_glsl(char *out, size_t size)
     for (int kind = FL_WIDGET_TRIANGLE; kind < FL_WIDGET_COUNT; ++kind) {
         double v[FL_POLYGON_MAX_VERTICES][2];
         const size_t n = fl_widget_polygon((Fl_WidgetKind)kind, v);
+        if (!n) continue;
         size_t used = strlen(arrays);
         used += (size_t)snprintf(arrays + used, sizeof(arrays) - used, "const vec2 outline%d[%zu]=vec2[%zu](", kind, n, n);
         for (size_t i = 0; i < n; ++i) used += (size_t)snprintf(arrays + used, sizeof(arrays) - used, "%svec2(%.9g,%.9g)", i ? "," : "", v[i][0], v[i][1]);
@@ -198,13 +217,13 @@ static bool ensure_ubo(Fl_SceneRenderer *p)
 static bool create_pipeline(Fl_SceneRenderer *p, VkFormat format, int kind)
 {
     const char *vs = "#version 450\nlayout(set=1,binding=0) uniform M { mat4 mvp; } u;"
-        "layout(push_constant) uniform P { vec4 a; vec4 b; vec4 fill; vec4 stroke; vec4 params; vec4 fill2; vec4 extra; } p;"
+        "layout(push_constant) uniform P { vec4 a; vec4 b; vec4 fill; vec4 stroke; vec4 params; vec4 fill2; vec4 extra; vec4 mid; } p;"
         "layout(location=0) out vec2 uv;vec2 v[6]=vec2[](vec2(0,0),vec2(1,0),vec2(1,1),vec2(0,0),vec2(1,1),vec2(0,1));"
         "void main(){uv=v[gl_VertexIndex];float kind=p.params.w;"
         "if(kind==15.&&p.extra.w>0.5) gl_Position=u.mvp*vec4(uv*vec2(p.a.w,p.b.w),0.,1.);"
-        "else if(kind==15.||kind==17.||kind==18.||kind==19.||kind==20.) gl_Position=vec4(uv*2.-1.,0.,1.);"
+        "else if(kind==15.||kind==17.||kind==18.||kind==19.||kind==20.||kind==23.||kind==24.) gl_Position=vec4(uv*2.-1.,0.,1.);"
         "else gl_Position=u.mvp*vec4(uv*p.params.xy,0.,1.);}";
-    static const char fs_head[] = "#version 450\nlayout(push_constant) uniform P { vec4 a; vec4 b; vec4 fill; vec4 stroke; vec4 params; vec4 fill2; vec4 extra; } p;"
+    static const char fs_head[] = "#version 450\nlayout(push_constant) uniform P { vec4 a; vec4 b; vec4 fill; vec4 stroke; vec4 params; vec4 fill2; vec4 extra; vec4 mid; } p;"
         "layout(set=0,binding=0) uniform sampler2D mask;layout(location=0) in vec2 uv;layout(location=0) out vec4 color;"
         "float rbox(vec2 q0,vec2 half_size,float r){vec2 q=abs(q0)-half_size+r;return length(max(q,0.))+min(max(q.x,q.y),0.)-r;}";
     static const char fs_tail[] =
@@ -229,6 +248,19 @@ static bool create_pipeline(Fl_SceneRenderer *p, VkFormat format, int kind)
         "if(kind==19.){vec4 c=texture(mask,gl_FragCoord.xy/size);color=vec4(c.rgb*p.extra.x,0.);return;}"
         "if(kind==20.){vec4 c=texture(mask,gl_FragCoord.xy/size);float luma=dot(c.rgb,vec3(.2126,.7152,.0722));"
         "float k=smoothstep(p.extra.x,p.extra.x+.15,luma);color=vec4(c.rgb*k,k);return;}"
+        "if(kind==22.){float d=length((uv-.5)*2.);color=p.fill;color.a*=1.-smoothstep(.55,1.,d);return;}";
+    static const char fs_look[] =
+        "if(kind==24.){color=texture(mask,gl_FragCoord.xy/size);return;}"
+        "if(kind==23.){vec2 suv=gl_FragCoord.xy/size;vec4 c=texture(mask,suv);vec3 rgb=c.a>1e-5?c.rgb/max(c.a,.0001):c.rgb;"
+        "vec2 q=suv*2.-1.;rgb*=1.-p.extra.x*dot(q,q);float n=fract(sin(dot(gl_FragCoord.xy,vec2(12.9898,78.233)))*43758.5453)-.5;rgb+=n*p.extra.y;"
+        "rgb=pow(max(rgb,vec3(0.)),vec3(1./max(p.fill.x,.2)))*p.fill.y+p.extra.z;color=vec4(rgb,c.a);return;}"
+        "if(kind==21.){float time=p.mid.x;float ek=p.mid.y;vec2 q=uv;vec4 A=p.fill;vec4 B=p.stroke;"
+        "if(ek<1.5){q+=.12*p.fill2.x*vec2(sin(q.y*8.+time),cos(q.x*6.-time));float t=fract(q.x+q.y*.35+time*.05);color=mix(A,B,t);}"
+        "else if(ek<2.5){float d=length(q-.5)-p.fill2.x;float w=sin(atan(q.y-.5,q.x-.5)*max(p.fill2.y,1.)+time);color=mix(B,A,smoothstep(.04,-.04,d+.08*w));}"
+        "else if(ek<3.5){float n=fract(sin(dot(q*size+time*vec2(17.,9.),vec2(12.9898,78.233)))*43758.5453);color=vec4(mix(A.rgb,B.rgb,n),A.a*(.35+n*p.fill2.x));}"
+        "else if(ek<4.5){float t=q.x;color=vec4(mix(A.r,B.r,clamp(t+p.fill2.x,0.,1.)),mix(A.g,B.g,t),mix(A.b,B.b,clamp(t-p.fill2.x,0.,1.)),A.a);}"
+        "else{vec2 d=q+p.fill2.x*vec2(sin(q.y*10.+time),cos(q.x*10.-time));color=mix(A,B,clamp(d.x,0.,1.));}"
+        "return;}"
         "if(kind==16.){float m=p.extra.w;float d=rbox((uv-.5)*size,size*.5-m,r);color=p.fill;color.a*=1-smoothstep(-sw,sw,d);return;}"
         "if(kind==5.){color=p.fill;color.a*=texture(mask,uv).r;return;}"
         "if(kind==6.){color=texture(mask,p.fill2.xy+uv*p.fill2.zw);color.a*=p.fill.a;"
@@ -243,17 +275,18 @@ static bool create_pipeline(Fl_SceneRenderer *p, VkFormat format, int kind)
         "float aa=max(fwidth(edge),.001);float cover=1-smoothstep(-aa,aa,edge);"
         "float border=sw>0 ? smoothstep(-sw-aa,-sw+aa,edge) : 0;"
         "vec4 base=p.fill;"
-        "if(p.extra.z>.5){vec2 dir=vec2(cos(p.extra.y),sin(p.extra.y));float t=dot((uv-.5)*size,dir)/max(abs(size.x*dir.x)+abs(size.y*dir.y),.0001)+.5;"
-        "base=mix(p.fill,p.fill2,clamp(t,0.,1.));float n=fract(sin(dot(gl_FragCoord.xy,vec2(12.9898,78.233)))*43758.5453)-.5;base.rgb+=n*.004;}"
+        "if(p.extra.z>.5){float t;if(p.extra.z>1.5)t=length((uv-.5)*2.);else{vec2 dir=vec2(cos(p.extra.y),sin(p.extra.y));t=dot((uv-.5)*size,dir)/max(abs(size.x*dir.x)+abs(size.y*dir.y),.0001)+.5;}"
+        "t=clamp(t,0.,1.);float m=clamp(p.extra.w,.02,.98);base=p.mid.a>.01?(t<m?mix(p.fill,p.mid,t/m):mix(p.mid,p.fill2,(t-m)/max(1.-m,.0001))):mix(p.fill,p.fill2,t);"
+        "float n=fract(sin(dot(gl_FragCoord.xy,vec2(12.9898,78.233)))*43758.5453)-.5;base.rgb+=n*.004;}"
         "color=mix(base,p.stroke,border);color.a*=cover;}";
-    char outlines[2048], fs[sizeof(outlines) + sizeof(fs_head) + sizeof(fs_tail)];
+    char outlines[2048], fs[sizeof(outlines) + sizeof(fs_head) + sizeof(fs_tail) + sizeof(fs_look)];
     polygon_glsl(outlines, sizeof(outlines));
-    snprintf(fs, sizeof(fs), "%s%s%s", fs_head, outlines, fs_tail);
+    snprintf(fs, sizeof(fs), "%s%s%s%s", fs_head, outlines, fs_tail, fs_look);
     VkShaderModule vert = p->gpu.compile_shader(p->gpu.host,vs,VK_SHADER_STAGE_VERTEX_BIT);
     VkShaderModule frag = p->gpu.compile_shader(p->gpu.host,fs,VK_SHADER_STAGE_FRAGMENT_BIT);
     bool ok = vert && frag && ensure_ubo(p);
     if (ok && !p->layout) {
-        VkPushConstantRange range = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 112};
+        VkPushConstantRange range = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 128};
         VkDescriptorSetLayout sets[] = {fl_gpu_images_layout(p->images), p->ubo_layout};
         VkPipelineLayoutCreateInfo layout = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 2, .pSetLayouts = sets,
             .pushConstantRangeCount = 1, .pPushConstantRanges = &range};
@@ -270,8 +303,8 @@ static bool create_pipeline(Fl_SceneRenderer *p, VkFormat format, int kind)
         VkPipelineRasterizationStateCreateInfo raster = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE, .lineWidth = 1};
         VkPipelineMultisampleStateCreateInfo samples = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
         VkPipelineColorBlendAttachmentState blend = {.blendEnable = VK_TRUE,
-            .srcColorBlendFactor = kind == PIPE_ADD ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_SRC_ALPHA,
-            .dstColorBlendFactor = kind == PIPE_ADD ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, .colorBlendOp = VK_BLEND_OP_ADD,
+            .srcColorBlendFactor = kind == PIPE_ADD || kind == PIPE_SCREEN ? VK_BLEND_FACTOR_ONE : kind == PIPE_MUL ? VK_BLEND_FACTOR_DST_COLOR : VK_BLEND_FACTOR_SRC_ALPHA,
+            .dstColorBlendFactor = kind == PIPE_ADD ? VK_BLEND_FACTOR_ONE : kind == PIPE_SCREEN ? VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, .colorBlendOp = VK_BLEND_OP_ADD,
             .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE, .dstAlphaBlendFactor = kind == PIPE_ADD ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
             .alphaBlendOp = VK_BLEND_OP_ADD, .colorWriteMask = 15};
         VkPipelineColorBlendStateCreateInfo blends = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, .attachmentCount = 1, .pAttachments = &blend};
@@ -298,7 +331,7 @@ static bool create_pipeline(Fl_SceneRenderer *p, VkFormat format, int kind)
 static Fl_GpuImage *rasterize_text(Fl_SceneRenderer *p, const Fl_CachedText *entry, const unsigned char *text, double scale)
 {
     Fl_FontMatch match = fl_fonts_match(p->fonts, &entry->typography);
-    Fl_TextStyle style = {match.face, entry->font_size * scale, match.synthetic_bold, match.synthetic_italic, entry->align};
+    Fl_TextStyle style = {match.face, entry->font_size * scale, match.synthetic_bold, match.synthetic_italic, entry->align, entry->tracking * scale};
     uint32_t w, h;
     unsigned char *mask = fl_text_rasterize(p->rasterizer, &style, text, entry->length, entry->width * scale, entry->height * scale, &w, &h);
     Fl_GpuImage *image = mask ? fl_gpu_image_create(p->images, FL_GPU_IMAGE_COVERAGE, mask, w, h) : NULL;
@@ -336,27 +369,45 @@ static void prepare_texts(Fl_SceneRenderer *p, const Fl_Scene *scene, const Fl_S
         entry->length = text->size; entry->width = box.width; entry->height = box.height;
         entry->font_size = state ? state->entities[i].appearance.font_size : fl_widget_appearance(e).font_size;
         entry->typography = fl_widget_typography(e);
-        entry->align = (int)fl_entity_style(e).align;
+        entry->align = (int)(state ? state->entities[i].style.align : fl_entity_style(e).align);
+        entry->tracking = state ? state->entities[i].motion.tracking : 0;
+        bool kinetic = state && state->entities[i].has_motion && (state->entities[i].motion.stagger != 0 || state->entities[i].motion.rise != 0 || state->entities[i].motion.fade != 0);
         entry->text = text->size ? malloc(text->size) : NULL;
         if (text->size && !entry->text) continue;
         if (text->size) memcpy(entry->text, text->data, text->size);
         for (size_t j = 0; !rebuild && j < p->text_count; ++j) {
             Fl_CachedText *old = &p->texts[j];
             if (old->entity == e->id && p->text_scene == scene->id && old->width == entry->width && old->height == entry->height &&
-                old->font_size == entry->font_size && old->align == entry->align && same_typography(&old->typography, &entry->typography) && old->length == entry->length &&
+                old->font_size == entry->font_size && old->align == entry->align && old->tracking == entry->tracking && same_typography(&old->typography, &entry->typography) && old->length == entry->length &&
                 (!text->size || (old->text && !memcmp(old->text, text->data, text->size)))) {
-                entry->image = old->image; old->image = NULL; break;
+                entry->image = old->image; old->image = NULL;
+                entry->glyph_count = old->glyph_count; memcpy(entry->glyph_box, old->glyph_box, sizeof(entry->glyph_box));
+                memcpy(entry->glyphs, old->glyphs, sizeof(entry->glyphs)); old->glyph_count = 0; memset(old->glyphs, 0, sizeof(old->glyphs));
+                break;
             }
         }
         if (!entry->image && entry->width > 0 && entry->height > 0) {
             entry->image = rasterize_text(p, entry, text->data, scale);
+            if (kinetic && entry->text) {
+                Fl_FontMatch match = fl_fonts_match(p->fonts, &entry->typography);
+                Fl_TextStyle face = {match.face, entry->font_size * scale, match.synthetic_bold, match.synthetic_italic, entry->align, entry->tracking * scale};
+                Fl_RasterGlyph glyphs[FL_RASTER_GLYPHS];
+                size_t n = fl_text_rasterize_glyphs(p->rasterizer, &face, entry->text, entry->length, entry->tracking * scale, glyphs, FL_RASTER_GLYPHS);
+                entry->glyph_count = (int)n;
+                for (size_t g = 0; g < n; ++g) {
+                    entry->glyph_box[g][0] = glyphs[g].x; entry->glyph_box[g][1] = glyphs[g].y;
+                    entry->glyph_box[g][2] = glyphs[g].w; entry->glyph_box[g][3] = glyphs[g].h;
+                    entry->glyphs[g] = fl_gpu_image_create(p->images, FL_GPU_IMAGE_COVERAGE, glyphs[g].coverage, (uint32_t)glyphs[g].w, (uint32_t)glyphs[g].h);
+                    free(glyphs[g].coverage);
+                }
+            }
             if (!entry->image) FL_LOG_ERROR(LOG_TAG, "could not rasterize text entity %llu", (unsigned long long)e->id);
         }
     }
     bool retired = false;
     for (size_t i = 0; i < p->text_count; ++i) retired |= p->texts[i].image != NULL;
     if (retired) vkDeviceWaitIdle(p->device);
-    for (size_t i = 0; i < p->text_count; ++i) {fl_gpu_image_destroy(p->texts[i].image); free(p->texts[i].text);}
+    for (size_t i = 0; i < p->text_count; ++i) {fl_gpu_image_destroy(p->texts[i].image); for (int g = 0; g < p->texts[i].glyph_count; ++g) fl_gpu_image_destroy(p->texts[i].glyphs[g]); free(p->texts[i].text);}
     free(p->texts); p->texts = next; p->text_count = count; p->text_scene = scene->id; p->text_revision = scene->revision;
     p->text_generation = generation; p->text_tick = tick; p->text_scale = scale;
 }
@@ -581,6 +632,38 @@ static void prepare_videos(Fl_SceneRenderer *p, const Fl_Project *project, const
     if (wait && p->video_error) snprintf(p->error,sizeof(p->error),"Cannot decode requested video timestamp or video budget exceeded (maximum %u visible video entities)",VIDEO_SLOTS);
 }
 
+static void prepare_paths(Fl_SceneRenderer *p, const Fl_Scene *scene, const Fl_SceneState *state)
+{
+    size_t count = 0;
+    for (size_t i = 0; i < scene->entity_count; ++i) if (fl_entity_component(&scene->entities[i], FL_COMPONENT_PATH)) ++count;
+    Fl_CachedPath *next = count ? calloc(count, sizeof(*next)) : NULL;
+    if (count && !next) return;
+    size_t at = 0;
+    for (size_t i = 0; i < scene->entity_count; ++i) {
+        const Fl_Component *component = fl_entity_component(&scene->entities[i], FL_COMPONENT_PATH);
+        if (!component) continue;
+        Fl_Path path;
+        if (!fl_path_decode(component, &path)) {++at; continue;}
+        if (state && i < state->count && state->entities[i].has_path) {path.trim_start = state->entities[i].trim_start; path.trim_end = state->entities[i].trim_end;}
+        Fl_Bounds box = state && i < state->count ? state->entities[i].bounds : fl_entity_bounds(&scene->entities[i]);
+        double stroke = state && i < state->count ? state->entities[i].appearance.stroke_width : fl_widget_appearance(&scene->entities[i]).stroke_width;
+        uint64_t hash = 14695981039346656037ull;
+        const unsigned char *bytes = component->data;
+        for (size_t b = 0; b < component->size; ++b) { hash ^= bytes[b]; hash *= 1099511628211ull; }
+        hash ^= (uint64_t)(path.trim_start * 1000) ^ ((uint64_t)(path.trim_end * 1000) << 20) ^ ((uint64_t)box.width << 40);
+        hash ^= (uint64_t)llround(box.height * 1000); hash *= 1099511628211ull;
+        hash ^= (uint64_t)llround(stroke * 1000); hash *= 1099511628211ull;
+        Fl_CachedPath *entry = &next[at++]; entry->entity = scene->entities[i].id; entry->hash = hash;
+        for (size_t j = 0; j < p->path_count; ++j) if (p->paths[j].entity == entry->entity && p->paths[j].hash == hash) {entry->image = p->paths[j].image; p->paths[j].image = NULL; break;}
+        if (!entry->image && box.width > 0 && box.height > 0) {
+            uint32_t w, h; unsigned char *mask = fl_path_raster(&path, box.width, box.height, stroke, &w, &h);
+            if (mask) {entry->image = fl_gpu_image_create(p->images, FL_GPU_IMAGE_COVERAGE, mask, w, h); free(mask);}
+        }
+    }
+    for (size_t i = 0; i < p->path_count; ++i) fl_gpu_image_destroy(p->paths[i].image);
+    free(p->paths); p->paths = next; p->path_count = at;
+}
+
 static VkDescriptorSet video_descriptor(const Fl_SceneRenderer *p, Fl_Id entity)
 {
     for (size_t i = 0; i < p->video_count; ++i) if (p->videos[i].entity == entity) return fl_gpu_image_descriptor(p->videos[i].image);
@@ -598,6 +681,7 @@ void fl_scene_renderer_prepare(Fl_SceneRenderer *p, const Fl_Project *project, c
     if (p->project_identity!=identity) {p->text_scene=0; p->picture_scene=0;}
     p->project_identity=identity;
     prepare_texts(p, scene, state, text_scale > 0 ? text_scale : 1);
+    prepare_paths(p, scene, state);
     prepare_pictures(p, project, scene);
     stage_pictures(p, project, scene, wait);
     age_graveyard(p);
@@ -678,20 +762,20 @@ static void use_affine(Fl_SceneRenderer *p, Fl_Affine matrix)
     use_model(p, model);
 }
 
-void fl_scene_renderer_push(Fl_SceneRenderer *p, VkCommandBuffer cmd, const float push[28], VkDescriptorSet mask)
+void fl_scene_renderer_push(Fl_SceneRenderer *p, VkCommandBuffer cmd, const float push[PUSH_FLOATS], VkDescriptorSet mask)
 {
     uint32_t offset = upload_uniform(p, p->draw_mvp, sizeof(p->draw_mvp));
     if (offset == UINT32_MAX) return;
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p->layout, 0, 1, &mask, 0, NULL);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p->layout, 1, 1, &p->ubo_set, 1, &offset);
-    vkCmdPushConstants(cmd, p->layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 112, push);
+    vkCmdPushConstants(cmd, p->layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 128, push);
     vkCmdDraw(cmd, 6, 1, 0, 0);
 }
 
 VkDescriptorSet fl_scene_renderer_white(const Fl_SceneRenderer *p) { return p ? fl_gpu_images_white(p->images) : VK_NULL_HANDLE; }
 
 /* Fill the push block: affine to clip space, linear-light colours, sizes, kind and style parameters. */
-static void push_block(float push[28], const Fl_SceneFrame *frame, Fl_Affine matrix, double width, double height, Fl_WidgetKind kind,
+static void push_block(float push[PUSH_FLOATS], const Fl_SceneFrame *frame, Fl_Affine matrix, double width, double height, Fl_WidgetKind kind,
                        Fl_Appearance appearance, const Fl_PrimitiveStyle *style)
 {
     const double *a = matrix.v;
@@ -707,16 +791,21 @@ static void push_block(float push[28], const Fl_SceneFrame *frame, Fl_Affine mat
         const double *crop = style ? style->crop : (const double[4]){0, 0, 1, 1};
         push[20] = (float)crop[0]; push[21] = (float)crop[1]; push[22] = (float)crop[2]; push[23] = (float)crop[3];
     }
-    push[24] = style ? (float)style->radius : 0; push[25] = style ? (float)style->gradient_angle : 0; push[26] = style && style->gradient ? 1.f : 0.f; push[27] = 0;
+    push[24] = style ? (float)style->radius : 0; push[25] = style ? (float)style->gradient_angle : 0;
+    push[26] = style && style->gradient ? (style->radial ? 2.f : 1.f) : 0.f;
+    push[27] = style && style->gradient_mid[3] ? (float)style->gradient_mid_pos : 0.f;
+    const unsigned char *mid = style ? style->gradient_mid : (const unsigned char[4]){0};
+    push[28] = fl_scene_renderer_linear(mid[0]); push[29] = fl_scene_renderer_linear(mid[1]);
+    push[30] = fl_scene_renderer_linear(mid[2]); push[31] = mid[3] / 255.f;
 }
 
 void fl_scene_renderer_styled(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_SceneFrame *frame, Fl_Affine matrix,
                               double width, double height, Fl_WidgetKind kind, Fl_Appearance appearance, VkDescriptorSet mask,
                               const Fl_PrimitiveStyle *style)
 {
-    float push[28];
+    float push[PUSH_FLOATS];
     push_block(push, frame, matrix, width, height, kind, appearance, style);
-    for (size_t i = 0; i < 28; ++i) if (!isfinite(push[i])) return;
+    for (size_t i = 0; i < PUSH_FLOATS; ++i) if (!isfinite(push[i])) return;
     use_affine(p, matrix);
     fl_scene_renderer_push(p, cmd, push, mask);
 }
@@ -725,9 +814,9 @@ void fl_scene_renderer_model(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_
                              double width, double height, Fl_WidgetKind kind, Fl_Appearance appearance, VkDescriptorSet mask,
                              const Fl_PrimitiveStyle *style)
 {
-    float push[28];
+    float push[PUSH_FLOATS];
     push_block(push, frame, fl_affine_from_mat4(model), width, height, kind, appearance, style);
-    for (size_t i = 0; i < 28; ++i) if (!isfinite(push[i])) return;
+    for (size_t i = 0; i < PUSH_FLOATS; ++i) if (!isfinite(push[i])) return;
     use_model(p, model);
     fl_scene_renderer_push(p, cmd, push, mask);
 }
@@ -736,11 +825,11 @@ void fl_scene_renderer_grid_plane(Fl_SceneRenderer *p, VkCommandBuffer cmd, doub
                                   double spacing, const unsigned char minor[4], const unsigned char major[4])
 {
     if (!p || !minor || !major || !(extent > 0) || !(spacing > 0)) return;
-    float push[28] = {0, 0, 0, (float)extent, 0, 0, 0, (float)extent,
+    float push[PUSH_FLOATS] = {0, 0, 0, (float)extent, 0, 0, 0, (float)extent,
         fl_scene_renderer_linear(minor[0]), fl_scene_renderer_linear(minor[1]), fl_scene_renderer_linear(minor[2]), minor[3] / 255.f,
         fl_scene_renderer_linear(major[0]), fl_scene_renderer_linear(major[1]), fl_scene_renderer_linear(major[2]), major[3] / 255.f,
         (float)origin_x, (float)origin_y, (float)spacing, FL_RENDER_KIND_GRID, 0, 0, 0, 0, 0, 0, 0, 1};
-    for (size_t i = 0; i < 28; ++i) if (!isfinite(push[i])) return;
+    for (size_t i = 0; i < PUSH_FLOATS; ++i) if (!isfinite(push[i])) return;
     use_model(p, fl_mat4_translation(origin_x, origin_y, 0));
     fl_scene_renderer_push(p, cmd, push, fl_scene_renderer_white(p));
 }
@@ -761,10 +850,10 @@ static void draw_shadow(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_Scene
     Fl_Appearance color = {.stroke_width = style->shadow_blur};
     memcpy(color.fill, style->shadow_color, 4);
     color.fill[3] = (unsigned char)lround(color.fill[3] * opacity);
-    float push[28];
+    float push[PUSH_FLOATS];
     push_block(push, frame, matrix, width + 2 * margin, height + 2 * margin, (Fl_WidgetKind)16, color, NULL);
     push[24] = (float)fmin(radius, fmin(width, height) * .5); push[27] = (float)margin;
-    for (size_t i = 0; i < 28; ++i) if (!isfinite(push[i])) return;
+    for (size_t i = 0; i < PUSH_FLOATS; ++i) if (!isfinite(push[i])) return;
     use_model(p, model);
     fl_scene_renderer_push(p, cmd, push, fl_scene_renderer_white(p));
 }
@@ -779,6 +868,8 @@ void fl_scene_renderer_background(Fl_SceneRenderer *p, VkCommandBuffer cmd, cons
 /* Which pixels of an entity to draw: everything, only its shadow (which a layer must not cut), or only its body. */
 typedef enum Fl_EntityPart { PART_ALL, PART_SHADOW, PART_BODY } Fl_EntityPart;
 
+static VkPipeline effect_pipeline(Fl_SceneRenderer *p, VkFormat format, bool depth, const char *source, size_t size);
+
 /* Draw one entity's own pixels; children are drawn by the caller. */
 static void draw_entity(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_SceneFrame *frame, const Fl_Scene *scene,
                         const Fl_SceneState *state, const Fl_SceneGeometry *g, size_t index, Fl_EntityPart part)
@@ -792,19 +883,73 @@ static void draw_entity(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_Scene
     look.stroke[3] = (unsigned char)lround(look.stroke[3] * v->opacity);
     Fl_Appearance picture = {.fill = {255, 255, 255, (unsigned char)lround(255 * v->opacity)}};
     Fl_Style style = state ? state->entities[index].style : fl_entity_style(e);
-    Fl_PrimitiveStyle shape = {.radius = style.radius, .gradient = style.gradient, .gradient_angle = style.gradient_angle};
+    Fl_PrimitiveStyle shape = {.radius = style.radius, .gradient = style.gradient, .gradient_angle = style.gradient_angle, .radial = style.radial, .gradient_mid_pos = style.gradient_mid_pos};
     memcpy(shape.gradient_to, style.gradient_to, 4);
     shape.gradient_to[3] = (unsigned char)lround(style.gradient_to[3] * v->opacity);
+    memcpy(shape.gradient_mid, style.gradient_mid, 4);
     memcpy(shape.crop, state ? state->entities[index].crop : style.crop, sizeof(shape.crop));
-    bool boxed = v->kind == FL_WIDGET_RECTANGLE || v->kind == FL_WIDGET_ELLIPSE || v->kind == FL_WIDGET_IMAGE || v->kind == FL_WIDGET_VIDEO;
+    bool boxed = v->kind == FL_WIDGET_RECTANGLE || v->kind == FL_WIDGET_ELLIPSE || v->kind == FL_WIDGET_IMAGE || v->kind == FL_WIDGET_VIDEO || v->kind == FL_WIDGET_EFFECT;
+    if (part != PART_BODY && style.glow > 0 && look.fill[3]) {
+        Fl_Style halo = style; halo.shadow_blur = style.glow; halo.shadow_x = halo.shadow_y = 0; memcpy(halo.shadow_color, look.fill, 4);
+        draw_shadow(p, cmd, frame, v->model, v->bounds.width, v->bounds.height, v->kind == FL_WIDGET_ELLIPSE ? 1e9 : style.radius, &halo, v->opacity);
+    }
     if (part != PART_BODY && boxed && style.shadow_blur > 0 && style.shadow_color[3])
         draw_shadow(p, cmd, frame, v->model, v->bounds.width, v->bounds.height, v->kind == FL_WIDGET_ELLIPSE ? 1e9 : style.radius, &style, v->opacity);
     if (part == PART_SHADOW) return;
+    if (style.blend) {
+        int pipe = style.blend == 1 ? PIPE_ADD : style.blend == 2 ? PIPE_MUL : style.blend == 3 ? PIPE_SCREEN : PIPE_FLAT;
+        VkPipeline bound = pipeline_for(p, p->pass_format, pipe);
+        if (bound) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound);
+    }
     VkDescriptorSet mask = white;
     if (v->kind == FL_WIDGET_TEXT) {
         mask = VK_NULL_HANDLE;
-        if (p->text_scene == scene->id) for (size_t j = 0; j < p->text_count; ++j)
-            if (p->texts[j].entity == e->id) mask = fl_gpu_image_descriptor(p->texts[j].image);
+        Fl_CachedText *cached = NULL;
+        if (p->text_scene == scene->id) for (size_t j = 0; j < p->text_count; ++j) if (p->texts[j].entity == e->id) cached = &p->texts[j];
+        if (cached && cached->glyph_count && state && state->entities[index].has_motion) {
+            double seconds = (double)state->tick / (double)FL_TICKS_PER_SECOND;
+            double scale = p->text_scale > 0 ? p->text_scale : 1;
+            const Fl_TextMotion *motion = &state->entities[index].motion;
+            for (int g = 0; g < cached->glyph_count; ++g) {
+                double u = motion->duration > 0 ? (seconds - g * motion->stagger) / motion->duration : 1;
+                u = u < 0 ? 0 : u > 1 ? 1 : u; u = u * u * (3 - 2 * u);
+                double dy = motion->rise * (1 - u);
+                double fade = motion->fade == 0 ? 1 : u * motion->fade + (1 - motion->fade);
+                Fl_Appearance glyph = look; glyph.fill[3] = (unsigned char)lround(glyph.fill[3] * fade);
+                Fl_Mat4 placed = fl_mat4_mul(v->model, fl_mat4_translation(cached->glyph_box[g][0] / scale, cached->glyph_box[g][1] / scale + dy, 0));
+                VkDescriptorSet glyph_mask = fl_gpu_image_descriptor(cached->glyphs[g]);
+                if (glyph_mask) fl_scene_renderer_model(p, cmd, frame, placed, cached->glyph_box[g][2] / scale, cached->glyph_box[g][3] / scale, (Fl_WidgetKind)5, glyph, glyph_mask, NULL);
+            }
+            if (style.blend) { VkPipeline flat = pipeline_for(p, p->pass_format, p->pass_depth ? PIPE_DEPTH : PIPE_FLAT); if (flat) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, flat); }
+            return;
+        }
+        if (cached) mask = fl_gpu_image_descriptor(cached->image);
+    } else if (v->kind == FL_WIDGET_PATH) {
+        mask = VK_NULL_HANDLE;
+        for (size_t j = 0; j < p->path_count; ++j) if (p->paths[j].entity == e->id) mask = fl_gpu_image_descriptor(p->paths[j].image);
+        if (mask) fl_scene_renderer_model(p, cmd, frame, v->model, v->bounds.width, v->bounds.height, (Fl_WidgetKind)5, look, mask, NULL);
+        if (style.blend) { VkPipeline flat = pipeline_for(p, p->pass_format, p->pass_depth ? PIPE_DEPTH : PIPE_FLAT); if (flat) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, flat); }
+        return;
+    } else if (v->kind == FL_WIDGET_EFFECT && state && state->entities[index].has_effect) {
+        float push[PUSH_FLOATS];
+        push_block(push, frame, fl_affine_from_mat4(v->model), v->bounds.width, v->bounds.height, (Fl_WidgetKind)21, look, &shape);
+        push[19] = 21;
+        for (int u = 0; u < 4; ++u) { push[20 + u] = (float)state->entities[index].effect_u[u]; push[24 + u] = (float)state->entities[index].effect_u[u + 4]; }
+        push[28] = state ? (float)((double)state->tick / (double)FL_TICKS_PER_SECOND) : 0;
+        push[29] = (float)state->entities[index].effect_kind;
+        bool finite = true;
+        for (size_t c = 0; c < PUSH_FLOATS; ++c) if (!isfinite(push[c])) finite = false;
+        if (finite) {
+            use_model(p, v->model);
+            VkPipeline custom = VK_NULL_HANDLE;
+            if (state->entities[index].effect_kind == FL_EFFECT_CUSTOM && state->entities[index].effect_source)
+                custom = effect_pipeline(p, p->pass_format, p->pass_depth, state->entities[index].effect_source, state->entities[index].effect_source_size);
+            if (custom) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, custom);
+            fl_scene_renderer_push(p, cmd, push, white);
+            VkPipeline flat = pipeline_for(p, p->pass_format, p->pass_depth ? PIPE_DEPTH : PIPE_FLAT);
+            if (flat) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, flat);
+        }
+        return;
     } else if (v->kind == FL_WIDGET_IMAGE || v->kind == FL_WIDGET_VIDEO) {
         mask = v->kind == FL_WIDGET_IMAGE ? picture_descriptor(p, e) : video_descriptor(p, e->id);
         if (mask) fl_scene_renderer_model(p, cmd, frame, v->model, v->bounds.width, v->bounds.height, (Fl_WidgetKind)KIND_IMAGE, picture, mask, &shape);
@@ -812,6 +957,63 @@ static void draw_entity(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_Scene
         return;
     }
     if (mask) fl_scene_renderer_model(p, cmd, frame, v->model, v->bounds.width, v->bounds.height, v->kind, look, mask, boxed || fl_widget_is_polygon(v->kind) ? &shape : NULL);
+    if (style.blend) { VkPipeline flat = pipeline_for(p, p->pass_format, p->pass_depth ? PIPE_DEPTH : PIPE_FLAT); if (flat) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, flat); }
+}
+
+static uint64_t fnv_bytes(const void *data, size_t size)
+{
+    uint64_t h = 14695981039346656037ull;
+    const unsigned char *p = data;
+    for (size_t i = 0; i < size; ++i) { h ^= p[i]; h *= 1099511628211ull; }
+    return h;
+}
+
+static VkPipeline effect_pipeline(Fl_SceneRenderer *p, VkFormat format, bool depth, const char *source, size_t size)
+{
+    uint64_t hash = fnv_bytes(source, size) ^ (uint64_t)format ^ (depth ? 1 : 0);
+    for (size_t i = 0; i < p->effect_count; ++i) if (p->effects[i].hash == hash) return p->effects[i].pipeline;
+    if (p->effect_count == 8 || size > 65536 || !p->layout) return VK_NULL_HANDLE;
+    char *fs = malloc(size + 512);
+    if (!fs) return VK_NULL_HANDLE;
+    int wrote = snprintf(fs, size + 512,
+        "#version 450\nlayout(push_constant) uniform P { vec4 a; vec4 b; vec4 fill; vec4 stroke; vec4 params; vec4 fill2; vec4 extra; vec4 mid; } p;"
+        "layout(set=0,binding=0) uniform sampler2D mask;layout(location=0) in vec2 uv;layout(location=0) out vec4 color;\n%.*s\n"
+        "void main(){color=effect(uv,p.mid.x,p.fill2,p.extra);}", (int)size, source);
+    const char *vs = "#version 450\nlayout(set=1,binding=0) uniform M { mat4 mvp; } u;"
+        "layout(push_constant) uniform P { vec4 a; vec4 b; vec4 fill; vec4 stroke; vec4 params; vec4 fill2; vec4 extra; vec4 mid; } p;"
+        "layout(location=0) out vec2 uv;vec2 v[6]=vec2[](vec2(0,0),vec2(1,0),vec2(1,1),vec2(0,0),vec2(1,1),vec2(0,1));"
+        "void main(){uv=v[gl_VertexIndex];gl_Position=u.mvp*vec4(uv*p.params.xy,0.,1.);}";
+    VkShaderModule vert = wrote > 0 ? p->gpu.compile_shader(p->gpu.host, vs, VK_SHADER_STAGE_VERTEX_BIT) : VK_NULL_HANDLE;
+    VkShaderModule frag = vert ? p->gpu.compile_shader(p->gpu.host, fs, VK_SHADER_STAGE_FRAGMENT_BIT) : VK_NULL_HANDLE;
+    free(fs);
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    if (vert && frag) {
+        VkPipelineShaderStageCreateInfo stages[2] = {
+            {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vert, .pName = "main"},
+            {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = frag, .pName = "main"}};
+        VkPipelineVertexInputStateCreateInfo vertex = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        VkPipelineInputAssemblyStateCreateInfo assembly = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+        VkPipelineViewportStateCreateInfo view = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
+        VkPipelineRasterizationStateCreateInfo raster = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE, .lineWidth = 1};
+        VkPipelineMultisampleStateCreateInfo samples = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+        VkPipelineDepthStencilStateCreateInfo depth_state = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO, .depthTestEnable = depth, .depthWriteEnable = depth, .depthCompareOp = VK_COMPARE_OP_LESS};
+        VkPipelineColorBlendAttachmentState blend = {.blendEnable = VK_TRUE, .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA, .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+            .colorBlendOp = VK_BLEND_OP_ADD, .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE, .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, .alphaBlendOp = VK_BLEND_OP_ADD, .colorWriteMask = 15};
+        VkPipelineColorBlendStateCreateInfo blends = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, .attachmentCount = 1, .pAttachments = &blend};
+        VkDynamicState states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+        VkPipelineDynamicStateCreateInfo dynamic = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 2, .pDynamicStates = states};
+        VkFormat depth_format = depth ? VK_FORMAT_D32_SFLOAT : VK_FORMAT_UNDEFINED;
+        VkPipelineRenderingCreateInfo rendering = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO, .colorAttachmentCount = 1, .pColorAttachmentFormats = &format, .depthAttachmentFormat = depth_format};
+        VkGraphicsPipelineCreateInfo info = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &rendering, .stageCount = 2, .pStages = stages, .pVertexInputState = &vertex,
+            .pInputAssemblyState = &assembly, .pViewportState = &view, .pRasterizationState = &raster, .pMultisampleState = &samples, .pDepthStencilState = depth ? &depth_state : NULL,
+            .pColorBlendState = &blends, .pDynamicState = &dynamic, .layout = p->layout};
+        if (vkCreateGraphicsPipelines(p->device, VK_NULL_HANDLE, 1, &info, NULL, &pipeline) != VK_SUCCESS) pipeline = VK_NULL_HANDLE;
+    }
+    if (vert) vkDestroyShaderModule(p->device, vert, NULL);
+    if (frag) vkDestroyShaderModule(p->device, frag, NULL);
+    if (!pipeline) return VK_NULL_HANDLE;
+    p->effects[p->effect_count++] = (Fl_EffectPipe){hash, format, depth, pipeline};
+    return pipeline;
 }
 
 /* Full-access barrier with a layout change; layers are small in number, so simplicity beats precise stages. */
@@ -865,9 +1067,9 @@ static Fl_GpuImage *scratch_image(Fl_SceneRenderer *p, const Fl_RenderTarget *t)
 }
 
 /* Push block for a full-target pass over layer content (composite or one blur direction). */
-static void layer_push(float push[28], const Fl_RenderTarget *t, int kind)
+static void layer_push(float push[PUSH_FLOATS], const Fl_RenderTarget *t, int kind)
 {
-    memset(push, 0, 28 * sizeof(float));
+    memset(push, 0, PUSH_FLOATS * sizeof(float));
     push[0] = 2; push[2] = -1; push[5] = 2; push[6] = -1;
     push[16] = (float)t->width; push[17] = (float)t->height; push[19] = (float)kind;
 }
@@ -881,7 +1083,7 @@ static bool blur_layer(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_Render
         Fl_GpuImage *from = pass ? scratch : layer, *to = pass ? layer : scratch;
         layer_transition(cmd, fl_gpu_image_handle(to), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
         begin_pass(p, cmd, fl_gpu_image_view(to), VK_NULL_HANDLE, t->width, t->height, true, false);
-        float push[28];
+        float push[PUSH_FLOATS];
         layer_push(push, t, KIND_BLUR);
         push[24] = (float)fmin(sigma, MAX_BLUR_TAPS / 3.0); push[25] = pass ? 0.f : 1.f; push[26] = pass ? 1.f : 0.f;
         bool ok = fl_scene_renderer_begin(p, cmd, LAYER_FORMAT, t->width, t->height, false);
@@ -915,13 +1117,13 @@ static void close_layer(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_Rende
     double sigma = style->blur * t->width / frame->width;
     if (sigma > 0.05) blur_layer(p, cmd, t, layer, sigma);
     if (!resume(p, cmd, t, level)) return;
-    float push[28];
+    float push[PUSH_FLOATS];
     layer_push(push, t, KIND_COMPOSITE);
     const double *i = v->inverse.v, kx = frame->width / t->width, ky = frame->height / t->height;
     push[8] = (float)(i[0] * kx); push[9] = (float)(i[1] * ky); push[10] = (float)(i[0] * frame->x + i[1] * frame->y + i[2]); push[11] = (float)v->bounds.width;
     push[12] = (float)(i[3] * kx); push[13] = (float)(i[4] * ky); push[14] = (float)(i[3] * frame->x + i[4] * frame->y + i[5]); push[15] = (float)v->bounds.height;
     push[20] = (float)fmin(style->radius, fmin(v->bounds.width, v->bounds.height) * .5); push[21] = style->clip ? 1.f : 0.f; push[22] = v->kind == FL_WIDGET_ELLIPSE ? 1.f : 0.f;
-    for (size_t k = 0; k < 28; ++k) if (!isfinite(push[k])) return;
+    for (size_t k = 0; k < PUSH_FLOATS; ++k) if (!isfinite(push[k])) return;
     fl_scene_renderer_push(p, cmd, push, fl_gpu_image_descriptor(layer));
 }
 
@@ -981,8 +1183,11 @@ static bool ensure_mesh(Fl_SceneRenderer *p, VkFormat format)
     const char *fs = "#version 450\nlayout(location=0) in vec3 vN;layout(location=1) in vec3 vW;"
         "layout(set=1,binding=0) uniform M{mat4 mvp;mat4 model;vec4 base;vec4 shade;vec4 lp0;vec4 lc0;vec4 lp1;vec4 lc1;vec4 lp2;vec4 lc2;}u;"
         "layout(location=0) out vec4 color;vec3 lit_one(vec4 lp,vec4 lc,vec3 n){vec3 ldir;float att=1.;if(lp.w<.5)ldir=normalize(lp.xyz);else{vec3 to=lp.xyz-vW;float d=length(to);ldir=to/max(d,.0001);att=clamp(1.-d/4000.,0.,1.);att*=att;}"
-        "return u.base.rgb*lc.rgb*lc.w*att*clamp(dot(n,ldir),0.,1.);}void main(){vec3 n=normalize(vN);vec3 lit=u.base.rgb*.08;int count=int(u.shade.w+.5);"
-        "if(count==0)lit+=u.base.rgb*clamp(dot(n,vec3(0,0,1)),0.,1.);else{if(count>0)lit+=lit_one(u.lp0,u.lc0,n);if(count>1)lit+=lit_one(u.lp1,u.lc1,n);if(count>2)lit+=lit_one(u.lp2,u.lc2,n);}lit+=u.base.rgb*u.shade.z;color=vec4(lit,u.base.a);}";
+        "float rough=clamp(u.shade.x,.04,1.);float metal=clamp(u.shade.y,0.,1.);vec3 h=normalize(ldir+vec3(0.,0.,1.));float spec=pow(clamp(dot(n,h),0.,1.),mix(96.,6.,rough));"
+        "vec3 F0=mix(vec3(.04),u.base.rgb,metal);return (mix(u.base.rgb,vec3(0.),metal)*(vec3(1.)-F0)*clamp(dot(n,ldir),0.,1.)+F0*spec)*lc.rgb*lc.w*att;}"
+        "void main(){if(u.shade.x<0.){color=vec4(0.,0.,0.,.4*u.base.a);return;}vec3 n=normalize(vN);vec3 hemi=mix(vec3(.05,.06,.08),vec3(.62,.64,.68),clamp(n.y*.5+.5,0.,1.));"
+        "vec3 lit=u.base.rgb*hemi*.45;int count=int(u.shade.w+.5);"
+        "if(count==0)lit+=u.base.rgb*clamp(dot(n,vec3(0.,0.,1.)),0.,1.);else{if(count>0)lit+=lit_one(u.lp0,u.lc0,n);if(count>1)lit+=lit_one(u.lp1,u.lc1,n);if(count>2)lit+=lit_one(u.lp2,u.lc2,n);}lit+=u.base.rgb*u.shade.z;color=vec4(lit,u.base.a);}";
     VkShaderModule vert = p->gpu.compile_shader(p->gpu.host, vs, VK_SHADER_STAGE_VERTEX_BIT);
     VkShaderModule frag = p->gpu.compile_shader(p->gpu.host, fs, VK_SHADER_STAGE_FRAGMENT_BIT);
     VkPipeline pipeline = VK_NULL_HANDLE; bool ok = vert && frag;
@@ -1050,6 +1255,17 @@ static void draw_meshes(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_Scene
         else fl_material_decode(fl_entity_component(&scene->entities[i], FL_COMPONENT_MATERIAL), &material);
         if (state && i < state->count && state->entities[i].has_mesh) shape = state->entities[i].mesh;
         else fl_mesh_decode(fl_entity_component(&scene->entities[i], FL_COMPONENT_MESH), &shape);
+        if (shape != FL_MESH_PLANE) {
+            Fl_Mat4 blob = fl_mat4_mul(fl_mat4_translation(v->model.m[12], v->model.m[13], v->model.m[14] - fmax(v->bounds.depth, 1) * .5 - 1), fl_mat4_scale(v->bounds.width, v->bounds.height, 1));
+            float shadow[64] = {0};
+            fl_mat4_float(fl_mat4_mul(p->view_proj, blob), shadow); fl_mat4_float(blob, shadow + 16);
+            shadow[35] = (float)v->opacity; shadow[36] = -1;
+            uint32_t shadow_offset = upload_uniform(p, shadow, sizeof(shadow));
+            if (shadow_offset != UINT32_MAX) {
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p->layout, 1, 1, &p->ubo_set, 1, &shadow_offset);
+                vkCmdDraw(cmd, p->mesh_plane_count, 1, p->mesh_plane, 0);
+            }
+        }
         float block[64] = {0};
         fl_mat4_float(fl_mat4_mul(p->view_proj, v->model), block);
         fl_mat4_float(v->model, block + 16);
@@ -1083,7 +1299,7 @@ static void draw_particles(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_Sc
     if (!any) return;
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
     double seconds = state ? (double)state->tick / (double)FL_TICKS_PER_SECOND : 0;
-    Fl_Particle samples[256];
+    Fl_Particle samples[1024];
     for (size_t i = 0; i < g->count; ++i) {
         const Fl_ResolvedEntity *v = &g->entities[i];
         Fl_Particles system;
@@ -1091,18 +1307,21 @@ static void draw_particles(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_Sc
         if (has) system = state->entities[i].particles;
         else if (!fl_particles_decode(fl_entity_component(&scene->entities[i], FL_COMPONENT_PARTICLES), &system)) continue;
         if (!v->visible || v->opacity <= 0) continue;
-        size_t count = fl_particles_sample(&system, seconds, samples, 256);
-        Fl_Appearance look = {.fill = {system.color[0], system.color[1], system.color[2], (unsigned char)lround(system.color[3] * v->opacity)}};
+        VkPipeline batch = pipeline_for(p, p->pass_format, system.blend > 0.5 ? PIPE_ADD : PIPE_PARTICLE);
+        if (batch) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, batch);
+        size_t count = fl_particles_sample(&system, seconds, samples, 1024);
         for (size_t n = 0; n < count; ++n) {
+            unsigned char alpha = (unsigned char)lround(samples[n].color[3] * v->opacity);
+            Fl_Appearance look = {.fill = {samples[n].color[0], samples[n].color[1], samples[n].color[2], alpha}};
             Fl_Vec3 center = fl_mat4_point(v->model, (Fl_Vec3){samples[n].x, samples[n].y, samples[n].z});
             double s = samples[n].size; Fl_Vec3 right = p->cam_right, up = p->cam_up;
             Fl_Mat4 model = fl_mat4_identity();
             model.m[0] = right.x; model.m[1] = right.y; model.m[2] = right.z;
             model.m[4] = up.x; model.m[5] = up.y; model.m[6] = up.z;
             model.m[12] = center.x - (right.x + up.x) * s * .5; model.m[13] = center.y - (right.y + up.y) * s * .5; model.m[14] = center.z - (right.z + up.z) * s * .5;
-            float push[28]; push_block(push, frame, fl_affine_identity(), s, s, FL_WIDGET_RECTANGLE, look, NULL);
+            float push[PUSH_FLOATS]; push_block(push, frame, fl_affine_identity(), s, s, (Fl_WidgetKind)22, look, NULL); push[19] = 22;
             bool finite = true;
-            for (size_t c = 0; c < 28; ++c) if (!isfinite(push[c])) finite = false;
+            for (size_t c = 0; c < PUSH_FLOATS; ++c) if (!isfinite(push[c])) finite = false;
             if (!finite) continue;
             fl_mat4_float(fl_mat4_mul(p->view_proj, model), p->draw_mvp);
             fl_scene_renderer_push(p, cmd, push, fl_scene_renderer_white(p));
@@ -1163,7 +1382,7 @@ static void apply_bloom(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_Rende
     layer_transition(cmd, fl_gpu_image_handle(p->bloom_image[slot][0]), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     begin_pass(p, cmd, fl_gpu_image_view(p->bloom_image[slot][0]), VK_NULL_HANDLE, t->width, t->height, true, false);
     if (fl_scene_renderer_begin(p, cmd, LAYER_FORMAT, t->width, t->height, false)) {
-        float push[28] = {0}; layer_push(push, t, 20); push[24] = .45f;
+        float push[PUSH_FLOATS] = {0}; layer_push(push, t, 20); push[24] = .45f;
         fl_mat4_float(fl_mat4_identity(), p->draw_mvp);
         fl_scene_renderer_push(p, cmd, push, p->sample_set[slot]);
     }
@@ -1176,10 +1395,46 @@ static void apply_bloom(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_Rende
     VkPipeline add = pipeline_for(p, t->format, PIPE_ADD);
     if (add && fl_scene_renderer_begin(p, cmd, t->format, t->width, t->height, true)) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, add);
-        float push[28] = {0}; layer_push(push, t, 19); push[24] = (float)fmin(p->bloom, 4.0);
+        float push[PUSH_FLOATS] = {0}; layer_push(push, t, 19); push[24] = (float)fmin(p->bloom, 4.0);
         fl_mat4_float(fl_mat4_identity(), p->draw_mvp);
         fl_scene_renderer_push(p, cmd, push, fl_gpu_image_descriptor(p->bloom_image[slot][0]));
         fl_scene_renderer_begin(p, cmd, t->format, t->width, t->height, true);
+    }
+}
+
+static void apply_grade(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_RenderTarget *t)
+{
+    bool active = p->vignette > 0 || p->grain > 0 || p->lift != 0 || fabs(p->gamma - 1) > 1e-3 || fabs(p->gain - 1) > 1e-3;
+    if (!active || !t->image || !t->depth) return;
+    size_t slot = t->slot % LAYER_SLOTS;
+    if (!ensure_bloom_images(p, t->width, t->height) || !ensure_sample_sets(p)) return;
+    if (!p->bloom_image[slot][1]) p->bloom_image[slot][1] = fl_gpu_target_create(p->images, LAYER_FORMAT, t->width, t->height);
+    if (!p->bloom_image[slot][1]) return;
+    vkCmdEndRendering(cmd);
+    transition(cmd, t->image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+               VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    VkDescriptorImageInfo sampled = {fl_gpu_images_sampler(p->images), t->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet write = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = p->sample_set[slot], .dstBinding = 0, .descriptorCount = 1,
+        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &sampled};
+    vkUpdateDescriptorSets(p->device, 1, &write, 0, NULL);
+    layer_transition(cmd, fl_gpu_image_handle(p->bloom_image[slot][1]), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    begin_pass(p, cmd, fl_gpu_image_view(p->bloom_image[slot][1]), VK_NULL_HANDLE, t->width, t->height, true, false);
+    if (fl_scene_renderer_begin(p, cmd, LAYER_FORMAT, t->width, t->height, false)) {
+        float push[PUSH_FLOATS] = {0}; layer_push(push, t, 23);
+        push[8] = (float)(p->gamma > 0 ? p->gamma : 1); push[9] = (float)(p->gain > 0 ? p->gain : 1);
+        push[24] = (float)p->vignette; push[25] = (float)p->grain; push[26] = (float)p->lift;
+        fl_mat4_float(fl_mat4_identity(), p->draw_mvp);
+        fl_scene_renderer_push(p, cmd, push, p->sample_set[slot]);
+    }
+    vkCmdEndRendering(cmd);
+    layer_transition(cmd, fl_gpu_image_handle(p->bloom_image[slot][1]), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    transition(cmd, t->image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+               VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+    begin_pass(p, cmd, t->view, t->depth, t->width, t->height, true, false);
+    if (fl_scene_renderer_begin(p, cmd, t->format, t->width, t->height, true)) {
+        float push[PUSH_FLOATS] = {0}; layer_push(push, t, 24);
+        fl_mat4_float(fl_mat4_identity(), p->draw_mvp);
+        fl_scene_renderer_push(p, cmd, push, fl_gpu_image_descriptor(p->bloom_image[slot][1]));
     }
 }
 
@@ -1187,6 +1442,14 @@ void fl_scene_renderer_entities(Fl_SceneRenderer *p, VkCommandBuffer cmd, const 
                                 const Fl_Scene *scene, const Fl_SceneState *state, const Fl_SceneGeometry *g)
 {
     scene=fl_scene_state_scene(state,scene);
+    p->vignette = p->grain = p->lift = 0; p->gamma = 1; p->gain = 1;
+    if (state && state->valid) for (size_t i = 0; i < state->count && i < scene->entity_count; ++i) if (state->entities[i].has_camera && scene->entities[i].visible) {
+        if (state->entities[i].has_post) {
+            p->vignette = state->entities[i].post.vignette; p->grain = state->entities[i].post.grain; p->lift = state->entities[i].post.lift;
+            p->gamma = state->entities[i].post.gamma > 0 ? state->entities[i].post.gamma : 1; p->gain = state->entities[i].post.gain;
+        }
+        break;
+    }
     size_t *parent = g->count ? malloc(g->count * sizeof(*parent)) : NULL;
     for (size_t i = 0; parent && i < g->count; ++i) {
         const Fl_Entity *above = fl_scene_entity(scene, scene->entities[i].parent);
@@ -1224,6 +1487,7 @@ void fl_scene_renderer_entities(Fl_SceneRenderer *p, VkCommandBuffer cmd, const 
     }
     while (depth) {--depth; close_layer(p, cmd, target, frame, depth, &g->entities[open[depth].entity], &open[depth].style);}
     apply_bloom(p, cmd, target);
+    apply_grade(p, cmd, target);
     free(parent);
 }
 
@@ -1256,7 +1520,7 @@ void fl_scene_renderer_destroy(Fl_SceneRenderer *p)
     for (size_t i=0;i<p->video_count;++i) if (p->videos[i].decode) {fl_job_wait(p->jobs,p->videos[i].job); release_video_decode(&p->videos[i]);}
     vkDeviceWaitIdle(p->device);
     for (size_t i = 0; i < p->picture_count; ++i) release_picture(&p->pictures[i]);
-    for (size_t i = 0; i < p->text_count; ++i) {fl_gpu_image_destroy(p->texts[i].image); free(p->texts[i].text);}
+    for (size_t i = 0; i < p->text_count; ++i) {fl_gpu_image_destroy(p->texts[i].image); for (int g = 0; g < p->texts[i].glyph_count; ++g) fl_gpu_image_destroy(p->texts[i].glyphs[g]); free(p->texts[i].text);}
     for (size_t s = 0; s < LAYER_SLOTS; ++s) {
         for (size_t d = 0; d < LAYER_DEPTH; ++d) fl_gpu_image_destroy(p->layers[s][d]);
         fl_gpu_image_destroy(p->scratch[s]);
@@ -1269,6 +1533,9 @@ void fl_scene_renderer_destroy(Fl_SceneRenderer *p)
     if (p->depth_image) vmaDestroyImage(p->gpu.allocator, p->depth_image, p->depth_memory);
     if (p->mesh_buffer) vmaDestroyBuffer(p->gpu.allocator, p->mesh_buffer, p->mesh_memory);
     if (p->ubo) vmaDestroyBuffer(p->gpu.allocator, p->ubo, p->ubo_memory);
+    for (size_t i = 0; i < p->path_count; ++i) fl_gpu_image_destroy(p->paths[i].image);
+    free(p->paths);
+    for (size_t i = 0; i < p->effect_count; ++i) vkDestroyPipeline(p->device, p->effects[i].pipeline, NULL);
     for (size_t i = 0; i < p->pipeline_count; ++i) vkDestroyPipeline(p->device, p->pipelines[i].pipeline, NULL);
     if (p->layout) vkDestroyPipelineLayout(p->device, p->layout, NULL);
     if (p->sample_pool) vkDestroyDescriptorPool(p->device, p->sample_pool, NULL);

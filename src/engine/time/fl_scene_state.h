@@ -2,6 +2,7 @@
 #include "schema/fl_widgets.h"
 #include "components/fl_style.h"
 #include "components/fl_spatial.h"
+#include "components/fl_motion.h"
 #include <stdatomic.h>
 #include "scripting/fl_script_runtime.h"
 
@@ -16,7 +17,13 @@ typedef struct Fl_EntityState {
     Fl_Particles particles;
     Fl_Post post;
     Fl_MeshShape mesh;
-    bool has_camera, has_mesh, has_material, has_light, has_particles, has_post;
+    bool has_camera, has_mesh, has_material, has_light, has_particles, has_post, has_path, has_motion, has_effect;
+    double trim_start, trim_end;
+    Fl_TextMotion motion;
+    uint32_t effect_kind;
+    double effect_u[8];
+    const char *effect_source;
+    size_t effect_source_size;
     Fl_Appearance appearance;
     Fl_Style style;
     double media_seconds;       /* -1 follows the native video placement clock */
@@ -43,6 +50,8 @@ typedef struct Fl_SceneState {
 
 /* Apply ease to normalised progress t in [0, 1]. */
 double fl_ease_apply(Fl_Ease ease, double t);
+/* Cubic uses param x1,y1,x2,y2. Spring uses stiffness and damping. NULL params use the built-in defaults. */
+double fl_ease_apply_param(Fl_Ease ease, const double param[4], double t);
 /* Sample track at tick into out (4 values); false for an empty track. */
 bool fl_track_sample(const Fl_Scene *scene, const Fl_Track *track, Fl_Tick tick, double out[4]);
 /* Evaluate scene at tick; reuses the previous result when scene, revision and tick are unchanged.

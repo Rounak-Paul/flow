@@ -28,7 +28,7 @@ const char *const FL_AGENT_REFERENCE[] = {
 "1. `get_project` for scenes and assets, `get_scene` for one scene's full contents (use its `revision` in `expect`).\n"
 "2. Build with `apply_ops`. Prefer one batch per logical change; a failing operation applies nothing and names the\n"
 "   failing index. Use `dry_run: true` to validate a plan.\n"
-"3. Check the result with `render_frame` (an image) and `evaluate_scene` (numbers). Fix and repeat.\n"
+"3. Check the result with `review_scene` (text: framing, type, overlap, contrast, motion, script errors). Call `render_frame` only for a contact sheet of a procedural background, a few times, and stop when it returns unchanged. `evaluate_scene` with sparse:true reports numbers.\n"
 "4. `undo`/`redo` revert whole batches. GUI and MCP share the same history.\n"
 "\n",
 "## Scene time: beats\n"
@@ -53,7 +53,7 @@ const char *const FL_AGENT_REFERENCE[] = {
 "         clip (any entity: it and its children are cut to its box, rounded by radius; empty entities clip too), blur (any entity:\n"
 "         gaussian blur in scene pixels of the entity together with its children, applied before clipping)\n"
 "  Not every kind has every prop: empty entities have no fill; lines/arrows have a stroke but no fill; images and videos only an asset.\n"
-"  Rotation and scale pivot on the top-left corner of the box. Text wraps at spaces inside its box and aligns left, center or right.\n"
+"  Stored x and y are the pivot. New shapes are created with the pivot at the box centre, and the x,y you pass to entity.create is still the visual top-left. Rotation and scale happen around the pivot. Text wraps at spaces inside its box. tracking, stagger, rise, text_fade and text_duration animate glyphs of one text entity. Path commands are local pixels (M, L, C) with trim_start and trim_end. Effect kinds 1..5 are built in (domain warp, blob, grain, fringe, displacement); kind 6 is custom GLSL function `vec4 effect(vec2 uv, float time, vec4 a, vec4 b)` with uniforms u0..u7. Blend is 0 normal, 1 add, 2 multiply, 3 screen. Camera grade is vignette, grain, lift, gamma and gain.\n"
 "  Video: kind video with asset = a video asset id. It plays from `start` (scene seconds, default 0) at source position\n"
 "  `offset`, speed `rate`; before start it shows the first frame, after the end it holds the last (or loops).\n"
 "  `set` changes BASE values. A property that has keyframes keeps following them; edit the keys instead.\n"

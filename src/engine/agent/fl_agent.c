@@ -1,4 +1,6 @@
 #include "fl_agent_internal.h"
+#include "components/fl_effect.h"
+#include "time/fl_time.h"
 #include "time/fl_composition.h"
 #include "doc/fl_json.h"
 #include "schema/fl_properties.h"
@@ -7,6 +9,7 @@
 #include "platform/fl_fs.h"
 #include "project/fl_asset_import.h"
 #include <math.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,8 +27,9 @@ const char *fl_agent_instructions(void)
 {
     return "Flow is a motion-graphics and video editor running on the user's machine; you edit the project that is open "
            "in it, and the user sees your changes live. Call get_reference first for units, the operation vocabulary and the "
-           "Lua scripting API. Build with apply_ops (atomic, undoable batches), then verify with render_frame and "
-           "evaluate_scene. Times are in seconds, rotations in degrees.";
+           "Lua scripting API. Build with apply_ops (atomic, undoable batches), then verify with review_scene. "
+           "render_frame returns one small contact sheet and is for a procedural background, not every edit. "
+           "evaluate_scene sparse:true reads numbers. Times are in seconds, rotations in degrees.";
 }
 
 Fl_Agent *fl_agent_create(const Fl_AgentHost *host)
@@ -227,9 +231,13 @@ memory:
 
 static cJSON *tool_evaluate_scene(Fl_Agent *a, const cJSON *args, cJSON **error)
 {
-    static const char *const keys[] = {"scene", "time", NULL};
+    static const char *const keys[] = {"scene", "time", "sparse", "entities", "since", NULL};
     Fl_Fail fail; Fl_Project *p; Fl_Tick tick = 0;
-    if (!agent_only_keys(args, &fail, "evaluate_scene", keys) || !agent_get_seconds(args, "time", false, &tick, NULL, &fail, "evaluate_scene")) {*error = fl_fail_json(&fail); return NULL;}
+    bool sparse = false, since = false;
+    if (!agent_only_keys(args, &fail, "evaluate_scene", keys) || !agent_get_seconds(args, "time", false, &tick, NULL, &fail, "evaluate_scene") ||
+        !agent_get_bool(args, "sparse", &sparse, NULL, &fail, "evaluate_scene") || !agent_get_bool(args, "since", &since, NULL, &fail, "evaluate_scene")) {*error = fl_fail_json(&fail); return NULL;}
+    const cJSON *only = cJSON_GetObjectItemCaseSensitive(args, "entities");
+    if (only && !cJSON_IsArray(only)) {fl_fail(&fail, "invalid_argument", "evaluate_scene: entities must be an array of ids"); *error = fl_fail_json(&fail); return NULL;}
     const Fl_Scene *s = scene_arg(a, args, &p, &fail, error);
     if (!s) return NULL;
     if (tick < 0 || tick > fl_scene_length(s)) {
@@ -243,9 +251,23 @@ static cJSON *tool_evaluate_scene(Fl_Agent *a, const cJSON *args, cJSON **error)
     if (o) {cJSON_AddItemToObject(o, "scene", agent_id_json(s->id)); cJSON_AddNumberToObject(o, "time", agent_ticks_to_seconds(tick));}
     if (o && state.error[0]) cJSON_AddStringToObject(o,"diagnostic",state.error);
     if (o) cJSON_AddNumberToObject(o,"unresolved_overrides",(double)fl_composition_unresolved(state.composition));
+    if (o && since && !a->touched_count) cJSON_AddStringToObject(o, "note", "the last apply_ops did not name any entities");
     for (size_t i = 0; list && i < s->entity_count; ++i) {
         const Fl_Entity *e = &s->entities[i];
         const Fl_EntityState *v = &state.entities[i];
+        if (since) {
+            size_t n = 0;
+            for (; n < a->touched_count; ++n) if (a->touched[n] == e->id) break;
+            if (n == a->touched_count) continue;
+        }
+        if (only) {
+            bool match = false;
+            for (const cJSON *idj = only->child; idj && !match; idj = idj->next) {
+                Fl_Id id = 0; Fl_Fail ignore = {0};
+                match = agent_id_value(idj, NULL, &id, &ignore, "evaluate_scene") && id == e->id;
+            }
+            if (!match) continue;
+        }
         const Fl_WidgetDef *def = fl_widget_for_entity(e);
         cJSON *item = cJSON_CreateObject();
         if (!item) break;
@@ -278,11 +300,13 @@ static cJSON *tool_evaluate_scene(Fl_Agent *a, const cJSON *args, cJSON **error)
         cJSON_AddNumberToObject(item, "rx", v->pose.rx * 180.0 / 3.14159265358979323846); cJSON_AddNumberToObject(item, "ry", v->pose.ry * 180.0 / 3.14159265358979323846);
         cJSON_AddNumberToObject(item, "scale_x", v->pose.sx); cJSON_AddNumberToObject(item, "scale_y", v->pose.sy); cJSON_AddNumberToObject(item, "scale_z", v->pose.sz);
         cJSON_AddNumberToObject(item, "opacity", v->opacity);
-        double values[FL_PROP_COUNT][4]; fl_entity_state_values(v,values);
-        cJSON *properties=cJSON_AddObjectToObject(item,"properties");
-        for (int property=0;properties && property<FL_PROP_COUNT;++property) {
-            const Fl_PropertyDef *definition=fl_property_definition((Fl_AnimProperty)property);
-            cJSON_AddItemToObject(properties,definition->name,definition->channels==1 ? cJSON_CreateNumber(values[property][0]) : cJSON_CreateDoubleArray(values[property],(int)definition->channels));
+        if (!sparse) {
+            double values[FL_PROP_COUNT][4]; fl_entity_state_values(v,values);
+            cJSON *properties=cJSON_AddObjectToObject(item,"properties");
+            for (int property=0;properties && property<FL_PROP_COUNT;++property) {
+                const Fl_PropertyDef *definition=fl_property_definition((Fl_AnimProperty)property);
+                cJSON_AddItemToObject(properties,definition->name,definition->channels==1 ? cJSON_CreateNumber(values[property][0]) : cJSON_CreateDoubleArray(values[property],(int)definition->channels));
+            }
         }
         if (def && def->has_fill) agent_color_json(item, "fill", v->appearance.fill);
         if (def && def->has_stroke) {agent_color_json(item, "stroke", v->appearance.stroke); cJSON_AddNumberToObject(item, "stroke_width", v->appearance.stroke_width);}
@@ -311,11 +335,19 @@ static cJSON *tool_evaluate_scene(Fl_Agent *a, const cJSON *args, cJSON **error)
 static cJSON *tool_get_reference(Fl_Agent *a, const cJSON *args, cJSON **error)
 {
     (void)a; (void)args; (void)error;
-    size_t size = 1;
+    size_t size = 1 + (size_t)FL_PROP_COUNT * 320;
     for (size_t i = 0; FL_AGENT_REFERENCE[i]; ++i) size += strlen(FL_AGENT_REFERENCE[i]);
-    char *text = malloc(size), *w = text;
+    char *text = malloc(size), *w = text, *end = text ? text + size : NULL;
     if (!text) return NULL;
     for (size_t i = 0; FL_AGENT_REFERENCE[i]; ++i) {size_t n = strlen(FL_AGENT_REFERENCE[i]); memcpy(w, FL_AGENT_REFERENCE[i], n); w += n;}
+    int wrote = snprintf(w, (size_t)(end - w), "\nChannels. key.set property and entity.set use the name. Lua writes group.field. Ranges are inclusive.\n");
+    if (wrote > 0 && w + wrote < end) w += wrote;
+    for (int property = 0; property < FL_PROP_COUNT; ++property) {
+        const Fl_PropertyDef *definition = fl_property_definition((Fl_AnimProperty)property);
+        if (!definition || w + 1 >= end) continue;
+        wrote = snprintf(w, (size_t)(end - w), "- %s (%s.%s) %s, %u channel%s, %.4g..%.4g\n", definition->name, definition->lua_group ? definition->lua_group : "", definition->lua_field ? definition->lua_field : "", definition->label ? definition->label : "", definition->channels, definition->channels == 1 ? "" : "s", definition->minimum, definition->maximum);
+        if (wrote > 0 && w + wrote < end) w += wrote;
+    }
     *w = 0;
     cJSON *o = cJSON_CreateObject();
     if (o) cJSON_AddStringToObject(o, "reference", text);
@@ -399,18 +431,130 @@ static cJSON *tool_save_project(Fl_Agent *a, const cJSON *args, cJSON **error)
     return o;
 }
 
+#define SHEET_TIMES 4u
+
+static void issue_add(char *buf, size_t cap, const char *fmt, ...)
+{
+    size_t n = strlen(buf);
+    if (n && n + 1 < cap) buf[n++] = '\n';
+    if (n >= cap) return;
+    va_list ap; va_start(ap, fmt);
+    vsnprintf(buf + n, cap - n, fmt, ap);
+    va_end(ap);
+}
+
+static void screen_box(const Fl_EntityState *v, double *l, double *t, double *r, double *b)
+{
+    double sx = fabs(v->pose.sx) > 1e-6 ? fabs(v->pose.sx) : 1, sy = fabs(v->pose.sy) > 1e-6 ? fabs(v->pose.sy) : 1;
+    *l = v->pose.x - v->pose.px * sx; *t = v->pose.y - v->pose.py * sy;
+    *r = *l + v->bounds.width * sx; *b = *t + v->bounds.height * sy;
+}
+
+static uint64_t fnv_pixels(const unsigned char *p, size_t n)
+{
+    uint64_t h = 14695981039346656037ull;
+    for (size_t i = 0; i < n; ++i) {h ^= p[i]; h *= 1099511628211ull;}
+    return h;
+}
+
+static cJSON *tool_review_scene(Fl_Agent *a, const cJSON *args, cJSON **error)
+{
+    static const char *const keys[] = {"scene", "time", NULL};
+    Fl_Fail fail; Fl_Project *p; Fl_Tick tick = 0;
+    if (!agent_only_keys(args, &fail, "review_scene", keys) || !agent_get_seconds(args, "time", false, &tick, NULL, &fail, "review_scene")) {*error = fl_fail_json(&fail); return NULL;}
+    const Fl_Scene *authored = scene_arg(a, args, &p, &fail, error);
+    if (!authored) return NULL;
+    if (tick < 0 || tick > fl_scene_length(authored)) {fl_fail(&fail, "invalid_argument", "time must be within 0..%g seconds", agent_ticks_to_seconds(fl_scene_length(authored))); *error = fl_fail_json(&fail); return NULL;}
+    Fl_SceneState state = {0};
+    if (!fl_scene_state_update(&state, authored, tick)) {fl_fail(&fail, "evaluation_failed", "%s", state.error[0] ? state.error : "Cannot evaluate scene"); fl_scene_state_clear(&state); *error = fl_fail_json(&fail); return NULL;}
+    const Fl_Scene *s = fl_scene_state_scene(&state, authored);
+    char issues[4096] = "";
+    if (state.error[0]) issue_add(issues, sizeof issues, "script: %s", state.error);
+    double canvas_w = (double)s->width, canvas_h = (double)s->height;
+    int moving = 0;
+    Fl_Tick later_tick = tick + (Fl_Tick)(FL_TICKS_PER_SECOND / 10);
+    Fl_SceneState later = {0};
+    bool have_later = later_tick <= fl_scene_length(authored) && fl_scene_state_update(&later, authored, later_tick);
+    const Fl_Scene *later_scene = have_later ? fl_scene_state_scene(&later, authored) : NULL;
+    for (size_t i = 0; i < s->entity_count; ++i) {
+        const Fl_Entity *e = &s->entities[i];
+        const Fl_EntityState *v = &state.entities[i];
+        const Fl_WidgetDef *def = fl_widget_for_entity(e);
+        const char *script_error = fl_scene_state_entity_error(&state, i);
+        if (script_error && script_error[0]) issue_add(issues, sizeof issues, "%s: %s", e->name, script_error);
+        if (!e->visible || v->opacity < 0.02 || !def || def->kind == FL_WIDGET_ENTITY) continue;
+        if (v->has_path && v->trim_start >= v->trim_end) issue_add(issues, sizeof issues, "%s: path trim_start is not before trim_end", e->name);
+        if (v->has_effect && v->effect_kind == FL_EFFECT_CUSTOM && !v->effect_source_size) issue_add(issues, sizeof issues, "%s: custom effect has no GLSL source", e->name);
+        double l, t, r, b; screen_box(v, &l, &t, &r, &b);
+        bool text = def->has_text;
+        if (r < 0 || b < 0 || l > canvas_w || t > canvas_h) issue_add(issues, sizeof issues, "%s: entirely off the canvas", e->name);
+        else if (text && (l < 8 || t < 8 || r > canvas_w - 8 || b > canvas_h - 8)) issue_add(issues, sizeof issues, "%s: text sits on the canvas edge", e->name);
+        if (text && v->appearance.font_size * fabs(v->pose.sy) < 18) issue_add(issues, sizeof issues, "%s: type is under 18px", e->name);
+        if (have_later && i < later.count && later_scene && i < later_scene->entity_count) {
+            const Fl_EntityState *n = &later.entities[i];
+            if (fabs(n->pose.x - v->pose.x) > 0.5 || fabs(n->pose.y - v->pose.y) > 0.5 || fabs(n->pose.sx - v->pose.sx) > 0.01 || fabs(n->pose.rz - v->pose.rz) > 0.01 || fabs(n->opacity - v->opacity) > 0.02) ++moving;
+        }
+        for (size_t j = i + 1; text && j < s->entity_count; ++j) {
+            const Fl_WidgetDef *other = fl_widget_for_entity(&s->entities[j]);
+            if (!other || !other->has_text || !s->entities[j].visible || state.entities[j].opacity < 0.02) continue;
+            double l2, t2, r2, b2; screen_box(&state.entities[j], &l2, &t2, &r2, &b2);
+            if (l < r2 && r > l2 && t < b2 && b > t2) issue_add(issues, sizeof issues, "%s overlaps %s", e->name, s->entities[j].name);
+        }
+    }
+    if (moving >= 4) issue_add(issues, sizeof issues, "%d entities change together over the next tenth of a second", moving);
+    Fl_Frame sample = {0};
+    if (canvas_w > 1 && canvas_h > 1 && a->host.render && a->host.render(a->host.user_data, p, authored, tick, 160, &sample) && sample.rgba && sample.width && sample.height) {
+        for (size_t i = 0; i < s->entity_count; ++i) {
+            const Fl_WidgetDef *def = fl_widget_for_entity(&s->entities[i]);
+            const Fl_EntityState *v = &state.entities[i];
+            if (!def || !def->has_text || !s->entities[i].visible || v->opacity < 0.2 || !v->appearance.fill[3]) continue;
+            double l, t, r, b; screen_box(v, &l, &t, &r, &b);
+            int x = (int)(((l + r) * 0.5) / canvas_w * sample.width), y = (int)(((t + b) * 0.5) / canvas_h * sample.height);
+            if (x < 2 || y < 2 || x >= (int)sample.width - 2 || y >= (int)sample.height - 2) continue;
+            const unsigned char *px = sample.rgba + ((size_t)y * sample.width + (size_t)x) * 4;
+            double back = 0.2126 * px[0] + 0.7152 * px[1] + 0.0722 * px[2];
+            double ink = 0.2126 * v->appearance.fill[0] + 0.7152 * v->appearance.fill[1] + 0.0722 * v->appearance.fill[2];
+            if (fabs(ink - back) < 40) issue_add(issues, sizeof issues, "%s: text contrast against the pixels behind it is low", s->entities[i].name);
+        }
+    }
+    fl_frame_free(&sample);
+    fl_scene_state_clear(&later);
+    fl_scene_state_clear(&state);
+    cJSON *o = cJSON_CreateObject();
+    if (!o) return NULL;
+    cJSON_AddItemToObject(o, "scene", agent_id_json(authored->id));
+    cJSON_AddNumberToObject(o, "time", agent_ticks_to_seconds(tick));
+    bool changed = !a->review[0] || strcmp(a->review, issues) != 0;
+    cJSON_AddBoolToObject(o, "changed", changed);
+    snprintf(a->review, sizeof a->review, "%s", issues);
+    cJSON *list = cJSON_AddArrayToObject(o, "issues");
+    if (issues[0]) {
+        char *copy = strdup(issues);
+        for (char *line = copy; line && *line; ) {
+            char *nl = strchr(line, '\n');
+            if (nl) *nl = 0;
+            cJSON_AddItemToArray(list, cJSON_CreateString(line));
+            line = nl ? nl + 1 : NULL;
+        }
+        free(copy);
+    }
+    return o;
+}
+
 static cJSON *tool_render_frame(Fl_Agent *a, const cJSON *args, cJSON **error)
 {
     static const char *const keys[] = {"scene", "time", "times", "width", NULL};
-    Fl_Fail fail; Fl_Project *p; double width = 1024, seconds[FL_AGENT_MAX_FRAMES] = {0}, number;
-    size_t count = 1; bool present;
-    if (!agent_only_keys(args, &fail, "render_frame", keys) || !agent_get_number(args, "width", false, &width, NULL, &fail, "render_frame") ||
+    Fl_Fail fail; Fl_Project *p; double width = 480, seconds[SHEET_TIMES] = {0}, number;
+    size_t count = 1; bool present = false, width_set = false;
+    if (!agent_only_keys(args, &fail, "render_frame", keys) || !agent_get_number(args, "width", false, &width, &width_set, &fail, "render_frame") ||
         !agent_get_number(args, "time", false, &number, &present, &fail, "render_frame")) {*error = fl_fail_json(&fail); return NULL;}
+    if (!width_set) width = 480;
+    if (width > 720) width = 720;
     if (present) seconds[0] = number;
     const cJSON *times = cJSON_GetObjectItemCaseSensitive(args, "times");
     if (times) {
-        if (present || !cJSON_IsArray(times) || !cJSON_GetArraySize(times) || (unsigned)cJSON_GetArraySize(times) > FL_AGENT_MAX_FRAMES) {
-            fl_fail(&fail, "invalid_argument", "render_frame: give either \"time\" or \"times\" (1..%u numbers)", FL_AGENT_MAX_FRAMES);
+        if (present || !cJSON_IsArray(times) || !cJSON_GetArraySize(times) || (unsigned)cJSON_GetArraySize(times) > SHEET_TIMES) {
+            fl_fail(&fail, "invalid_argument", "render_frame: give either \"time\" or \"times\" (1..%u numbers)", SHEET_TIMES);
             *error = fl_fail_json(&fail); return NULL;
         }
         count = 0;
@@ -424,30 +568,41 @@ static cJSON *tool_render_frame(Fl_Agent *a, const cJSON *args, cJSON **error)
     if (!a->host.render) {fl_fail(&fail, "unavailable", "Rendering is not available in this build"); *error = fl_fail_json(&fail); return NULL;}
     uint32_t w, h;
     if (width < 16 || width != floor(width) || !fl_frame_dimensions(s, (uint32_t)width, &w, &h)) {
-        fl_fail(&fail, "invalid_argument", "render_frame: width must be a whole number from 16 up to a frame of at most %u pixels", FL_RENDER_MAX_PIXELS);
+        fl_fail(&fail, "invalid_argument", "render_frame: width must be a whole number from 16 up to 720");
         *error = fl_fail_json(&fail); return NULL;
     }
-    cJSON *o = cJSON_CreateObject(), *list = o ? cJSON_AddArrayToObject(o, "frames") : NULL;
+    cJSON *o = cJSON_CreateObject();
     drop_frames(a);
-    for (size_t i = 0; list && i < count; ++i) {
+    unsigned char *strip = calloc((size_t)w * count * h, 4);
+    if (!o || !strip) {free(strip); cJSON_Delete(o); fl_fail(&fail, "internal", "out of memory"); *error = fl_fail_json(&fail); return NULL;}
+    for (size_t i = 0; i < count; ++i) {
         Fl_Tick tick;
         if (!agent_seconds_to_ticks(seconds[i], &tick) || tick < 0 || tick > fl_scene_length(s)) {
             fl_fail(&fail, "invalid_argument", "render_frame: time must be within 0..%g seconds", agent_ticks_to_seconds(fl_scene_length(s)));
-            *error = fl_fail_json(&fail); cJSON_Delete(o); drop_frames(a); return NULL;
+            *error = fl_fail_json(&fail); cJSON_Delete(o); free(strip); drop_frames(a); return NULL;
         }
         Fl_Frame frame;
-        if (!a->host.render(a->host.user_data, p, s, tick, w, &frame)) {fl_fail(&fail, "internal", "the frame could not be rendered"); *error = fl_fail_json(&fail); cJSON_Delete(o); drop_frames(a); return NULL;}
-        size_t size = 0;
-        unsigned char *png = fl_png_encode_region(frame.rgba, frame.width, frame.height, 0, 0, frame.width, frame.height, 0, &size, NULL, NULL);
+        if (!a->host.render(a->host.user_data, p, s, tick, w, &frame)) {fl_fail(&fail, "internal", "the frame could not be rendered"); *error = fl_fail_json(&fail); cJSON_Delete(o); free(strip); drop_frames(a); return NULL;}
+        uint32_t copy_w = frame.width < w ? frame.width : w, copy_h = frame.height < h ? frame.height : h;
+        for (uint32_t y = 0; y < copy_h; ++y) memcpy(strip + ((size_t)y * w * count + i * w) * 4, frame.rgba + (size_t)y * frame.width * 4, (size_t)copy_w * 4);
         fl_frame_free(&frame);
-        cJSON *item = png ? cJSON_CreateObject() : NULL;
-        if (!item) {free(png); fl_fail(&fail, "internal", "the frame could not be encoded"); *error = fl_fail_json(&fail); cJSON_Delete(o); drop_frames(a); return NULL;}
-        a->frames.png[a->frames.count] = png; a->frames.size[a->frames.count++] = size;
-        cJSON_AddNumberToObject(item, "time", agent_ticks_to_seconds(tick));
-        cJSON_AddNumberToObject(item, "width", w); cJSON_AddNumberToObject(item, "height", h); cJSON_AddNumberToObject(item, "bytes", (double)size);
-        cJSON_AddItemToArray(list, item);
     }
-    if (o) cJSON_AddItemToObject(o, "scene", agent_id_json(s->id));
+    uint64_t hash = fnv_pixels(strip, (size_t)w * count * h * 4);
+    if (hash == a->sheet_hash && a->sheet_scene == s->id) {
+        free(strip);
+        cJSON_AddBoolToObject(o, "unchanged", true);
+        cJSON_AddItemToObject(o, "scene", agent_id_json(s->id));
+        return o;
+    }
+    size_t size = 0;
+    unsigned char *png = fl_png_encode_region(strip, w * (uint32_t)count, h, 0, 0, w * (uint32_t)count, h, 0, &size, NULL, NULL);
+    free(strip);
+    if (!png) {fl_fail(&fail, "internal", "the frame could not be encoded"); *error = fl_fail_json(&fail); cJSON_Delete(o); return NULL;}
+    a->sheet_hash = hash; a->sheet_scene = s->id;
+    a->frames.png[0] = png; a->frames.size[0] = size; a->frames.count = 1;
+    cJSON_AddBoolToObject(o, "unchanged", false);
+    cJSON_AddItemToObject(o, "scene", agent_id_json(s->id));
+    cJSON_AddNumberToObject(o, "width", w * (double)count); cJSON_AddNumberToObject(o, "height", h); cJSON_AddNumberToObject(o, "times", (double)count);
     return o;
 }
 
@@ -508,8 +663,11 @@ static const ToolDef TOOLS[] = {
      "\"edits\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"old\":{\"type\":\"string\"},\"new\":{\"type\":\"string\"}},\"required\":[\"old\",\"new\"]}},"
      "\"attach\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"}},\"enabled\":{\"type\":\"boolean\"}},\"additionalProperties\":false}",
      false, tool_set_script},
-    {"evaluate_scene", "Evaluate every entity of a scene at a time (seconds): resolved position, size, colours and opacity after keyframes and Lua scripts, plus script errors.",
+    {"review_scene", "Text check after a batch of edits. Reports off-frame boxes, type on the edge or under 18px, overlapping text, low text contrast, path trim, a missing custom effect, simultaneous motion and script errors. Does not return an image. Call this instead of render_frame.",
      "{\"type\":\"object\",\"properties\":{\"scene\":{\"type\":[\"integer\",\"string\"]},\"time\":{\"type\":\"number\",\"description\":\"Seconds from scene start; default 0\"}},\"required\":[\"scene\"],\"additionalProperties\":false}",
+     true, tool_review_scene},
+    {"evaluate_scene", "Numbers for a scene at a time (seconds). sparse:true omits the full channel dump. since:true keeps entities the last apply_ops touched. entities limits the list to those ids.",
+     "{\"type\":\"object\",\"properties\":{\"scene\":{\"type\":[\"integer\",\"string\"]},\"time\":{\"type\":\"number\"},\"sparse\":{\"type\":\"boolean\"},\"since\":{\"type\":\"boolean\"},\"entities\":{\"type\":\"array\"}},\"required\":[\"scene\"],\"additionalProperties\":false}",
      true, tool_evaluate_scene},
     {"apply_ops", "Apply a batch of document operations atomically (all succeed or none do) as one undoable changeset. "
      "Operations: scene.add/remove/rename/move/set, entity.create/set/remove/reparent/reorder, key.set/remove, track.remove, beat.add/update/remove/move/split, "
@@ -518,9 +676,8 @@ static const ToolDef TOOLS[] = {
      "{\"type\":\"object\",\"properties\":{\"ops\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"object\",\"properties\":{\"op\":{\"type\":\"string\"},\"as\":{\"type\":\"string\"}},\"required\":[\"op\"]}},"
      "\"label\":{\"type\":\"string\",\"description\":\"Short name shown for undo\"},\"expect\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"integer\"}},\"dry_run\":{\"type\":\"boolean\"}},\"required\":[\"ops\"],\"additionalProperties\":false}",
      false, agent_tool_apply_ops},
-    {"render_frame", "Render a scene at one or more times (seconds) offline and return PNG images, exactly as the project would look in the video: no editor grid or selection, any resolution, independent of what the editor is showing. "
-     "Use it to check your work. Give time or times (up to 6, for comparing moments). width is the image width in pixels (default 1024, at most a frame of 8.8 megapixels); height follows the scene's aspect.",
-     "{\"type\":\"object\",\"properties\":{\"scene\":{\"type\":[\"integer\",\"string\"]},\"time\":{\"type\":\"number\"},\"times\":{\"type\":\"array\",\"items\":{\"type\":\"number\"},\"maxItems\":6},\"width\":{\"type\":\"integer\"}},\"required\":[\"scene\"],\"additionalProperties\":false}",
+    {"render_frame", "One contact sheet for a procedural background, packed left to right. Default width 480, capped at 720. times holds at most 4 moments. The same pixels return {unchanged:true} and no image. Prefer review_scene after a batch.",
+     "{\"type\":\"object\",\"properties\":{\"scene\":{\"type\":[\"integer\",\"string\"]},\"time\":{\"type\":\"number\"},\"times\":{\"type\":\"array\",\"items\":{\"type\":\"number\"},\"maxItems\":4},\"width\":{\"type\":\"integer\"}},\"required\":[\"scene\"],\"additionalProperties\":false}",
      true, tool_render_frame},
     {"import_asset", "Import a local Lua, Flow prototype, image, audio, video or font file (absolute path) as an undoable asset edit.",
      "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"name\":{\"type\":\"string\"}},\"required\":[\"path\"],\"additionalProperties\":false}", false, tool_import_asset},

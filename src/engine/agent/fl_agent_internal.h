@@ -23,6 +23,11 @@ struct Fl_Agent {
     Fl_Bake *bake;
     uint64_t bake_token;
     Fl_AgentFrames frames;
+    uint64_t sheet_hash;
+    Fl_Id sheet_scene;
+    char review[4096];
+    Fl_Id touched[64];
+    size_t touched_count;
     void *bindings;             /* tool registrations handed to the MCP core */
 };
 

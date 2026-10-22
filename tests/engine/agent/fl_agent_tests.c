@@ -379,7 +379,7 @@ static void test_protocol(Fl_Agent *agent)
     const cJSON *content = cJSON_GetObjectItemCaseSensitive(res, "content"), *block;
     int images = 0;
     cJSON_ArrayForEach(block, content) images += !strcmp(cJSON_GetObjectItemCaseSensitive(block, "type")->valuestring, "image");
-    CHECK(cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(res, "isError")) && images == 2 && cJSON_GetArraySize(content) == 3);
+    CHECK(cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(res, "isError")) && images == 1 && cJSON_GetArraySize(content) == 2);
     cJSON_Delete(r); free(reply);
     const char *call_bad = "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"get_scene\",\"arguments\":{\"scene\":99999}}}";
     reply = fl_mcp_handle(mcp, call_bad, strlen(call_bad));

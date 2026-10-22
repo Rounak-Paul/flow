@@ -46,7 +46,7 @@ static double sample(Fl_SceneState *state, const Fl_Scene *scene, Fl_Id entity, 
 static void failure(Fl_Project *project, const Fl_Scene *scene, Fl_Id entity, Fl_SceneState *state, const char *source, const char *message)
 {
     CHECK(script(project, scene->id, entity, source, true));
-    CHECK(sample(state, scene, entity, SECOND) == 25);
+    CHECK(sample(state, scene, entity, SECOND) == 185);
     const char *error = fl_script_runtime_error(fl_scene_state_scripts(state), (size_t)(fl_scene_entity(scene, entity) - scene->entities));
     CHECK(strstr(error, message) != NULL);
 }
@@ -82,7 +82,7 @@ static void repository(Fl_Project *project, Fl_Id scene_id, const char *director
     Fl_SceneState state = {0};
     CHECK(fl_scene_state_update(&state, scene, SECOND));
     const size_t first = (size_t)(fl_scene_entity(scene, one) - scene->entities), second_index = (size_t)(fl_scene_entity(scene, two) - scene->entities);
-    CHECK(state.entities[first].pose.x == 10 && state.entities[second_index].pose.x == 10);
+    CHECK(state.entities[first].pose.x == 170 && state.entities[second_index].pose.x == 170);
     const char *faster = "return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.pose.x = 100 * t end }";
     CHECK(fl_project_apply(project, &(Fl_Op){.kind = FL_OP_ASSET_SOURCE_SET, .source_kind=FL_ASSET_LUA, .scene = scene_id, .asset = counter, .source = faster, .source_size = strlen(faster)}, NULL));
     CHECK(fl_scene_state_update(&state, scene, SECOND));
@@ -381,14 +381,14 @@ int main(int argc, char **argv)
     const char *motion="return { sample = function(ctx) local self=ctx.entity; local time=ctx.time.seconds;  self.pose.x = self.pose.x + time * 120 end }";
     CHECK(script(project,scene_id,box,motion,true));
     revision=scene->revision;
-    CHECK(sample(&state,scene,box,SECOND)==145);
-    CHECK(sample(&state,scene,box,2*SECOND)==265);
-    CHECK(sample(&state,scene,box,SECOND/2)==85);
-    CHECK(sample(&state,scene,box,SECOND)==145);
+    CHECK(sample(&state,scene,box,SECOND)==305);
+    CHECK(sample(&state,scene,box,2*SECOND)==425);
+    CHECK(sample(&state,scene,box,SECOND/2)==245);
+    CHECK(sample(&state,scene,box,SECOND)==305);
     CHECK(scene->revision==revision);
     Fl_Pose transform;
     CHECK(fl_pose_decode(fl_entity_component(fl_scene_entity(scene,box),FL_COMPONENT_POSE),&transform));
-    CHECK(transform.x==25);
+    CHECK(transform.x==185);
     CHECK(!*fl_script_runtime_error(fl_scene_state_scripts(&state),0));
     Fl_SceneGeometry geometry={0};
     CHECK(fl_scene_geometry_update(&geometry,scene,&state));
@@ -399,17 +399,17 @@ int main(int argc, char **argv)
     const Fl_Animation *animation=fl_entity_animation(fl_scene_entity(scene,box));
     CHECK(animation && animation->track_count==1 && animation->tracks[0].property==FL_PROP_Y);
     CHECK(script(project,scene_id,box,motion,true));
-    CHECK(sample(&state,scene,box,SECOND)==145 && state.entities[0].pose.y==100);
+    CHECK(sample(&state,scene,box,SECOND)==305 && state.entities[0].pose.y==100);
     CHECK(script(project,scene_id,second,"return { sample = function(ctx) local self=ctx.entity; local time=ctx.time.seconds;  self.pose.x = time * 10 end }",true));
     CHECK(sample(&state,scene,second,SECOND)==10);
-    CHECK(sample(&state,scene,box,SECOND)==145);
+    CHECK(sample(&state,scene,box,SECOND)==305);
     /* Malformed executable declarations never replace the last accepted behavior. */
     CHECK(!script(project,scene_id,box,"return {}",true) && strstr(fl_project_diagnostic(project),"sample(ctx)"));
     scene=fl_project_scene(project,scene_id);
     failure(project,scene,box,&state,"return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.animation:play('Run') end }","nil");
-    CHECK(sample(&state,scene,box,2*SECOND)==25);
+    CHECK(sample(&state,scene,box,2*SECOND)==185);
     CHECK(script(project,scene_id,box,motion,true));
-    CHECK(sample(&state,scene,box,SECOND)==145);
+    CHECK(sample(&state,scene,box,SECOND)==305);
     /* A keyed Inspector-like configure must not bake evaluated script channels into base values. */
     CHECK(fl_pose_decode(fl_entity_component(fl_scene_entity(scene,box),FL_COMPONENT_POSE),&transform));
     transform.y=state.entities[0].pose.y;
@@ -417,7 +417,7 @@ int main(int argc, char **argv)
     Fl_Component component={.type = FL_COMPONENT_POSE, .version = 1, .size = FL_POSE_BYTES, .data = bytes};
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_ENTITY_CONFIGURE,.scene=scene_id,.entity=box,.name="Renamed",.visible=true,
         .components=&component,.component_count=1,.keyed=true,.tick=SECOND},NULL));
-    CHECK(fl_pose_decode(fl_entity_component(fl_scene_entity(scene,box),FL_COMPONENT_POSE),&transform) && transform.x==25);
+    CHECK(fl_pose_decode(fl_entity_component(fl_scene_entity(scene,box),FL_COMPONENT_POSE),&transform) && transform.x==185);
     CHECK(fl_entity_animation(fl_scene_entity(scene,box))->tracks[0].key_count==1);
     /* Growing a copied animation during configure must remain owned by the replacement component. */
     for (unsigned k=1;k<7;++k) {
@@ -431,7 +431,7 @@ int main(int argc, char **argv)
     project=fl_project_open(argv[1],NULL);CHECK(project);if (!project) return 1;
     scene=fl_project_scene(project,scene_id);
     CHECK(!fl_project_dirty(project));
-    CHECK(sample(&state,scene,box,SECOND)==145);
+    CHECK(sample(&state,scene,box,SECOND)==305);
     CHECK(fl_entity_animation(fl_scene_entity(scene,box))->tracks[0].key_count==7);
     /* The global environment and random stream reset for each evaluation. */
     CHECK(script(project,scene_id,box,"n=(n or 0)+1; return { sample = function(ctx) local self=ctx.entity; local t=ctx.time.seconds;  self.pose.x=n+math.random() end }",true));
@@ -494,13 +494,13 @@ int main(int argc, char **argv)
     CHECK(fl_project_apply(project, &(Fl_Op){.kind = FL_OP_ENTITY_REMOVE, .scene = scene_id, .entity = label}, NULL));
     /* A corrected source recovers immediately after compilation/runtime/memory errors. */
     CHECK(script(project,scene_id,box,motion,true));
-    CHECK(sample(&state,scene,box,SECOND)==145);
+    CHECK(sample(&state,scene,box,SECOND)==305);
     CHECK(script(project,scene_id,box,motion,false));
-    CHECK(sample(&state,scene,box,SECOND)==25);
+    CHECK(sample(&state,scene,box,SECOND)==185);
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_COMPONENT_REMOVE,.scene=scene_id,.entity=box,.component={.type=FL_COMPONENT_ANIMATION}},NULL));
     CHECK(!fl_entity_animation(fl_scene_entity(scene,box)) && !fl_scene_track_count(scene));
     CHECK(fl_project_apply(project,&(Fl_Op){.kind=FL_OP_COMPONENT_REMOVE,.scene=scene_id,.entity=box,.component={.type=FL_COMPONENT_SCRIPT}},NULL));
-    CHECK(sample(&state,scene,box,SECOND)==25);
+    CHECK(sample(&state,scene,box,SECOND)==185);
     Fl_Component invalid={0};
     CHECK(!fl_script_encode(&(Fl_Script){.script=0,.enabled=true},&invalid));
     CHECK(!fl_script_source_valid("",0) && !fl_script_source_valid("a\0b",3) && fl_script_source_valid("x",1));

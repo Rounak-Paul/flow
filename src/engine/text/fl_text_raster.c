@@ -167,7 +167,7 @@ unsigned char *fl_text_rasterize(Fl_TextRasterizer *r, const Fl_TextStyle *style
         int pen_x = style->align == 1 ? ((int)w - lines[l].width) / 2 : style->align == 2 ? (int)w - lines[l].width : 0;
         for (size_t i = lines[l].start; i < lines[l].end; ++i) {
             const Fl_Glyph *g = &glyphs[i];
-            if (i > lines[l].start) pen_x += g->kern;
+            if (i > lines[l].start) pen_x += g->kern + (int)lround(style->tracking * scale);
             if (FT_Load_Glyph(face, g->index, FT_LOAD_NO_BITMAP)) {pen_x += g->advance; continue;}
             FT_GlyphSlot slot = face->glyph;
             if (style->synthetic_bold) FT_GlyphSlot_Embolden(slot);
@@ -190,4 +190,47 @@ unsigned char *fl_text_rasterize(Fl_TextRasterizer *r, const Fl_TextStyle *style
     FT_Set_Transform(face, NULL, NULL);
     *out_width = w; *out_height = h;
     return pixels;
+}
+
+size_t fl_text_rasterize_glyphs(Fl_TextRasterizer *r, const Fl_TextStyle *style,
+                                const unsigned char *text, size_t length, double tracking,
+                                Fl_RasterGlyph *out, size_t cap)
+{
+    if (!r || !style || !style->face || !out || !cap || (length && !text) || !isfinite(style->size) || style->size < 1) return 0;
+    FT_Face face = acquire(r, style->face);
+    if (!face || FT_Set_Pixel_Sizes(face, 0, (FT_UInt)fmin(65535, fmax(1, ceil(style->size))))) return 0;
+    FT_Matrix shear = {0x10000, style->synthetic_italic ? 0x366a : 0, 0, 0x10000};
+    FT_Set_Transform(face, &shear, NULL);
+    int pen = 0, baseline = (int)(face->size->metrics.ascender >> 6), count = 0;
+    FT_UInt previous = 0;
+    for (size_t cursor = 0; cursor < length && (size_t)count < cap; ) {
+        uint32_t code = next_codepoint(text, length, &cursor);
+        if (code == '\r' || code == '\n') {previous = 0; continue;}
+        FT_UInt index = FT_Get_Char_Index(face, code == '\t' || code == ' ' ? ' ' : code);
+        if (!index) index = FT_Get_Char_Index(face, 0xfffd);
+        if (previous && index && FT_HAS_KERNING(face)) {
+            FT_Vector delta;
+            if (!FT_Get_Kerning(face, previous, index, FT_KERNING_DEFAULT, &delta)) pen += (int)(delta.x >> 6);
+        }
+        if (count) pen += (int)lround(tracking);
+        if (FT_Load_Glyph(face, index, FT_LOAD_NO_BITMAP)) {previous = index; continue;}
+        if (style->synthetic_bold) FT_GlyphSlot_Embolden(face->glyph);
+        int advance = (int)(face->glyph->advance.x >> 6) * (code == '\t' ? 4 : 1);
+        if (code != ' ' && code != '\t' && !FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL) && face->glyph->bitmap.width && face->glyph->bitmap.rows) {
+            FT_GlyphSlot slot = face->glyph;
+            int w = (int)slot->bitmap.width, h = (int)slot->bitmap.rows, pitch = slot->bitmap.pitch;
+            unsigned char *pixels = calloc((size_t)w * (size_t)h, 1);
+            if (pixels) {
+                for (int y = 0; y < h; ++y) {
+                    const unsigned char *row = slot->bitmap.buffer + (pitch >= 0 ? y : h - 1 - y) * abs(pitch);
+                    for (int x = 0; x < w; ++x) pixels[(size_t)y * (size_t)w + (size_t)x] = slot->bitmap.pixel_mode == FT_PIXEL_MODE_MONO ? ((row[x / 8] >> (7 - x % 8)) & 1) * 255 : row[x];
+                }
+                out[count] = (Fl_RasterGlyph){pen + slot->bitmap_left, baseline - slot->bitmap_top, w, h, pixels};
+                ++count;
+            }
+        }
+        pen += advance; previous = index;
+    }
+    FT_Set_Transform(face, NULL, NULL);
+    return (size_t)count;
 }

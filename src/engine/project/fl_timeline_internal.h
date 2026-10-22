@@ -2,6 +2,7 @@
 /* Project-module internals for scene timelines (beats, tracks, clips). Not part of the public API. */
 #include "fl_project.h"
 #include "components/fl_spatial.h"
+#include "components/fl_style.h"
 #include "doc/fl_binary.h"
 
 /* One property value written as a keyframe by a keyed transform/configure operation. */
@@ -31,7 +32,7 @@ bool fl_timeline_load(Fl_Scene *scene, Fl_Binary *stream);
    Returns SIZE_MAX for invalid/duplicate input components.
    Scratch byte arrays remain borrowed by rewritten components until the caller commits them. */
 size_t fl_keyed_components(const Fl_Scene *scene, const Fl_Entity *entity, Fl_Component *components, size_t count,
-                            unsigned char pose[FL_POSE_BYTES], unsigned char bounds[FL_BOUNDS_BYTES], unsigned char appearance[24], unsigned char opacity[8], unsigned char style[91],
+                            unsigned char pose[FL_POSE_BYTES], unsigned char bounds[FL_BOUNDS_BYTES], unsigned char appearance[24], unsigned char opacity[8], unsigned char style[FL_STYLE_BYTES],
                             unsigned char camera[FL_CAMERA_BYTES], Fl_KeyWrite *writes, Fl_Tick tick);
 
 /* Whether a proposed native key value differs from the track sample at tick. */

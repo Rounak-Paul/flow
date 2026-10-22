@@ -6,6 +6,10 @@
 #include "scripting/fl_script_runtime.h"
 #include "components/fl_spatial.h"
 #include "components/fl_style.h"
+#include "components/fl_motion.h"
+#include "components/fl_path.h"
+#include "components/fl_effect.h"
+#include "schema/fl_properties.h"
 #include "components/fl_video_clip.h"
 #include <math.h>
 #include <stdio.h>
@@ -154,7 +158,12 @@ static bool configure(Ctx *x, const Fl_Scene *scene, const Fl_Entity *e, const c
     static const char *const keys[] = {"name", "visible", "x", "y", "z", "width", "height", "depth", "rotation", "rx", "ry", "scale_x", "scale_y", "scale_z", "opacity",
         "fill", "stroke", "stroke_width", "text", "font_size", "font_family", "font_weight", "italic", "asset",
         "radius", "fill2", "gradient_angle", "shadow_blur", "shadow_x", "shadow_y", "shadow_color", "align",
-        "start", "offset", "rate", "loop", "crop", "clip", "blur", NULL};
+        "start", "offset", "rate", "loop", "crop", "clip", "blur", "bloom",
+        "pivot_x", "pivot_y", "pivot_z", "glow", "blend", "radial", "gradient_mid", "gradient_mid_pos",
+        "tracking", "stagger", "rise", "text_fade", "text_duration", "trim_start", "trim_end", "commands",
+        "vignette", "grain", "lift", "gamma", "gain",
+        "life", "size", "speed", "size_end", "gravity", "spread", "burst", "particle_blend", "force_x", "force_y", "force_z", "color_end",
+        "effect_kind", "u0", "u1", "u2", "u3", "u4", "u5", "u6", "u7", "source", NULL};
     if (!agent_object(props, f, ctx) || !agent_only_keys(props, f, ctx, keys)) return false;
     const Fl_WidgetDef *def = fl_widget_for_entity(e);
     Fl_Pose t = fl_pose_identity(); Fl_Bounds box = fl_entity_bounds(e);
@@ -183,6 +192,12 @@ static bool configure(Ctx *x, const Fl_Scene *scene, const Fl_Entity *e, const c
         if (!present) continue;
         if (fabs(number) > 1e9) return fl_fail(f, "invalid_argument", "%s: \"%s\" is out of range", ctx, pose_keys[i]);
         *pose_fields[i] = pose_degrees[i] ? number * DEG_TO_RAD : number;
+    }
+    double *pivots[] = {&t.px, &t.py, &t.pz};
+    static const char *const pivot_keys[] = {"pivot_x", "pivot_y", "pivot_z"};
+    for (size_t i = 0; i < 3; ++i) {
+        if (!agent_get_number(props, pivot_keys[i], false, &number, &present, f, ctx)) return false;
+        if (present) *pivots[i] = number;
     }
     double *box_fields[] = {&box.width, &box.height, &box.depth};
     static const char *const box_keys[] = {"width", "height", "depth"};
@@ -256,8 +271,11 @@ static bool configure(Ctx *x, const Fl_Scene *scene, const Fl_Entity *e, const c
             clip.rate = number;
         }
         if (!agent_get_bool(props, "loop", &clip.loop, NULL, f, ctx)) return false;
-    } else for (const char *key = "start"; key; key = !strcmp(key, "start") ? "offset" : !strcmp(key, "offset") ? "rate" : !strcmp(key, "rate") ? "loop" : NULL)
-        if (cJSON_GetObjectItemCaseSensitive(props, key)) return fl_fail(f, "not_applicable", "%s: %s needs a video entity", ctx, key);
+    } else {
+        bool particles = fl_entity_component(e, FL_COMPONENT_PARTICLES) != NULL;
+        for (const char *key = "start"; key; key = !strcmp(key, "start") ? "offset" : !strcmp(key, "offset") ? "rate" : !strcmp(key, "rate") ? "loop" : NULL)
+            if (cJSON_GetObjectItemCaseSensitive(props, key) && !(particles && !strcmp(key, "rate"))) return fl_fail(f, "not_applicable", "%s: %s needs a video entity", ctx, key);
+    }
     const char *shape_kinds = "rectangle, image or video";
     if (!agent_get_number(props, "radius", false, &number, &present, f, ctx)) return false;
     if (present) {
@@ -294,6 +312,20 @@ static bool configure(Ctx *x, const Fl_Scene *scene, const Fl_Entity *e, const c
         if (number < 0 || number > 512) return fl_fail(f, "invalid_argument", "%s: blur is 0..512 scene pixels", ctx);
         style.blur = number; style_given = true;
     }
+    static const char *const look_keys[] = {"glow", "blend", "radial", "gradient_mid_pos"};
+    double *look_fields[] = {&style.glow, NULL, NULL, &style.gradient_mid_pos};
+    for (size_t i = 0; i < 4; ++i) {
+        if (!agent_get_number(props, look_keys[i], false, &number, &present, f, ctx)) return false;
+        if (!present) continue;
+        if (i == 1) { if (number < 0 || number > 3) return fl_fail(f, "invalid_argument", "%s: blend is 0 normal, 1 add, 2 multiply, 3 screen", ctx); style.blend = (unsigned char)number; }
+        else if (i == 2) style.radial = number >= 0.5;
+        else *look_fields[i] = number;
+        style_given = true;
+    }
+    if ((item = cJSON_GetObjectItemCaseSensitive(props, "gradient_mid")) && !cJSON_IsNull(item)) {
+        if (!agent_parse_color(item, style.gradient_mid, f, "gradient_mid")) return false;
+        style_given = true;
+    }
     bool shadowable = def && (def->kind == FL_WIDGET_RECTANGLE || def->kind == FL_WIDGET_ELLIPSE || def->has_image || def->has_video);
     static const char *const shadow_keys[] = {"shadow_blur", "shadow_x", "shadow_y"};
     double *shadow_fields[] = {&style.shadow_blur, &style.shadow_x, &style.shadow_y};
@@ -323,8 +355,10 @@ static bool configure(Ctx *x, const Fl_Scene *scene, const Fl_Entity *e, const c
     }
 
     unsigned char pose_bytes[FL_POSE_BYTES], bounds_bytes[FL_BOUNDS_BYTES], appearance[24], typography[3 + FL_TYPOGRAPHY_FAMILY_MAX], image[8], alpha[8], style_bytes[FL_STYLE_BYTES], clip_bytes[FL_VIDEO_CLIP_BYTES];
+    unsigned char motion_bytes[FL_MOTION_BYTES], post_bytes[FL_POST_BYTES], particle_bytes[FL_PARTICLES_BYTES], effect_bytes[FL_EFFECT_HEADER + 65536];
+    unsigned char path_bytes[24 + FL_CURVE_MAX * 49];
     fl_pose_encode(&t, pose_bytes); fl_bounds_encode(&box, bounds_bytes); fl_appearance_encode(&a, appearance); fl_opacity_encode(opacity, alpha);
-    Fl_Component components[10] = {{.type=FL_COMPONENT_POSE, .version=1, .size=FL_POSE_BYTES, .data=pose_bytes}, {.type=FL_COMPONENT_BOUNDS, .version=1, .size=FL_BOUNDS_BYTES, .data=bounds_bytes}, {.type=FL_COMPONENT_OPACITY, .version=1, .size=8, .data=alpha}};
+    Fl_Component components[16] = {{.type=FL_COMPONENT_POSE, .version=1, .size=FL_POSE_BYTES, .data=pose_bytes}, {.type=FL_COMPONENT_BOUNDS, .version=1, .size=FL_BOUNDS_BYTES, .data=bounds_bytes}, {.type=FL_COMPONENT_OPACITY, .version=1, .size=8, .data=alpha}};
     size_t count = 3;
     if (def && def->kind != FL_WIDGET_ENTITY && !def->has_image && !def->has_video) components[count++] = (Fl_Component){.type = FL_COMPONENT_APPEARANCE, .version = 1, .size = 24, .data = appearance};
     if (def && def->has_text) {
@@ -346,6 +380,77 @@ static bool configure(Ctx *x, const Fl_Scene *scene, const Fl_Entity *e, const c
         fl_style_encode(&style, style_bytes);
         components[count++] = (Fl_Component){.type = FL_COMPONENT_STYLE, .version = 1, .size = FL_STYLE_BYTES, .data = style_bytes};
     }
+    if (def && def->has_text && (cJSON_GetObjectItemCaseSensitive(props, "tracking") || cJSON_GetObjectItemCaseSensitive(props, "stagger") || cJSON_GetObjectItemCaseSensitive(props, "rise") || cJSON_GetObjectItemCaseSensitive(props, "text_fade") || cJSON_GetObjectItemCaseSensitive(props, "text_duration") || fl_entity_component(e, FL_COMPONENT_TEXT_MOTION))) {
+        Fl_TextMotion motion = fl_motion_default();
+        fl_motion_decode(fl_entity_component(e, FL_COMPONENT_TEXT_MOTION), &motion);
+        static const char *const motion_keys[] = {"tracking", "stagger", "rise", "text_fade", "text_duration"};
+        double *motion_fields[] = {&motion.tracking, &motion.stagger, &motion.rise, &motion.fade, &motion.duration};
+        for (size_t i = 0; i < 5; ++i) {
+            if (!agent_get_number(props, motion_keys[i], false, &number, &present, f, ctx)) return false;
+            if (present) *motion_fields[i] = number;
+        }
+        fl_motion_encode(&motion, motion_bytes);
+        if (!fl_motion_decode(&(Fl_Component){.type=FL_COMPONENT_TEXT_MOTION,.version=1,.size=FL_MOTION_BYTES,.data=motion_bytes}, &motion)) return fl_fail(f, "invalid_argument", "%s: text motion is out of range", ctx);
+        components[count++] = (Fl_Component){.type = FL_COMPONENT_TEXT_MOTION, .version = 1, .size = FL_MOTION_BYTES, .data = motion_bytes};
+    }
+    if (fl_entity_component(e, FL_COMPONENT_PATH) || cJSON_GetObjectItemCaseSensitive(props, "commands")) {
+        Fl_Path path = fl_path_default(box.width, box.height);
+        fl_path_decode(fl_entity_component(e, FL_COMPONENT_PATH), &path);
+        if (cJSON_GetObjectItemCaseSensitive(props, "commands")) {
+            Fl_Json json = {0}; Fl_Component decoded = {0};
+            if (!fl_path_read(&json, props, &decoded) || !fl_path_decode(&decoded, &path)) {fl_component_clear(&decoded); return fl_fail(f, "invalid_argument", "%s: %s", ctx, json.error[0] ? json.error : "invalid path commands");}
+            fl_component_clear(&decoded);
+        }
+        if (!agent_get_number(props, "trim_start", false, &path.trim_start, &present, f, ctx)) return false;
+        if (!agent_get_number(props, "trim_end", false, &path.trim_end, &present, f, ctx)) return false;
+        size_t size = fl_path_encode(&path, path_bytes, sizeof(path_bytes));
+        if (!size) return fl_fail(f, "invalid_argument", "%s: path trim must stay inside 0..1", ctx);
+        components[count++] = (Fl_Component){.type = FL_COMPONENT_PATH, .version = 1, .size = size, .data = path_bytes};
+    }
+    if (fl_entity_component(e, FL_COMPONENT_POST) || cJSON_GetObjectItemCaseSensitive(props, "vignette") || cJSON_GetObjectItemCaseSensitive(props, "grain") || cJSON_GetObjectItemCaseSensitive(props, "gamma")) {
+        Fl_Post grade = fl_post_default();
+        fl_post_decode(fl_entity_component(e, FL_COMPONENT_POST), &grade);
+        static const char *const grade_keys[] = {"bloom", "vignette", "grain", "lift", "gamma", "gain"};
+        double *grade_fields[] = {&grade.bloom, &grade.vignette, &grade.grain, &grade.lift, &grade.gamma, &grade.gain};
+        for (size_t i = 0; i < 6; ++i) {
+            if (!agent_get_number(props, grade_keys[i], false, &number, &present, f, ctx)) return false;
+            if (present) *grade_fields[i] = number;
+        }
+        fl_post_encode(&grade, post_bytes);
+        if (!fl_post_decode(&(Fl_Component){.type=FL_COMPONENT_POST,.version=1,.size=FL_POST_BYTES,.data=post_bytes}, &grade)) return fl_fail(f, "invalid_argument", "%s: grade is out of range", ctx);
+        components[count++] = (Fl_Component){.type = FL_COMPONENT_POST, .version = 1, .size = FL_POST_BYTES, .data = post_bytes};
+    }
+    if (fl_entity_component(e, FL_COMPONENT_PARTICLES)) {
+        Fl_Particles particles = fl_particles_default();
+        fl_particles_decode(fl_entity_component(e, FL_COMPONENT_PARTICLES), &particles);
+        static const char *const particle_keys[] = {"rate", "life", "size", "speed", "size_end", "gravity", "spread", "burst", "particle_blend", "force_x", "force_y", "force_z"};
+        double *particle_fields[] = {&particles.rate, &particles.life, &particles.size, &particles.speed, &particles.size_end, &particles.gravity, &particles.spread, &particles.burst, &particles.blend, &particles.force_x, &particles.force_y, &particles.force_z};
+        for (size_t i = 0; i < 12; ++i) {
+            if (!agent_get_number(props, particle_keys[i], false, &number, &present, f, ctx)) return false;
+            if (present) *particle_fields[i] = number;
+        }
+        if ((item = cJSON_GetObjectItemCaseSensitive(props, "color_end")) && !cJSON_IsNull(item) && !agent_parse_color(item, particles.color_end, f, "color_end")) return false;
+        fl_particles_encode(&particles, particle_bytes);
+        if (!fl_particles_decode(&(Fl_Component){.type=FL_COMPONENT_PARTICLES,.version=1,.size=FL_PARTICLES_BYTES,.data=particle_bytes}, &particles)) return fl_fail(f, "invalid_argument", "%s: particle values are out of range", ctx);
+        components[count++] = (Fl_Component){.type = FL_COMPONENT_PARTICLES, .version = 1, .size = FL_PARTICLES_BYTES, .data = particle_bytes};
+    }
+    if (fl_entity_component(e, FL_COMPONENT_EFFECT) || cJSON_GetObjectItemCaseSensitive(props, "effect_kind") || cJSON_GetObjectItemCaseSensitive(props, "source")) {
+        Fl_Effect effect = fl_effect_default();
+        fl_effect_decode(fl_entity_component(e, FL_COMPONENT_EFFECT), &effect);
+        if (!agent_get_number(props, "effect_kind", false, &number, &present, f, ctx)) return false;
+        if (present) effect.kind = (uint32_t)number;
+        static const char *const uniform_keys[] = {"u0", "u1", "u2", "u3", "u4", "u5", "u6", "u7"};
+        for (int i = 0; i < 8; ++i) {
+            if (!agent_get_number(props, uniform_keys[i], false, &number, &present, f, ctx)) return false;
+            if (present) effect.u[i] = number;
+        }
+        const char *source = NULL;
+        if (!agent_get_string(props, "source", false, &source, f, ctx)) return false;
+        if (source) {effect.kind = FL_EFFECT_CUSTOM; effect.source = source; effect.source_size = strlen(source);}
+        size_t size = fl_effect_encode(&effect, effect_bytes, sizeof(effect_bytes));
+        if (!size) return fl_fail(f, "invalid_argument", "%s: effect is out of range", ctx);
+        components[count++] = (Fl_Component){.type = FL_COMPONENT_EFFECT, .version = 1, .size = size, .data = effect_bytes};
+    }
     return apply(x, &(Fl_Op){.kind = FL_OP_ENTITY_CONFIGURE, .scene = scene->id, .entity = e->id, .name = name, .visible = visible,
                              .components = components, .component_count = count}, NULL) || rejected(f, ctx, "property values");
 }
@@ -358,7 +463,7 @@ static bool entity_create(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
         !agent_get_string(op, "kind", true, &kind_name, f, "entity.create") || !agent_get_id(op, "parent", &x->refs, false, &parent, f, "entity.create") ||
         !agent_get_id(op, "asset", &x->refs, false, &asset, f, "entity.create")) return false;
     if (!strcmp(kind_name, "camera") || !strcmp(kind_name, "plane") || !strcmp(kind_name, "cube") || !strcmp(kind_name, "sphere") || !strcmp(kind_name, "light") || !strcmp(kind_name, "particles")) kind = FL_WIDGET_COUNT;
-    else if (!agent_widget_from_name(kind_name, &kind)) return fl_fail(f, "invalid_argument", "entity.create: kind must be entity, rectangle, ellipse, triangle, diamond, hexagon, star, line, arrow, text, image, video, camera, plane, cube, sphere, light or particles");
+    else if (!agent_widget_from_name(kind_name, &kind)) return fl_fail(f, "invalid_argument", "entity.create: kind must be entity, rectangle, ellipse, triangle, diamond, hexagon, star, line, arrow, text, image, video, path, effect, camera, plane, cube, sphere, light or particles");
     if (parent && !fl_scene_entity(s, parent)) return fl_fail(f, "not_found", "entity.create: parent %llu is not in scene %llu", (unsigned long long)parent, (unsigned long long)s->id);
     const cJSON *props = cJSON_GetObjectItemCaseSensitive(op, "props");
     if (props && !agent_object(props, f, "entity.create props")) return false;
@@ -449,26 +554,37 @@ static bool entity_reorder(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
 
 static bool key_set(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
 {
-    static const char *const keys[] = {"op", "as", "entity", "property", "at", "value", "ease", "key", NULL};
+    static const char *const keys[] = {"op", "as", "entity", "property", "at", "value", "ease", "curve", "key", NULL};
     const Fl_Scene *s; const Fl_Entity *e; const char *property_name, *ease_name = "linear";
     Fl_AnimProperty property; Fl_Ease ease = FL_EASE_LINEAR; Fl_TimeAnchor anchor; Fl_Id key = 0;
     if (!agent_only_keys(op, f, "key.set", keys) || !(e = need_entity(x, op, "entity", &s, f, "key.set")) ||
         !agent_get_string(op, "property", true, &property_name, f, "key.set") || !agent_get_string(op, "ease", false, &ease_name, f, "key.set") ||
         !agent_get_id(op, "key", &x->refs, false, &key, f, "key.set")) return false;
-    if (!agent_property_from_name(property_name, &property)) return fl_fail(f, "invalid_argument", "key.set: property must be one of x, y, width, height, rotation, scale_x, scale_y, opacity, fill, stroke, stroke_width, font_size, crop_x, crop_y, crop_w, crop_h");
-    if (ease_name && !agent_ease_from_name(ease_name, &ease)) return fl_fail(f, "invalid_argument", "key.set: ease must be linear, in, out, in_out or hold");
+    if (!agent_property_from_name(property_name, &property)) return fl_fail(f, "invalid_argument", "key.set: property must be a channel from get_reference");
+    if (ease_name && !agent_ease_from_name(ease_name, &ease)) return fl_fail(f, "invalid_argument", "key.set: ease must be linear, in, out, in_out, hold, cubic or spring");
     const cJSON *at = cJSON_GetObjectItemCaseSensitive(op, "at"), *value = cJSON_GetObjectItemCaseSensitive(op, "value");
     if (!at) return fl_fail(f, "missing_field", "key.set requires \"at\"");
     if (!value) return fl_fail(f, "missing_field", "key.set requires \"value\"");
     if (!agent_parse_anchor(at, &x->refs, &anchor, f, "key.set at")) return false;
     double v[4] = {0};
-    if (property == FL_PROP_FILL || property == FL_PROP_STROKE) {
+    const Fl_PropertyDef *channel = fl_property_definition(property);
+    if (channel && channel->channels == 4) {
         unsigned char rgba[4];
         if (!agent_parse_color(value, rgba, f, "key.set value")) return false;
         for (int i = 0; i < 4; ++i) v[i] = rgba[i];
     } else {
         if (!cJSON_IsNumber(value) || !isfinite(value->valuedouble)) return fl_fail(f, "invalid_argument", "key.set: value for %s must be a number", property_name);
-        v[0] = property == FL_PROP_RX || property == FL_PROP_RY || property == FL_PROP_RZ ? value->valuedouble * DEG_TO_RAD : value->valuedouble;
+        v[0] = property == FL_PROP_RX || property == FL_PROP_RY || property == FL_PROP_RZ || property == FL_PROP_GRADIENT_ANGLE ? value->valuedouble * DEG_TO_RAD : value->valuedouble;
+    }
+    double curve[4] = {0};
+    const cJSON *curve_json = cJSON_GetObjectItemCaseSensitive(op, "curve");
+    if (curve_json) {
+        if (!cJSON_IsArray(curve_json) || cJSON_GetArraySize(curve_json) != 4) return fl_fail(f, "invalid_argument", "key.set: curve is four numbers");
+        int i = 0;
+        for (const cJSON *n = curve_json->child; n; n = n->next, ++i) {
+            if (!cJSON_IsNumber(n) || !isfinite(n->valuedouble)) return fl_fail(f, "invalid_argument", "key.set: curve is four numbers");
+            curve[i] = n->valuedouble;
+        }
     }
     const Fl_WidgetDef *def = fl_widget_for_entity(e);
     bool crop_prop = property >= FL_PROP_CROP_X, text_prop = property == FL_PROP_FONT_SIZE, fill = property == FL_PROP_FILL, stroke = property == FL_PROP_STROKE || property == FL_PROP_STROKE_WIDTH;
@@ -476,7 +592,7 @@ static bool key_set(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
         return fl_fail(f, "not_applicable", "key.set: a %s cannot animate %s", agent_widget_name(def->kind), property_name);
     Fl_Id created = 0;
     if (!apply(x, &(Fl_Op){.kind = FL_OP_KEY_SET, .scene = s->id, .entity = e->id, .key = key, .property = property, .anchor = anchor,
-                           .value = {v[0], v[1], v[2], v[3]}, .ease = ease}, &created))
+                           .value = {v[0], v[1], v[2], v[3]}, .ease = ease, .ease_param = {curve[0], curve[1], curve[2], curve[3]}}, &created))
         return rejected(f, "key.set", "the time must lie inside the scene (0 to its length) and the value inside the property's range");
     report_id(result, created);
     return true;
@@ -993,6 +1109,24 @@ cJSON *agent_tool_apply_ops(Fl_Agent *agent, const cJSON *args, cJSON **error)
             for (size_t i = 0; scenes && i < fl_project_scene_count(project); ++i) cJSON_AddItemToArray(scenes, agent_scene_summary(fl_project_scene_at(project, i)));
             cJSON_AddNumberToObject(out, "undo_available", (double)fl_history_undo_count(fl_project_history(project)));
         } else cJSON_Delete(results);
+        if (out && !dry_run) {
+            agent->touched_count = 0;
+            for (const cJSON *op = ops->child; op; op = op->next) {
+                Fl_Id id = 0; Fl_Fail ignore = {0};
+                if (!agent_get_id(op, "entity", &x.refs, false, &id, &ignore, "apply_ops") || !id) continue;
+                size_t n = 0;
+                for (; n < agent->touched_count; ++n) if (agent->touched[n] == id) break;
+                if (n == agent->touched_count && agent->touched_count < 64) agent->touched[agent->touched_count++] = id;
+            }
+            for (const cJSON *result = results ? results->child : NULL; result; result = result->next) {
+                Fl_Id id = 0; Fl_Fail ignore = {0};
+                const cJSON *idj = cJSON_GetObjectItemCaseSensitive(result, "id");
+                if (!idj || !agent_id_value(idj, &x.refs, &id, &ignore, "apply_ops") || !id) continue;
+                size_t n = 0;
+                for (; n < agent->touched_count; ++n) if (agent->touched[n] == id) break;
+                if (n == agent->touched_count && agent->touched_count < 64) agent->touched[agent->touched_count++] = id;
+            }
+        }
     }
     free(x.refs.names); free(x.refs.ids);
     return out;

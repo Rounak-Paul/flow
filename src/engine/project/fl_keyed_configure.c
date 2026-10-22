@@ -22,7 +22,7 @@ bool fl_keyed_value_changed(const Fl_Scene *scene, const Fl_Track *track, Fl_Tic
 /* Split keyed configure components: animated channels become key writes and keep their base values.
    Rewritten components point at the caller's scratch buffers. Returns the number of writes. */
 size_t fl_keyed_components(const Fl_Scene *s, const Fl_Entity *e, Fl_Component *components, size_t count,
-                               unsigned char pose_bytes[FL_POSE_BYTES], unsigned char bounds_bytes[FL_BOUNDS_BYTES], unsigned char appearance[24], unsigned char opacity[8], unsigned char style[91],
+                               unsigned char pose_bytes[FL_POSE_BYTES], unsigned char bounds_bytes[FL_BOUNDS_BYTES], unsigned char appearance[24], unsigned char opacity[8], unsigned char style[FL_STYLE_BYTES],
                                unsigned char camera_bytes[FL_CAMERA_BYTES], Fl_KeyWrite *writes, Fl_Tick tick)
 {
     if (!s || !e || count>64 || (count && !components)) return SIZE_MAX;
@@ -79,9 +79,14 @@ size_t fl_keyed_components(const Fl_Scene *s, const Fl_Entity *e, Fl_Component *
             memcpy(proposed.crop,next.crop,sizeof(next.crop)); memcpy(authored.crop,base.crop,sizeof(base.crop));
             double values[FL_PROP_COUNT][4]={{0}},kept[FL_PROP_COUNT][4]={{0}};
             fl_entity_state_values(&proposed,values); fl_entity_state_values(&authored,kept);
+            static const Fl_AnimProperty style_extra[] = {FL_PROP_BLEND, FL_PROP_RADIAL, FL_PROP_GLOW, FL_PROP_GRADIENT_MID, FL_PROP_GRADIENT_MID_POS};
             for (int p=FL_PROP_CROP_X;p<FL_PROP_MEDIA_TIME;++p) if (fl_scene_track(s,e->id,(Fl_AnimProperty)p)) {
                 writes[n]=(Fl_KeyWrite){.entity=e->id,.property=(Fl_AnimProperty)p}; memcpy(writes[n++].value,values[p],sizeof(values[p]));
                 fl_entity_state_apply(&proposed,(Fl_AnimProperty)p,kept[p]);
+            }
+            for (size_t k=0;k<sizeof(style_extra)/sizeof(*style_extra);++k) if (fl_scene_track(s,e->id,style_extra[k])) {
+                writes[n]=(Fl_KeyWrite){.entity=e->id,.property=style_extra[k]}; memcpy(writes[n++].value,values[style_extra[k]],sizeof(values[style_extra[k]]));
+                fl_entity_state_apply(&proposed,style_extra[k],kept[style_extra[k]]);
             }
             memcpy(proposed.style.crop,proposed.crop,sizeof(proposed.crop)); fl_style_encode(&proposed.style,style); c->data=style;
         } else if (c->type == FL_COMPONENT_CAMERA) {

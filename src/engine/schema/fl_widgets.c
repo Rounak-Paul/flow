@@ -9,6 +9,9 @@
 #include "components/fl_style.h"
 #include "components/fl_video_clip.h"
 #include "components/fl_spatial.h"
+#include "components/fl_path.h"
+#include "components/fl_effect.h"
+#include "components/fl_motion.h"
 #include <math.h>
 #include <string.h>
 
@@ -26,6 +29,8 @@ static const Fl_WidgetDef definitions[FL_WIDGET_COUNT] = {
     {FL_WIDGET_DIAMOND, "Diamond", "Rhombus, for decisions and highlights", k_pose, {240,240,0}, {{168,124,232,255},{230,233,238,255},0,48}, true,true,false,false,false},
     {FL_WIDGET_HEXAGON, "Hexagon", "Regular six-sided shape", k_pose, {260,225,0}, {{72,190,200,255},{230,233,238,255},0,48}, true,true,false,false,false},
     {FL_WIDGET_STAR, "Star", "Five-pointed star", k_pose, {240,240,0}, {{245,200,66,255},{230,233,238,255},0,48}, true,true,false,false,false},
+    {FL_WIDGET_PATH, "Path", "Stroked cubic path", k_pose, {360,180,0}, {{230,233,238,255},{230,233,238,255},4,48}, false,true,false,false,false},
+    {FL_WIDGET_EFFECT, "Effect", "Procedural shader fill", k_pose, {640,360,0}, {{91,156,255,255},{232,112,92,255},0,48}, true,true,false,false,false},
 };
 static const Fl_Typography default_typography = {FL_TYPOGRAPHY_DEFAULT_FAMILY, 400, false};
 
@@ -36,12 +41,12 @@ const Fl_WidgetDef *fl_widget_definition(Fl_WidgetKind kind)
 
 bool fl_widget_is_polygon(Fl_WidgetKind kind)
 {
-    return kind >= FL_WIDGET_TRIANGLE && kind < FL_WIDGET_COUNT;
+    return kind == FL_WIDGET_TRIANGLE || kind == FL_WIDGET_DIAMOND || kind == FL_WIDGET_HEXAGON || kind == FL_WIDGET_STAR;
 }
 
 bool fl_widget_is_geometry(Fl_WidgetKind kind)
 {
-    return (kind >= FL_WIDGET_ELLIPSE && kind <= FL_WIDGET_ARROW) || fl_widget_is_polygon(kind);
+    return (kind >= FL_WIDGET_ELLIPSE && kind <= FL_WIDGET_ARROW) || fl_widget_is_polygon(kind) || kind == FL_WIDGET_PATH || kind == FL_WIDGET_EFFECT;
 }
 
 size_t fl_widget_polygon(Fl_WidgetKind kind, double out[FL_POLYGON_MAX_VERTICES][2])
@@ -168,6 +173,9 @@ bool fl_widget_component_valid(const Fl_Component *c)
     case FL_COMPONENT_OPACITY: { double opacity; return fl_opacity_decode(c, &opacity); }
     case FL_COMPONENT_STYLE: { Fl_Style style; return fl_style_decode(c, &style); }
     case FL_COMPONENT_VIDEO: { Fl_VideoClip clip; return fl_video_clip_decode(c, &clip); }
+    case FL_COMPONENT_PATH: { Fl_Path path; return fl_path_decode(c, &path); }
+    case FL_COMPONENT_TEXT_MOTION: { Fl_TextMotion motion; return fl_motion_decode(c, &motion); }
+    case FL_COMPONENT_EFFECT: { Fl_Effect effect; return fl_effect_decode(c, &effect); }
     default: return true;
     }
 }
@@ -177,12 +185,13 @@ bool fl_widget_create(Fl_Project *p, Fl_Id scene, Fl_Id parent, Fl_WidgetKind ki
 {
     const Fl_WidgetDef *def = fl_widget_definition(kind);
     if (!def || !isfinite(x) || !isfinite(y)) return false;
-    Fl_Pose t = def->pose; t.x = x; t.y = y;
+    Fl_Pose t = def->pose; t.px = def->bounds.width * 0.5; t.py = def->bounds.height * 0.5; t.x = x + t.px; t.y = y + t.py;
     unsigned char pose[FL_POSE_BYTES], bounds_bytes[FL_BOUNDS_BYTES], appearance[24], geometry = (unsigned char)kind;
     fl_pose_encode(&t, pose); fl_bounds_encode(&def->bounds, bounds_bytes); fl_appearance_encode(&def->appearance, appearance);
     if (kind == FL_WIDGET_IMAGE || kind == FL_WIDGET_VIDEO) return false;
     unsigned char typography[3 + FL_TYPOGRAPHY_FAMILY_MAX];
-    Fl_Component components[5] = {{.type=FL_COMPONENT_POSE, .version=1, .size=FL_POSE_BYTES, .data=pose}, {.type=FL_COMPONENT_BOUNDS, .version=1, .size=FL_BOUNDS_BYTES, .data=bounds_bytes}};
+    unsigned char path_bytes[24 + FL_CURVE_MAX * 49], effect_bytes[FL_EFFECT_HEADER];
+    Fl_Component components[6] = {{.type=FL_COMPONENT_POSE, .version=1, .size=FL_POSE_BYTES, .data=pose}, {.type=FL_COMPONENT_BOUNDS, .version=1, .size=FL_BOUNDS_BYTES, .data=bounds_bytes}};
     size_t count = 2;
     if (kind != FL_WIDGET_ENTITY) components[count++] = (Fl_Component){.type = FL_COMPONENT_APPEARANCE, .version = 1, .size = 24, .data = appearance};
     if (kind == FL_WIDGET_RECTANGLE) components[count++] = (Fl_Component){.type = FL_COMPONENT_RECTANGLE, .version = 1, .size = 4, .data = def->appearance.fill};
@@ -191,6 +200,17 @@ bool fl_widget_create(Fl_Project *p, Fl_Id scene, Fl_Id parent, Fl_WidgetKind ki
         components[count++] = (Fl_Component){.type = FL_COMPONENT_TYPOGRAPHY, .version = 1, .size = fl_typography_encode(&default_typography, typography), .data = typography};
     }
     else if (kind != FL_WIDGET_ENTITY) components[count++] = (Fl_Component){.type = FL_COMPONENT_GEOMETRY, .version = 1, .size = 1, .data = &geometry};
+    if (kind == FL_WIDGET_PATH) {
+        Fl_Path path = fl_path_default(def->bounds.width, def->bounds.height);
+        size_t size = fl_path_encode(&path, path_bytes, sizeof(path_bytes));
+        if (!size) return false;
+        components[count++] = (Fl_Component){.type = FL_COMPONENT_PATH, .version = 1, .size = size, .data = path_bytes};
+    } else if (kind == FL_WIDGET_EFFECT) {
+        Fl_Effect effect = fl_effect_default();
+        size_t size = fl_effect_encode(&effect, effect_bytes, sizeof(effect_bytes));
+        if (!size) return false;
+        components[count++] = (Fl_Component){.type = FL_COMPONENT_EFFECT, .version = 1, .size = size, .data = effect_bytes};
+    }
     return fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ENTITY_ADD, .scene = scene, .parent = parent,
         .name = def->name, .components = components, .component_count = count}, out_id);
 }
@@ -201,7 +221,7 @@ bool fl_widget_create_image(Fl_Project *p, Fl_Id scene, Fl_Id parent, Fl_Id asse
     if (out_id) *out_id = 0;
     if (!asset || !isfinite(x) || !isfinite(y) || !isfinite(width) || !isfinite(height) || width <= 0 || height <= 0) return false;
     const Fl_WidgetDef *def = &definitions[FL_WIDGET_IMAGE];
-    Fl_Pose t = def->pose; t.x = x; t.y = y;
+    Fl_Pose t = def->pose; t.px = width * 0.5; t.py = height * 0.5; t.x = x + t.px; t.y = y + t.py;
     Fl_Bounds bounds = {width, height, 0};
     unsigned char pose[FL_POSE_BYTES], bounds_bytes[FL_BOUNDS_BYTES], image[8];
     fl_pose_encode(&t, pose); fl_bounds_encode(&bounds, bounds_bytes); fl_image_asset_encode(asset, image);
@@ -217,7 +237,7 @@ bool fl_widget_create_video(Fl_Project *p, Fl_Id scene, Fl_Id parent, Fl_Id asse
     if (out_id) *out_id = 0;
     if (!asset || !isfinite(x) || !isfinite(y) || !isfinite(width) || !isfinite(height) || width <= 0 || height <= 0) return false;
     const Fl_WidgetDef *def = &definitions[FL_WIDGET_VIDEO];
-    Fl_Pose t = def->pose; t.x = x; t.y = y;
+    Fl_Pose t = def->pose; t.px = width * 0.5; t.py = height * 0.5; t.x = x + t.px; t.y = y + t.py;
     Fl_Bounds bounds = {width, height, 0};
     unsigned char pose[FL_POSE_BYTES], bounds_bytes[FL_BOUNDS_BYTES], clip_bytes[FL_VIDEO_CLIP_BYTES];
     fl_pose_encode(&t, pose); fl_bounds_encode(&bounds, bounds_bytes);

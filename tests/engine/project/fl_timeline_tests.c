@@ -170,7 +170,7 @@ int main(int argc, char **argv)
     size_t index = (size_t)(e - s->entities);
     CHECK(fabs(state.entities[index].pose.x - 50) < 1e-9 && state.entities[index].appearance.fill[0] >= 186);
     CHECK(fabs(geometry.entities[index].opacity - 0.25) < 1e-9 && geometry.animated && geometry.tick == SECOND / 2);
-    CHECK(fl_scene_geometry_update(&geometry, s, NULL) && geometry.entities[index].pose.x == 10 && !geometry.animated);
+    CHECK(fl_scene_geometry_update(&geometry, s, NULL) && geometry.entities[index].pose.x == 170 && !geometry.animated);
 
     /* Keyed edits: animated channels become keys at the tick, others change the base. */
     Fl_Pose moved = state.entities[index].pose; moved.x = 70; moved.y = 33;
@@ -180,8 +180,8 @@ int main(int argc, char **argv)
         .transform_count = 1, .keyed = true, .tick = SECOND / 2}, NULL));
     s = fl_project_scene(p, scene); e = fl_scene_entity(s, box);
     Fl_Pose base; fl_pose_decode(fl_entity_component(e, FL_COMPONENT_POSE), &base);
-    CHECK(base.x == 10 && fl_entity_bounds(e).width == 400 && fl_scene_track(s, box, FL_PROP_X)->key_count == 3 && sample(p, scene, box, FL_PROP_X, SECOND / 2) == 70);
-    CHECK(fl_scene_track(s, box, FL_PROP_Y)->key_count == 2 && base.y == 20);
+    CHECK(base.x == 170 && fl_entity_bounds(e).width == 400 && fl_scene_track(s, box, FL_PROP_X)->key_count == 3 && sample(p, scene, box, FL_PROP_X, SECOND / 2) == 70);
+    CHECK(fl_scene_track(s, box, FL_PROP_Y)->key_count == 2 && base.y == 110);
     unsigned char alpha[8]; fl_opacity_encode(0.9, alpha);
     Fl_Component opacity = {.type = FL_COMPONENT_OPACITY, .version = 1, .size = 8, .data = alpha};
     CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ENTITY_CONFIGURE, .scene = scene, .entity = box, .name = "Box", .visible = true,

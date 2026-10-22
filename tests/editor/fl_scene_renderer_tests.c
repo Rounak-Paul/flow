@@ -46,6 +46,7 @@ static Fl_Id make(Fl_Project *p, Fl_Id scene, Fl_WidgetKind kind, double x, doub
     CHECK(fl_widget_create(p, scene, 0, kind, x, y, &id));
     const Fl_Entity *e = fl_scene_entity(fl_project_scene(p, scene), id);
     Fl_Pose t; CHECK(fl_pose_decode(fl_entity_component(e, FL_COMPONENT_POSE), &t));
+    t.px = w * 0.5; t.py = h * 0.5; t.x = x + t.px; t.y = y + t.py;
     Fl_Bounds box = {w, h, 0};
     Fl_Appearance a = fl_widget_appearance(e);
     memcpy(a.fill, fill, 4); memcpy(a.stroke, fill, 4);
@@ -193,8 +194,8 @@ int main(int argc, char **argv)
     fl_frame_free(&frame);
 
     /* Keyframes drive the rendered position. */
-    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_KEY_SET, .scene = scene_id, .entity = line, .property = FL_PROP_X, .anchor = {.offset = 0}, .value = {200}}, NULL));
-    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_KEY_SET, .scene = scene_id, .entity = line, .property = FL_PROP_X, .anchor = {.offset = 2 * SECOND}, .value = {900}}, NULL));
+    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_KEY_SET, .scene = scene_id, .entity = line, .property = FL_PROP_X, .anchor = {.offset = 0}, .value = {600}}, NULL));
+    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_KEY_SET, .scene = scene_id, .entity = line, .property = FL_PROP_X, .anchor = {.offset = 2 * SECOND}, .value = {1300}}, NULL));
     scene = fl_project_scene(p, scene_id);
     CHECK(fl_scene_renderer_render(renderer, p, scene, 0, 960, &frame));
     CHECK(near(at(&frame, 120, 360), 255, 255, 255, 1) && near(at(&frame, 50, 360), 25, 31, 47, 1));
@@ -403,7 +404,7 @@ int main(int argc, char **argv)
     CHECK(fl_project_apply(p,&(Fl_Op){.kind=FL_OP_SCENE_SETTINGS,.scene=composition_scene,.width=100,.height=100,.duration=5*FL_TICKS_PER_SECOND},NULL));
     CHECK(fl_prototype_instantiate(p,composition_scene,0,prototype,40,0,&instance_entity));
     CHECK(fl_scene_renderer_render(renderer,p,fl_project_scene(p,composition_scene),FL_TICKS_PER_SECOND,100,&repeated));
-    if (repeated.rgba) CHECK(near(at(&repeated,55,5),255,0,0,1) && !near(at(&repeated,45,5),255,0,0,1));
+    if (repeated.rgba) CHECK(near(at(&repeated,50,5),255,0,0,1) && !near(at(&repeated,35,5),255,0,0,1));
     fl_frame_free(&repeated);
     /* Lua structural output shares native render schemas and owner motion without authored child mutations. */
     Fl_Id generator_asset=0,generator_scene=0,generator_entity=0;

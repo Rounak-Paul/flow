@@ -16,16 +16,25 @@ typedef enum Fl_AnimProperty {
     FL_PROP_ROUGHNESS, FL_PROP_METALLIC, FL_PROP_EMISSIVE,
     FL_PROP_INTENSITY, FL_PROP_RANGE, FL_PROP_SPOT_ANGLE, FL_PROP_LIGHT_COLOR,
     FL_PROP_EMIT_RATE, FL_PROP_LIFE, FL_PROP_PARTICLE_SIZE, FL_PROP_SPEED, FL_PROP_PARTICLE_COLOR,
-    FL_PROP_BLOOM, FL_PROP_ASPECT_W, FL_PROP_ASPECT_H, FL_PROP_COUNT
+    FL_PROP_BLOOM, FL_PROP_ASPECT_W, FL_PROP_ASPECT_H,
+    FL_PROP_TRIM_START, FL_PROP_TRIM_END,
+    FL_PROP_TRACKING, FL_PROP_STAGGER, FL_PROP_RISE, FL_PROP_TEXT_FADE, FL_PROP_TEXT_DURATION,
+    FL_PROP_BLEND, FL_PROP_RADIAL, FL_PROP_GLOW, FL_PROP_GRADIENT_MID, FL_PROP_GRADIENT_MID_POS,
+    FL_PROP_VIGNETTE, FL_PROP_GRAIN, FL_PROP_LIFT, FL_PROP_GAMMA, FL_PROP_GAIN,
+    FL_PROP_PARTICLE_SIZE_END, FL_PROP_GRAVITY, FL_PROP_SPREAD, FL_PROP_BURST, FL_PROP_PARTICLE_BLEND,
+    FL_PROP_FORCE_X, FL_PROP_FORCE_Y, FL_PROP_FORCE_Z, FL_PROP_PARTICLE_COLOR_END,
+    FL_PROP_EFFECT_KIND, FL_PROP_U0, FL_PROP_U1, FL_PROP_U2, FL_PROP_U3, FL_PROP_U4, FL_PROP_U5, FL_PROP_U6, FL_PROP_U7,
+    FL_PROP_COUNT
 } Fl_AnimProperty;
 #define FL_PROP_ROTATION FL_PROP_RZ
 /* Interpolation from a keyframe towards the next one. */
-typedef enum Fl_Ease { FL_EASE_LINEAR, FL_EASE_IN, FL_EASE_OUT, FL_EASE_IN_OUT, FL_EASE_HOLD, FL_EASE_COUNT } Fl_Ease;
+typedef enum Fl_Ease { FL_EASE_LINEAR, FL_EASE_IN, FL_EASE_OUT, FL_EASE_IN_OUT, FL_EASE_HOLD, FL_EASE_CUBIC, FL_EASE_SPRING, FL_EASE_COUNT } Fl_Ease;
 typedef struct Fl_Keyframe {
     Fl_Id id;
     Fl_TimeAnchor at;
     double value[4];            /* scalar properties use value[0] */
     Fl_Ease ease;
+    double ease_param[4];       /* cubic: x1,y1,x2,y2. spring: stiffness, damping */
 } Fl_Keyframe;
 /* One property of one entity driven by keyframes (at most one track per entity/property). */
 typedef struct Fl_Track {

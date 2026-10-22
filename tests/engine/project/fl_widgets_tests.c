@@ -28,7 +28,7 @@ int main(int argc,char **argv)
         CHECK(fl_widget_create(p,scene,0,(Fl_WidgetKind)i,i*600,20,&ids[i]));
         const Fl_Entity *e=fl_scene_entity(fl_project_scene(p,scene),ids[i]);
         CHECK(fl_widget_for_entity(e)==def);
-        Fl_Pose t;CHECK(fl_pose_decode(fl_entity_component(e,FL_COMPONENT_POSE),&t));CHECK(t.x==i*600);
+        Fl_Pose t;CHECK(fl_pose_decode(fl_entity_component(e,FL_COMPONENT_POSE),&t));CHECK(t.x==i*600+def->bounds.width*0.5);
     }
     CHECK(!fl_widget_definition((Fl_WidgetKind)-1));CHECK(!fl_widget_create(p,scene,0,FL_WIDGET_RECTANGLE,NAN,0,NULL));
     const Fl_Scene *s=fl_project_scene(p,scene);size_t count=s->entity_count;

@@ -129,6 +129,7 @@ typedef struct Fl_Op {
     Fl_TimeAnchor anchor;
     double value[4];
     Fl_Ease ease;
+    double ease_param[4];
     const Fl_AudioClip *clip_record;
     /* FL_OP_TRANSFORMS / FL_OP_ENTITY_CONFIGURE: animated properties are written as keyframes at tick
        instead of changing their base values. */

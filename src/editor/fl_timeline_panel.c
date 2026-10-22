@@ -325,7 +325,7 @@ static void key_property(Fl_TimelinePanel *p, Fl_Id entity, Fl_AnimProperty prop
     for (size_t i = 0; track && i < track->key_count; ++i) {
         Fl_Tick tick;
         if (!fl_anchor_sample(s, &track->keys[i].at, &tick)) continue;
-        if (tick <= now && tick >= previous) {previous = tick; op.ease = track->keys[i].ease;}
+        if (tick <= now && tick >= previous) {previous = tick; op.ease = track->keys[i].ease; memcpy(op.ease_param, track->keys[i].ease_param, sizeof(op.ease_param));}
     }
     Fl_Id id;
     if (apply(p, op, &id)) {p->selected_key = id; invalidate(p);}
@@ -400,6 +400,7 @@ static void ease_chosen(Ca_Select *select, void *data)
     Fl_Op op = {.kind = FL_OP_KEY_SET, .scene = s->id, .entity = track->entity, .property = track->property,
         .key = key->id, .anchor = key->at, .ease = (Fl_Ease)index};
     memcpy(op.value, key->value, sizeof(op.value));
+    if ((Fl_Ease)index == key->ease) memcpy(op.ease_param, key->ease_param, sizeof(op.ease_param));
     apply(p, op, NULL);
 }
 
@@ -523,7 +524,7 @@ static void item_drag(const Ca_DragEvent *event, void *data)
         if (!k) return;
         Fl_Op op = {.kind = FL_OP_KEY_SET, .scene = s->id, .entity = t->entity, .property = t->property, .key = k->id,
                     .anchor = fl_anchor_at(s, target), .ease = k->ease};
-        memcpy(op.value, k->value, sizeof(op.value));
+        memcpy(op.value, k->value, sizeof(op.value)); memcpy(op.ease_param, k->ease_param, sizeof(op.ease_param));
         if (apply(p, op, NULL)) p->drag_applied = target;
     } else if (it->kind == ITEM_BEAT_EDGE) {
         for (size_t i = 0; i < s->beat_count; ++i) if (s->beats[i].id == it->id &&
@@ -697,6 +698,7 @@ static void key_menu(int index, void *data)
     Fl_Op op = {.kind = FL_OP_KEY_SET, .scene = s->id, .entity = t->entity, .property = t->property, .key = k->id,
                 .anchor = k->at, .ease = (Fl_Ease)index};
     memcpy(op.value, k->value, sizeof(op.value));
+    if ((Fl_Ease)index == k->ease) memcpy(op.ease_param, k->ease_param, sizeof(op.ease_param));
     apply(p, op, NULL);
 }
 
@@ -965,7 +967,7 @@ void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
         else snprintf(time, sizeof(time), "Unbound");
         snprintf(detail, sizeof(detail), "%s at %s", fl_property_definition(selected_track->property)->label, time);
         ca_text(&(Ca_TextDesc){.text = detail, .style = FL_CLASS_TL_KEY_DETAIL});
-        static const char *eases[] = {"Linear", "Ease in", "Ease out", "Ease in-out", "Hold"};
+        static const char *eases[] = {"Linear", "Ease in", "Ease out", "Ease in-out", "Hold", "Cubic", "Spring"};
         ca_select(&(Ca_SelectDesc){.options = eases, .option_count = FL_EASE_COUNT, .selected = selected_key->ease,
             .id = "timeline-ease", .style = FL_CLASS_TL_SELECT, .on_change = ease_chosen, .change_data = p, .disabled = playing});
         fl_button(&(Fl_ButtonDesc){.text = CA_ICON_NF_MD_DELETE_OUTLINE, .id = "timeline-delete-key", .destructive = true,
@@ -1079,7 +1081,7 @@ void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
     ca_div_end(); ca_div_end();
     p->scroll = ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .id = "timeline-scroll", .style = FL_CLASS_TL_SCROLL});
     ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_TL_KEY_CONTENT, .width = content, .height = p->label_height});
-    static const char *key_items[] = {"Linear", "Ease in", "Ease out", "Ease in-out", "Hold", "Delete"};
+    static const char *key_items[] = {"Linear", "Ease in", "Ease out", "Ease in-out", "Hold", "Cubic", "Spring", "Delete"};
     Fl_TrackIterator lane_tracks = {.scene = s};
     for (const Fl_Track *track; (track = fl_scene_track_next(&lane_tracks));) {
         const Fl_Track *t = track;

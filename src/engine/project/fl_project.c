@@ -513,7 +513,7 @@ static bool apply_operation(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
         if (!e || !op->name || !op->name[0] || !references_valid(p, s, op->components, op->component_count) ||
             op->component_count > 64) return false;
         Fl_Component keyed[64];
-        unsigned char pose_bytes[FL_POSE_BYTES], bounds_bytes[FL_BOUNDS_BYTES], appearance_bytes[24], opacity_bytes[8], style_bytes[91], camera_bytes[FL_CAMERA_BYTES];
+        unsigned char pose_bytes[FL_POSE_BYTES], bounds_bytes[FL_BOUNDS_BYTES], appearance_bytes[24], opacity_bytes[8], style_bytes[FL_STYLE_BYTES], camera_bytes[FL_CAMERA_BYTES];
         Fl_KeyWrite writes[FL_PROP_COUNT];
         size_t write_count = 0;
         const Fl_Component *components = op->components;

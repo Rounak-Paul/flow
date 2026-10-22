@@ -98,7 +98,7 @@ bool fl_scope_configure(Fl_Project *project, Fl_Id scene_id, const Fl_Compositio
     const Fl_Entity *entity=&flat->entities[index]; Fl_Origin address=*origin; Fl_Json context={0};
     const Fl_Scene *clock=fl_composition_entity_scope(composition,index);
     Fl_Component keyed[64]; if (count) memcpy(keyed,components,count*sizeof(*keyed));
-    unsigned char pose[FL_POSE_BYTES],bounds[FL_BOUNDS_BYTES],appearance[24],opacity[8],style[91],camera[FL_CAMERA_BYTES]; Fl_KeyWrite writes[FL_PROP_COUNT];
+    unsigned char pose[FL_POSE_BYTES],bounds[FL_BOUNDS_BYTES],appearance[24],opacity[8],style[FL_STYLE_BYTES],camera[FL_CAMERA_BYTES]; Fl_KeyWrite writes[FL_PROP_COUNT];
     size_t write_count=fl_keyed_components(clock,entity,keyed,count,pose,bounds,appearance,opacity,style,camera,writes,tick);
     if (write_count==SIZE_MAX) return false;
     components=keyed;

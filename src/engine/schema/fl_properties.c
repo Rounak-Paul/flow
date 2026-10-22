@@ -57,6 +57,41 @@ static const Fl_PropertyDef properties[FL_PROP_COUNT] = {
     [FL_PROP_BLOOM] = {"bloom", "Bloom", "post", FL_COMPONENT_POST, "post", "bloom", 1, 0, 8},
     [FL_PROP_ASPECT_W] = {"aspect_w", "Aspect width", "camera", FL_COMPONENT_CAMERA, "camera", "aspect_w", 1, 0, 255},
     [FL_PROP_ASPECT_H] = {"aspect_h", "Aspect height", "camera", FL_COMPONENT_CAMERA, "camera", "aspect_h", 1, 0, 255},
+    [FL_PROP_TRIM_START] = {"trim_start", "Trim start", "path", FL_COMPONENT_PATH, "path", "trim_start", 1, 0, 1},
+    [FL_PROP_TRIM_END] = {"trim_end", "Trim end", "path", FL_COMPONENT_PATH, "path", "trim_end", 1, 0, 1},
+    [FL_PROP_TRACKING] = {"tracking", "Tracking", "text_motion", FL_COMPONENT_TEXT_MOTION, "motion", "tracking", 1, -512, 512},
+    [FL_PROP_STAGGER] = {"stagger", "Stagger", "text_motion", FL_COMPONENT_TEXT_MOTION, "motion", "stagger", 1, 0, 10},
+    [FL_PROP_RISE] = {"rise", "Rise", "text_motion", FL_COMPONENT_TEXT_MOTION, "motion", "rise", 1, -2000, 2000},
+    [FL_PROP_TEXT_FADE] = {"text_fade", "Fade", "text_motion", FL_COMPONENT_TEXT_MOTION, "motion", "fade", 1, 0, 1},
+    [FL_PROP_TEXT_DURATION] = {"text_duration", "Duration", "text_motion", FL_COMPONENT_TEXT_MOTION, "motion", "duration", 1, 0, 30},
+    [FL_PROP_BLEND] = {"blend", "Blend", "style", FL_COMPONENT_STYLE, "style", "blend", 1, 0, 3},
+    [FL_PROP_RADIAL] = {"radial", "Radial", "style", FL_COMPONENT_STYLE, "style", "radial", 1, 0, 1},
+    [FL_PROP_GLOW] = {"glow", "Glow", "style", FL_COMPONENT_STYLE, "style", "glow", 1, 0, 512},
+    [FL_PROP_GRADIENT_MID] = {"gradient_mid", "Gradient mid", "style", FL_COMPONENT_STYLE, "style", "gradient_mid", 4, 0, 255},
+    [FL_PROP_GRADIENT_MID_POS] = {"gradient_mid_pos", "Gradient mid position", "style", FL_COMPONENT_STYLE, "style", "gradient_mid_pos", 1, 0, 1},
+    [FL_PROP_VIGNETTE] = {"vignette", "Vignette", "post", FL_COMPONENT_POST, "post", "vignette", 1, 0, 2},
+    [FL_PROP_GRAIN] = {"grain", "Grain", "post", FL_COMPONENT_POST, "post", "grain", 1, 0, 1},
+    [FL_PROP_LIFT] = {"lift", "Lift", "post", FL_COMPONENT_POST, "post", "lift", 1, -1, 1},
+    [FL_PROP_GAMMA] = {"gamma", "Gamma", "post", FL_COMPONENT_POST, "post", "gamma", 1, 0.2, 4},
+    [FL_PROP_GAIN] = {"gain", "Gain", "post", FL_COMPONENT_POST, "post", "gain", 1, 0, 4},
+    [FL_PROP_PARTICLE_SIZE_END] = {"size_end", "Size end", "particles", FL_COMPONENT_PARTICLES, "particles", "size_end", 1, 0, 4096},
+    [FL_PROP_GRAVITY] = {"gravity", "Gravity", "particles", FL_COMPONENT_PARTICLES, "particles", "gravity", 1, -10000, 10000},
+    [FL_PROP_SPREAD] = {"spread", "Spread", "particles", FL_COMPONENT_PARTICLES, "particles", "spread", 1, 0, 4},
+    [FL_PROP_BURST] = {"burst", "Burst", "particles", FL_COMPONENT_PARTICLES, "particles", "burst", 1, 0, 1},
+    [FL_PROP_PARTICLE_BLEND] = {"particle_blend", "Blend", "particles", FL_COMPONENT_PARTICLES, "particles", "blend", 1, 0, 1},
+    [FL_PROP_FORCE_X] = {"force_x", "Force X", "particles", FL_COMPONENT_PARTICLES, "particles", "force_x", 1, -100000, 100000},
+    [FL_PROP_FORCE_Y] = {"force_y", "Force Y", "particles", FL_COMPONENT_PARTICLES, "particles", "force_y", 1, -100000, 100000},
+    [FL_PROP_FORCE_Z] = {"force_z", "Force Z", "particles", FL_COMPONENT_PARTICLES, "particles", "force_z", 1, -100000, 100000},
+    [FL_PROP_PARTICLE_COLOR_END] = {"color_end", "Colour end", "particles", FL_COMPONENT_PARTICLES, "particles", "color_end", 4, 0, 255},
+    [FL_PROP_EFFECT_KIND] = {"effect_kind", "Effect", "effect", FL_COMPONENT_EFFECT, "effect", "kind", 1, 1, 6},
+    [FL_PROP_U0] = {"u0", "U0", "effect", FL_COMPONENT_EFFECT, "effect", "u0", 1, -1e6, 1e6},
+    [FL_PROP_U1] = {"u1", "U1", "effect", FL_COMPONENT_EFFECT, "effect", "u1", 1, -1e6, 1e6},
+    [FL_PROP_U2] = {"u2", "U2", "effect", FL_COMPONENT_EFFECT, "effect", "u2", 1, -1e6, 1e6},
+    [FL_PROP_U3] = {"u3", "U3", "effect", FL_COMPONENT_EFFECT, "effect", "u3", 1, -1e6, 1e6},
+    [FL_PROP_U4] = {"u4", "U4", "effect", FL_COMPONENT_EFFECT, "effect", "u4", 1, -1e6, 1e6},
+    [FL_PROP_U5] = {"u5", "U5", "effect", FL_COMPONENT_EFFECT, "effect", "u5", 1, -1e6, 1e6},
+    [FL_PROP_U6] = {"u6", "U6", "effect", FL_COMPONENT_EFFECT, "effect", "u6", 1, -1e6, 1e6},
+    [FL_PROP_U7] = {"u7", "U7", "effect", FL_COMPONENT_EFFECT, "effect", "u7", 1, -1e6, 1e6},
 };
 
 const Fl_PropertyDef *fl_property_definition(Fl_AnimProperty property)
@@ -92,7 +127,18 @@ bool fl_property_supported(const Fl_Entity *entity, Fl_AnimProperty property)
     if (property >= FL_PROP_ROUGHNESS && property <= FL_PROP_EMISSIVE) return fl_entity_component(entity, FL_COMPONENT_MATERIAL) != NULL;
     if (property >= FL_PROP_INTENSITY && property <= FL_PROP_LIGHT_COLOR) return fl_entity_component(entity, FL_COMPONENT_LIGHT) != NULL;
     if (property >= FL_PROP_EMIT_RATE && property <= FL_PROP_PARTICLE_COLOR) return fl_entity_component(entity, FL_COMPONENT_PARTICLES) != NULL;
-    if (property == FL_PROP_BLOOM) return fl_entity_component(entity, FL_COMPONENT_POST) != NULL;
+    if (property == FL_PROP_BLOOM || (property >= FL_PROP_VIGNETTE && property <= FL_PROP_GAIN)) return fl_entity_component(entity, FL_COMPONENT_POST) != NULL;
+    if (property == FL_PROP_TRIM_START || property == FL_PROP_TRIM_END) return fl_entity_component(entity, FL_COMPONENT_PATH) != NULL;
+    if (property >= FL_PROP_TRACKING && property <= FL_PROP_TEXT_DURATION) {
+        const Fl_WidgetDef *text = fl_widget_for_entity(entity);
+        return text && text->has_text;
+    }
+    if (property == FL_PROP_BLEND || property == FL_PROP_RADIAL || property == FL_PROP_GLOW || property == FL_PROP_GRADIENT_MID || property == FL_PROP_GRADIENT_MID_POS) {
+        const Fl_WidgetDef *styled = fl_widget_for_entity(entity);
+        return styled && styled->kind != FL_WIDGET_ENTITY;
+    }
+    if (property >= FL_PROP_PARTICLE_SIZE_END && property <= FL_PROP_PARTICLE_COLOR_END) return fl_entity_component(entity, FL_COMPONENT_PARTICLES) != NULL;
+    if (property >= FL_PROP_EFFECT_KIND && property <= FL_PROP_U7) return fl_entity_component(entity, FL_COMPONENT_EFFECT) != NULL;
     const Fl_WidgetDef *definition = fl_widget_for_entity(entity);
     if (!definition) return false;
     if (property == FL_PROP_FILL) return definition->has_fill;

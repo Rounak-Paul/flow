@@ -5,8 +5,8 @@
 #define FL_CAMERA_BYTES 48u
 #define FL_MATERIAL_BYTES 32u
 #define FL_LIGHT_BYTES 32u
-#define FL_PARTICLES_BYTES 56u
-#define FL_POST_BYTES 8u
+#define FL_PARTICLES_BYTES 128u
+#define FL_POST_BYTES 48u
 #define FL_MESH_BYTES 1u
 
 typedef enum Fl_MeshShape { FL_MESH_PLANE = 1, FL_MESH_CUBE = 2, FL_MESH_SPHERE = 3 } Fl_MeshShape;
@@ -30,8 +30,12 @@ typedef struct Fl_Particles {
     uint32_t capacity, seed;
     double rate, life, size, speed;
     unsigned char color[4];
+    double size_end, gravity, spread, burst, blend, force_x, force_y, force_z;
+    unsigned char color_end[4];
 } Fl_Particles;
-typedef struct Fl_Post { double bloom; } Fl_Post;
+typedef struct Fl_Post {
+    double bloom, vignette, grain, lift, gamma, gain;
+} Fl_Post;
 typedef struct Fl_Particle {
     double x, y, z, age, life, size;
     unsigned char color[4];
@@ -43,6 +47,7 @@ void fl_camera_canvas_aspect(const Fl_Scene *scene, unsigned *aspect_w, unsigned
 Fl_Material fl_material_default(void);
 Fl_Light fl_light_default(void);
 Fl_Particles fl_particles_default(void);
+Fl_Post fl_post_default(void);
 
 void fl_camera_encode(const Fl_Camera *camera, unsigned char out[FL_CAMERA_BYTES]);
 bool fl_camera_decode(const Fl_Component *component, Fl_Camera *out);

@@ -25,6 +25,8 @@ void fl_style_encode(const Fl_Style *s, unsigned char out[FL_STYLE_BYTES])
     out[48] = s->gradient ? 1 : 0; out[49] = (unsigned char)s->align;
     for (unsigned i = 0; i < 4; ++i) put_double(out + 50 + i * 8, s->crop[i]);
     out[82] = s->clip ? 1 : 0; put_double(out + 83, s->blur);
+    out[91] = s->blend; out[92] = s->radial ? 1 : 0; put_double(out + 93, s->glow);
+    memcpy(out + 101, s->gradient_mid, 4); put_double(out + 105, s->gradient_mid_pos);
 }
 
 bool fl_style_decode(const Fl_Component *c, Fl_Style *out)
@@ -36,10 +38,13 @@ bool fl_style_decode(const Fl_Component *c, Fl_Style *out)
     memcpy(s.gradient_to, c->data + 40, 4); memcpy(s.shadow_color, c->data + 44, 4);
     for (unsigned i = 0; i < 4; ++i) s.crop[i] = get_double(c->data + 50 + i * 8);
     s.clip = c->data[82] == 1; s.blur = get_double(c->data + 83);
+    s.blend = c->data[91]; s.radial = c->data[92] == 1; s.glow = get_double(c->data + 93);
+    memcpy(s.gradient_mid, c->data + 101, 4); s.gradient_mid_pos = get_double(c->data + 105);
     if (c->data[48] > 1 || c->data[49] >= FL_ALIGN_COUNT || !isfinite(s.radius) || s.radius < 0 || s.radius > 65536 ||
         !isfinite(s.gradient_angle) || fabs(s.gradient_angle) > 1000 || !isfinite(s.shadow_blur) || s.shadow_blur < 0 || s.shadow_blur > 4096 ||
         !isfinite(s.shadow_x) || !isfinite(s.shadow_y) || fabs(s.shadow_x) > 65536 || fabs(s.shadow_y) > 65536) return false;
     if (c->data[82] > 1 || !isfinite(s.blur) || s.blur < 0 || s.blur > 512) return false;
+    if (s.blend > 3 || c->data[92] > 1 || !isfinite(s.glow) || s.glow < 0 || s.glow > 512 || !isfinite(s.gradient_mid_pos) || s.gradient_mid_pos < 0 || s.gradient_mid_pos > 1) return false;
     for (unsigned i = 0; i < 4; ++i) if (!isfinite(s.crop[i])) return false;
     if (s.crop[0] < 0 || s.crop[1] < 0 || s.crop[2] < 0.001 || s.crop[3] < 0.001 || s.crop[0] + s.crop[2] > 1 + 1e-9 || s.crop[1] + s.crop[3] > 1 + 1e-9) return false;
     *out = s;
@@ -48,7 +53,7 @@ bool fl_style_decode(const Fl_Component *c, Fl_Style *out)
 
 Fl_Style fl_style_default(void)
 {
-    return (Fl_Style){.crop = {0, 0, 1, 1}};
+    return (Fl_Style){.crop = {0, 0, 1, 1}, .gradient_mid_pos = 0.5};
 }
 
 Fl_Style fl_entity_style(const Fl_Entity *e)

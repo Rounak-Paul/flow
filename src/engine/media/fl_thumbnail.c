@@ -67,7 +67,7 @@ static unsigned char *font_specimen(const char *path, uint32_t side, uint32_t *w
     const Fl_FontFace *face = fl_font_catalog_match(catalog, fl_font_catalog_family(catalog, 0), 400, false);
     Fl_TextRasterizer *r = face ? fl_text_rasterizer_create() : NULL;
     uint32_t mw = 0, mh = 0;
-    unsigned char *mask = r ? fl_text_rasterize(r, &(Fl_TextStyle){face, side * 0.55, false, false, 0},
+    unsigned char *mask = r ? fl_text_rasterize(r, &(Fl_TextStyle){face, side * 0.55, false, false, 0, 0},
                                                 (const unsigned char *)"Aa", 2, side, side, &mw, &mh) : NULL;
     fl_text_rasterizer_destroy(r);
     fl_font_catalog_destroy(catalog);

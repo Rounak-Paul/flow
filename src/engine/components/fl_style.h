@@ -20,10 +20,15 @@ typedef struct Fl_Style {
     double crop[4];                     /* source region of an image or video: x, y, width, height as fractions of the whole */
     bool clip;                          /* children (and the entity itself) are cut to this entity's box, rounded by radius */
     double blur;                        /* gaussian blur in scene pixels applied to the entity and its children together */
+    unsigned char blend;                /* 0 normal, 1 add, 2 multiply, 3 screen */
+    bool radial;                        /* gradient radiates from the centre instead of running along gradient_angle */
+    double glow;                        /* soft additive halo in local pixels; 0 disables it */
+    unsigned char gradient_mid[4];      /* optional third stop; alpha 0 keeps a two-stop gradient */
+    double gradient_mid_pos;            /* 0..1 position of gradient_mid between the endpoints */
 } Fl_Style;
 
 /* Encoded size of the version-one style payload. */
-#define FL_STYLE_BYTES 91u
+#define FL_STYLE_BYTES 113u
 
 /* Encode style into out as little-endian canonical bytes. */
 void fl_style_encode(const Fl_Style *style, unsigned char out[FL_STYLE_BYTES]);

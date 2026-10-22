@@ -1,4 +1,6 @@
 #include "fl_scene_state.h"
+#include "components/fl_path.h"
+#include "components/fl_effect.h"
 #include "fl_composition.h"
 #include <stdio.h>
 #include "components/fl_animation.h"
@@ -11,7 +13,48 @@
 #include <string.h>
 
 
+static double bezier_component(double p1, double p2, double u)
+{
+    double v = 1 - u;
+    return 3 * v * v * u * p1 + 3 * v * u * u * p2 + u * u * u;
+}
+
+static double cubic_ease(const double *param, double t)
+{
+    double x1 = param && (param[0] != 0 || param[2] != 0) ? param[0] : 0.42;
+    double y1 = param && (param[0] != 0 || param[2] != 0) ? param[1] : 0;
+    double x2 = param && (param[0] != 0 || param[2] != 0) ? param[2] : 0.58;
+    double y2 = param && (param[0] != 0 || param[2] != 0) ? param[3] : 1;
+    double u = t;
+    for (int i = 0; i < 6; ++i) {
+        double x = bezier_component(x1, x2, u) - t;
+        double dx = bezier_component(x1, x2, u + 1e-4) - bezier_component(x1, x2, u - 1e-4);
+        if (fabs(dx) < 1e-8) break;
+        u = fmin(1, fmax(0, u - x / (dx / 2e-4)));
+    }
+    return bezier_component(y1, y2, u);
+}
+
+static double spring_ease(const double *param, double t)
+{
+    double stiffness = param && param[0] > 0 ? param[0] : 80;
+    double damping = param && param[1] > 0 ? param[1] : 12;
+    double omega = sqrt(stiffness);
+    double zeta = damping / (2 * omega);
+    double time = t * 1.2;
+    if (zeta < 1) {
+        double wd = omega * sqrt(1 - zeta * zeta);
+        return 1 - exp(-zeta * omega * time) * (cos(wd * time) + zeta * omega / wd * sin(wd * time));
+    }
+    return 1 - exp(-omega * time) * (1 + omega * time);
+}
+
 double fl_ease_apply(Fl_Ease ease, double t)
+{
+    return fl_ease_apply_param(ease, NULL, t);
+}
+
+double fl_ease_apply_param(Fl_Ease ease, const double param[4], double t)
 {
     t = t < 0 ? 0 : t > 1 ? 1 : t;
     switch (ease) {
@@ -19,6 +62,8 @@ double fl_ease_apply(Fl_Ease ease, double t)
     case FL_EASE_OUT: { double u = 1 - t; return 1 - u * u * u; }
     case FL_EASE_IN_OUT: return t < 0.5 ? 4 * t * t * t : 1 - pow(-2 * t + 2, 3) / 2;
     case FL_EASE_HOLD: return 0;
+    case FL_EASE_CUBIC: return cubic_ease(param, t);
+    case FL_EASE_SPRING: return spring_ease(param, t);
     default: return t;
     }
 }
@@ -43,7 +88,7 @@ bool fl_track_sample(const Fl_Scene *s, const Fl_Track *t, Fl_Tick tick, double 
     else if (!after) memcpy(out, before->value, 4 * sizeof(double));
     else {
         double progress = (double)(((long double)tick - before_tick) / ((long double)after_tick - before_tick));
-        double weight = fl_ease_apply(before->ease, progress);
+        double weight = fl_ease_apply_param(before->ease, before->ease_param, progress);
         bool colour = fl_property_definition(t->property)->channels==4;
         for (int c = 0; c < 4; ++c) {
             if (colour && c < 3) out[c] = to_srgb(to_linear(before->value[c]) + (to_linear(after->value[c]) - to_linear(before->value[c])) * weight);
@@ -107,6 +152,36 @@ void fl_entity_state_apply(Fl_EntityState *e, Fl_AnimProperty property, const do
     case FL_PROP_SPEED: e->particles.speed=v[0]; break;
     case FL_PROP_PARTICLE_COLOR: write_color(e->particles.color, v); break;
     case FL_PROP_BLOOM: e->post.bloom=v[0]; break;
+    case FL_PROP_TRIM_START: e->trim_start=fmin(1, fmax(0, v[0])); break;
+    case FL_PROP_TRIM_END: e->trim_end=fmin(1, fmax(0, v[0])); break;
+    case FL_PROP_TRACKING: e->motion.tracking=v[0]; break;
+    case FL_PROP_STAGGER: e->motion.stagger=fmax(0, v[0]); break;
+    case FL_PROP_RISE: e->motion.rise=v[0]; break;
+    case FL_PROP_TEXT_FADE: e->motion.fade=fmin(1, fmax(0, v[0])); break;
+    case FL_PROP_TEXT_DURATION: e->motion.duration=fmax(0, v[0]); break;
+    case FL_PROP_BLEND: e->style.blend=(unsigned char)fmin(3, fmax(0, v[0])); break;
+    case FL_PROP_RADIAL: e->style.radial=v[0] >= 0.5; break;
+    case FL_PROP_GLOW: e->style.glow=fmax(0, v[0]); break;
+    case FL_PROP_GRADIENT_MID: write_color(e->style.gradient_mid, v); break;
+    case FL_PROP_GRADIENT_MID_POS: e->style.gradient_mid_pos=fmin(1, fmax(0, v[0])); break;
+    case FL_PROP_VIGNETTE: e->post.vignette=v[0]; break;
+    case FL_PROP_GRAIN: e->post.grain=v[0]; break;
+    case FL_PROP_LIFT: e->post.lift=v[0]; break;
+    case FL_PROP_GAMMA: e->post.gamma=v[0]; break;
+    case FL_PROP_GAIN: e->post.gain=v[0]; break;
+    case FL_PROP_PARTICLE_SIZE_END: e->particles.size_end=v[0]; break;
+    case FL_PROP_GRAVITY: e->particles.gravity=v[0]; break;
+    case FL_PROP_SPREAD: e->particles.spread=v[0]; break;
+    case FL_PROP_BURST: e->particles.burst=v[0]; break;
+    case FL_PROP_PARTICLE_BLEND: e->particles.blend=v[0]; break;
+    case FL_PROP_FORCE_X: e->particles.force_x=v[0]; break;
+    case FL_PROP_FORCE_Y: e->particles.force_y=v[0]; break;
+    case FL_PROP_FORCE_Z: e->particles.force_z=v[0]; break;
+    case FL_PROP_PARTICLE_COLOR_END: write_color(e->particles.color_end, v); break;
+    case FL_PROP_EFFECT_KIND: e->effect_kind=(uint32_t)fmin(6, fmax(1, v[0])); break;
+    case FL_PROP_U0: case FL_PROP_U1: case FL_PROP_U2: case FL_PROP_U3:
+    case FL_PROP_U4: case FL_PROP_U5: case FL_PROP_U6: case FL_PROP_U7:
+        e->effect_u[property - FL_PROP_U0]=v[0]; break;
     default: break;
     }
 }
@@ -115,7 +190,7 @@ bool fl_entity_state_sample(const Fl_Scene *scene, size_t index, Fl_Tick tick, F
 {
     if (!scene || !out || index>=scene->entity_count) return false;
     const Fl_Entity *entity=&scene->entities[index];
-    *out=(Fl_EntityState){.local_tick=tick,.media_seconds=-1,.pose=fl_pose_identity(),.camera=fl_camera_default(),.material=fl_material_default(),.light=fl_light_default(),.particles=fl_particles_default()};
+    *out=(Fl_EntityState){.local_tick=tick,.media_seconds=-1,.pose=fl_pose_identity(),.camera=fl_camera_default(),.material=fl_material_default(),.light=fl_light_default(),.particles=fl_particles_default(),.post=fl_post_default(),.motion=fl_motion_default(),.trim_end=1,.effect_kind=1};
     fl_pose_decode(fl_entity_component(entity,FL_COMPONENT_POSE),&out->pose);
     out->bounds=fl_entity_bounds(entity);
     out->has_camera=fl_camera_decode(fl_entity_component(entity,FL_COMPONENT_CAMERA),&out->camera);
@@ -124,6 +199,13 @@ bool fl_entity_state_sample(const Fl_Scene *scene, size_t index, Fl_Tick tick, F
     out->has_light=fl_light_decode(fl_entity_component(entity,FL_COMPONENT_LIGHT),&out->light);
     out->has_particles=fl_particles_decode(fl_entity_component(entity,FL_COMPONENT_PARTICLES),&out->particles);
     out->has_post=fl_post_decode(fl_entity_component(entity,FL_COMPONENT_POST),&out->post);
+    Fl_Path path;
+    out->has_path=fl_path_decode(fl_entity_component(entity,FL_COMPONENT_PATH),&path);
+    if (out->has_path) {out->trim_start=path.trim_start; out->trim_end=path.trim_end;}
+    out->has_motion=fl_motion_decode(fl_entity_component(entity,FL_COMPONENT_TEXT_MOTION),&out->motion);
+    Fl_Effect effect;
+    out->has_effect=fl_effect_decode(fl_entity_component(entity,FL_COMPONENT_EFFECT),&effect);
+    if (out->has_effect) {out->effect_kind=effect.kind; memcpy(out->effect_u,effect.u,sizeof(out->effect_u)); out->effect_source=effect.source; out->effect_source_size=effect.source_size;}
     out->appearance=fl_widget_appearance(entity); out->opacity=fl_widget_opacity(entity);
     out->style=fl_entity_style(entity); memcpy(out->crop,out->style.crop,sizeof(out->crop));
     const Fl_Animation *animation=fl_entity_animation(entity); double value[4];
@@ -249,17 +331,40 @@ bool fl_scene_state_writer(const Fl_SceneState *state, size_t entity, int proper
 void fl_entity_state_values(const Fl_EntityState *s, double values[FL_PROP_COUNT][4])
 {
     memset(values,0,sizeof(double)*FL_PROP_COUNT*4);
-    const double channels[FL_PROP_COUNT] = {
-        s->pose.x, s->pose.y, s->pose.z, s->pose.rx, s->pose.ry, s->pose.rz, s->pose.sx, s->pose.sy, s->pose.sz, s->pose.px, s->pose.py, s->pose.pz,
-        s->bounds.width, s->bounds.height, s->bounds.depth, s->opacity, 0, 0, s->appearance.stroke_width, s->appearance.font_size,
-        s->crop[0], s->crop[1], s->crop[2], s->crop[3], s->style.radius, s->style.blur, s->style.gradient_angle, s->style.shadow_blur, s->style.shadow_x, s->style.shadow_y, 0, 0, s->media_seconds,
-        s->camera.fov_y, s->camera.near_z, s->camera.far_z, s->camera.exposure, s->camera.ortho_height,
-        s->material.roughness, s->material.metallic, s->material.emissive, s->light.intensity, s->light.range, s->light.spot_angle, 0,
-        s->particles.rate, s->particles.life, s->particles.size, s->particles.speed, 0, s->post.bloom, s->camera.aspect_w, s->camera.aspect_h};
-    for (int p = 0; p < FL_PROP_COUNT; ++p) values[p][0] = channels[p];
+    values[FL_PROP_X][0]=s->pose.x; values[FL_PROP_Y][0]=s->pose.y; values[FL_PROP_Z][0]=s->pose.z;
+    values[FL_PROP_RX][0]=s->pose.rx; values[FL_PROP_RY][0]=s->pose.ry; values[FL_PROP_RZ][0]=s->pose.rz;
+    values[FL_PROP_SCALE_X][0]=s->pose.sx; values[FL_PROP_SCALE_Y][0]=s->pose.sy; values[FL_PROP_SCALE_Z][0]=s->pose.sz;
+    values[FL_PROP_PIVOT_X][0]=s->pose.px; values[FL_PROP_PIVOT_Y][0]=s->pose.py; values[FL_PROP_PIVOT_Z][0]=s->pose.pz;
+    values[FL_PROP_WIDTH][0]=s->bounds.width; values[FL_PROP_HEIGHT][0]=s->bounds.height; values[FL_PROP_DEPTH][0]=s->bounds.depth;
+    values[FL_PROP_OPACITY][0]=s->opacity; values[FL_PROP_STROKE_WIDTH][0]=s->appearance.stroke_width; values[FL_PROP_FONT_SIZE][0]=s->appearance.font_size;
+    values[FL_PROP_CROP_X][0]=s->crop[0]; values[FL_PROP_CROP_Y][0]=s->crop[1]; values[FL_PROP_CROP_W][0]=s->crop[2]; values[FL_PROP_CROP_H][0]=s->crop[3];
+    values[FL_PROP_RADIUS][0]=s->style.radius; values[FL_PROP_BLUR][0]=s->style.blur; values[FL_PROP_GRADIENT_ANGLE][0]=s->style.gradient_angle;
+    values[FL_PROP_SHADOW_BLUR][0]=s->style.shadow_blur; values[FL_PROP_SHADOW_X][0]=s->style.shadow_x; values[FL_PROP_SHADOW_Y][0]=s->style.shadow_y;
+    values[FL_PROP_MEDIA_TIME][0]=s->media_seconds;
+    values[FL_PROP_FOV][0]=s->camera.fov_y; values[FL_PROP_NEAR][0]=s->camera.near_z; values[FL_PROP_FAR][0]=s->camera.far_z;
+    values[FL_PROP_EXPOSURE][0]=s->camera.exposure; values[FL_PROP_ORTHO][0]=s->camera.ortho_height;
+    values[FL_PROP_ASPECT_W][0]=s->camera.aspect_w; values[FL_PROP_ASPECT_H][0]=s->camera.aspect_h;
+    values[FL_PROP_ROUGHNESS][0]=s->material.roughness; values[FL_PROP_METALLIC][0]=s->material.metallic; values[FL_PROP_EMISSIVE][0]=s->material.emissive;
+    values[FL_PROP_INTENSITY][0]=s->light.intensity; values[FL_PROP_RANGE][0]=s->light.range; values[FL_PROP_SPOT_ANGLE][0]=s->light.spot_angle;
+    values[FL_PROP_EMIT_RATE][0]=s->particles.rate; values[FL_PROP_LIFE][0]=s->particles.life; values[FL_PROP_PARTICLE_SIZE][0]=s->particles.size; values[FL_PROP_SPEED][0]=s->particles.speed;
+    values[FL_PROP_BLOOM][0]=s->post.bloom;
+    values[FL_PROP_TRIM_START][0]=s->trim_start; values[FL_PROP_TRIM_END][0]=s->trim_end;
+    values[FL_PROP_TRACKING][0]=s->motion.tracking; values[FL_PROP_STAGGER][0]=s->motion.stagger; values[FL_PROP_RISE][0]=s->motion.rise;
+    values[FL_PROP_TEXT_FADE][0]=s->motion.fade; values[FL_PROP_TEXT_DURATION][0]=s->motion.duration;
+    values[FL_PROP_BLEND][0]=s->style.blend; values[FL_PROP_RADIAL][0]=s->style.radial ? 1 : 0; values[FL_PROP_GLOW][0]=s->style.glow;
+    values[FL_PROP_GRADIENT_MID_POS][0]=s->style.gradient_mid_pos;
+    values[FL_PROP_VIGNETTE][0]=s->post.vignette; values[FL_PROP_GRAIN][0]=s->post.grain; values[FL_PROP_LIFT][0]=s->post.lift;
+    values[FL_PROP_GAMMA][0]=s->post.gamma; values[FL_PROP_GAIN][0]=s->post.gain;
+    values[FL_PROP_PARTICLE_SIZE_END][0]=s->particles.size_end; values[FL_PROP_GRAVITY][0]=s->particles.gravity; values[FL_PROP_SPREAD][0]=s->particles.spread;
+    values[FL_PROP_BURST][0]=s->particles.burst; values[FL_PROP_PARTICLE_BLEND][0]=s->particles.blend;
+    values[FL_PROP_FORCE_X][0]=s->particles.force_x; values[FL_PROP_FORCE_Y][0]=s->particles.force_y; values[FL_PROP_FORCE_Z][0]=s->particles.force_z;
+    values[FL_PROP_EFFECT_KIND][0]=s->effect_kind;
+    for (int i = 0; i < 8; ++i) values[FL_PROP_U0 + i][0] = s->effect_u[i];
     for (int c = 0; c < 4; ++c) {
         values[FL_PROP_FILL][c] = s->appearance.fill[c]; values[FL_PROP_STROKE][c] = s->appearance.stroke[c];
         values[FL_PROP_GRADIENT_TO][c]=s->style.gradient_to[c]; values[FL_PROP_SHADOW_COLOR][c]=s->style.shadow_color[c];
+        values[FL_PROP_GRADIENT_MID][c]=s->style.gradient_mid[c];
         values[FL_PROP_LIGHT_COLOR][c]=s->light.color[c]; values[FL_PROP_PARTICLE_COLOR][c]=s->particles.color[c];
+        values[FL_PROP_PARTICLE_COLOR_END][c]=s->particles.color_end[c];
     }
 }

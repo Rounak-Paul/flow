@@ -583,6 +583,8 @@ static const char *kind_icon(const Fl_Entity *e, bool open)
     case FL_WIDGET_DIAMOND: return CA_ICON_NF_FA_DIAMOND;
     case FL_WIDGET_HEXAGON: return CA_ICON_NF_FA_DRAW_POLYGON;
     case FL_WIDGET_STAR: return CA_ICON_NF_FA_STAR;
+    case FL_WIDGET_PATH: return CA_ICON_NF_FA_BEZIER_CURVE;
+    case FL_WIDGET_EFFECT: return CA_ICON_NF_FA_MAGIC;
     default: return open ? CA_ICON_NF_MD_CUBE : CA_ICON_NF_MD_CUBE_OUTLINE;
     }
 }
