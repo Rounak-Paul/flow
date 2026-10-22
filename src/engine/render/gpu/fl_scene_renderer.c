@@ -128,7 +128,7 @@ struct Fl_SceneRenderer {
     uint32_t depth_width, depth_height;
     bool depth_ready;
     VkDescriptorPool sample_pool;
-    VkDescriptorSet sample_set;
+    VkDescriptorSet sample_set[LAYER_SLOTS];
     Fl_GpuImage *bloom_image[LAYER_SLOTS][2];
     uint32_t bloom_width, bloom_height;
     VkBuffer mesh_buffer;
@@ -1124,6 +1124,27 @@ static bool ensure_bloom_images(Fl_SceneRenderer *p, uint32_t width, uint32_t he
 static void transition(VkCommandBuffer cmd, VkImage image, VkImageLayout from, VkImageLayout to, VkAccessFlags src, VkAccessFlags dst,
                        VkPipelineStageFlags src_stage, VkPipelineStageFlags dst_stage);
 
+/* One bloom source set per frame slot. A slot is recorded only after its previous submit has finished. */
+static bool ensure_sample_sets(Fl_SceneRenderer *p)
+{
+    if (p->sample_set[0]) return true;
+    VkDescriptorSetLayout layout = fl_gpu_images_layout(p->images);
+    VkDescriptorSetLayout layouts[LAYER_SLOTS];
+    for (size_t i = 0; i < LAYER_SLOTS; ++i) layouts[i] = layout;
+    VkDescriptorPoolSize pool_size = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, LAYER_SLOTS};
+    VkDescriptorPoolCreateInfo pool = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = LAYER_SLOTS, .poolSizeCount = 1, .pPoolSizes = &pool_size};
+    if (vkCreateDescriptorPool(p->device, &pool, NULL, &p->sample_pool) != VK_SUCCESS) return false;
+    VkDescriptorSetAllocateInfo sets = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = p->sample_pool,
+        .descriptorSetCount = LAYER_SLOTS, .pSetLayouts = layouts};
+    if (vkAllocateDescriptorSets(p->device, &sets, p->sample_set) != VK_SUCCESS) {
+        vkDestroyDescriptorPool(p->device, p->sample_pool, NULL);
+        p->sample_pool = VK_NULL_HANDLE;
+        memset(p->sample_set, 0, sizeof(p->sample_set));
+        return false;
+    }
+    return true;
+}
+
 static void apply_bloom(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_RenderTarget *t)
 {
     if (!p->bloom || p->bloom <= 0 || !t->image || !t->depth) return;
@@ -1131,22 +1152,12 @@ static void apply_bloom(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_Rende
     if (!ensure_bloom_images(p, t->width, t->height)) return;
     if (!p->bloom_image[slot][0]) p->bloom_image[slot][0] = fl_gpu_target_create(p->images, LAYER_FORMAT, t->width, t->height);
     if (!p->bloom_image[slot][1]) p->bloom_image[slot][1] = fl_gpu_target_create(p->images, LAYER_FORMAT, t->width, t->height);
-    if (!p->bloom_image[slot][0] || !p->sample_set) {
-        if (!p->sample_set) {
-            VkDescriptorPoolSize pool_size = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
-            VkDescriptorPoolCreateInfo pool = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &pool_size};
-            VkDescriptorSetLayout layout = fl_gpu_images_layout(p->images);
-            if (vkCreateDescriptorPool(p->device, &pool, NULL, &p->sample_pool) != VK_SUCCESS) return;
-            VkDescriptorSetAllocateInfo sets = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = p->sample_pool, .descriptorSetCount = 1, .pSetLayouts = &layout};
-            if (vkAllocateDescriptorSets(p->device, &sets, &p->sample_set) != VK_SUCCESS) return;
-        }
-    }
-    if (!p->bloom_image[slot][0] || !p->sample_set) return;
+    if (!p->bloom_image[slot][0] || !ensure_sample_sets(p)) return;
     vkCmdEndRendering(cmd);
     transition(cmd, t->image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     VkDescriptorImageInfo sampled = {fl_gpu_images_sampler(p->images), t->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet write = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = p->sample_set, .dstBinding = 0, .descriptorCount = 1,
+    VkWriteDescriptorSet write = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = p->sample_set[slot], .dstBinding = 0, .descriptorCount = 1,
         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &sampled};
     vkUpdateDescriptorSets(p->device, 1, &write, 0, NULL);
     layer_transition(cmd, fl_gpu_image_handle(p->bloom_image[slot][0]), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
@@ -1154,7 +1165,7 @@ static void apply_bloom(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_Rende
     if (fl_scene_renderer_begin(p, cmd, LAYER_FORMAT, t->width, t->height, false)) {
         float push[28] = {0}; layer_push(push, t, 20); push[24] = .45f;
         fl_mat4_float(fl_mat4_identity(), p->draw_mvp);
-        fl_scene_renderer_push(p, cmd, push, p->sample_set);
+        fl_scene_renderer_push(p, cmd, push, p->sample_set[slot]);
     }
     vkCmdEndRendering(cmd);
     layer_transition(cmd, fl_gpu_image_handle(p->bloom_image[slot][0]), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
