@@ -407,7 +407,9 @@ void fl_scene_preview_render(Ca_Viewport *viewport, void *data)
             fl_scene_renderer_grid_plane(p->renderer, cmd, scene->width * 0.5 - extent * 0.5, scene->height * 0.5 - extent * 0.5, extent, FL_SCENE_GRID_SPACING, minor, major);
         }
         Fl_RenderTarget surface = {.view = ca_viewport_image_view(viewport), .format = ca_viewport_format(viewport), .width = w, .height = h, .slot = ca_viewport_frame_index(viewport), .image = ca_viewport_image(viewport), .depth = depth};
+        fl_scene_renderer_set_canvas(p->renderer, p->shot);
         fl_scene_renderer_entities(p->renderer, cmd, &surface, &gate, scene, state, g);
+        fl_scene_renderer_set_canvas(p->renderer, false);
         VkDescriptorSet white = fl_scene_renderer_white(p->renderer);
         if (!p->shot) {
             Fl_Vec3 mid = {gate.x + gate.width * 0.5, gate.y + gate.height * 0.5, 0};

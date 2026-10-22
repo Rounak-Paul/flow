@@ -137,6 +137,7 @@ struct Fl_SceneRenderer {
     Fl_Mat4 view_proj;
     Fl_Vec3 cam_right, cam_up;
     float crop_x, crop_y, crop_w, crop_h;
+    bool ui_screen; /* 2D widgets fill the output rectangle instead of sitting in the world */
     double bloom;
     float draw_mvp[16];
     VkFormat pass_format;
@@ -199,19 +200,23 @@ static bool create_pipeline(Fl_SceneRenderer *p, VkFormat format, int kind)
 {
     const char *vs = "#version 450\nlayout(set=1,binding=0) uniform M { mat4 mvp; } u;"
         "layout(push_constant) uniform P { vec4 a; vec4 b; vec4 fill; vec4 stroke; vec4 params; vec4 fill2; vec4 extra; } p;"
-        "layout(location=0) out vec2 uv;vec2 v[6]=vec2[](vec2(0,0),vec2(1,0),vec2(1,1),vec2(0,0),vec2(1,1),vec2(0,1));"
+        "layout(location=0) out vec2 uv;layout(location=1) out vec2 gate;"
+        "vec2 v[6]=vec2[](vec2(0,0),vec2(1,0),vec2(1,1),vec2(0,0),vec2(1,1),vec2(0,1));"
         "void main(){uv=v[gl_VertexIndex];float kind=p.params.w;"
+        "gate=vec2(p.a.x*uv.x+p.a.y*uv.y+p.a.z,p.b.x*uv.x+p.b.y*uv.y+p.b.z);"
         "if(kind==15.&&p.extra.w>0.5) gl_Position=u.mvp*vec4(uv*vec2(p.a.w,p.b.w),0.,1.);"
         "else if(kind==15.||kind==17.||kind==18.||kind==19.||kind==20.) gl_Position=vec4(uv*2.-1.,0.,1.);"
+        "else if(p.b.w>0.5) gl_Position=vec4(gate,0.,1.);"
         "else gl_Position=u.mvp*vec4(uv*p.params.xy,0.,1.);}";
     static const char fs_head[] = "#version 450\nlayout(push_constant) uniform P { vec4 a; vec4 b; vec4 fill; vec4 stroke; vec4 params; vec4 fill2; vec4 extra; } p;"
-        "layout(set=0,binding=0) uniform sampler2D mask;layout(location=0) in vec2 uv;layout(location=0) out vec4 color;"
+        "layout(set=0,binding=0) uniform sampler2D mask;layout(location=0) in vec2 uv;layout(location=1) in vec2 gate;layout(location=0) out vec4 color;"
         "float rbox(vec2 q0,vec2 half_size,float r){vec2 q=abs(q0)-half_size+r;return length(max(q,0.))+min(max(q.x,q.y),0.)-r;}";
     static const char fs_tail[] =
         "float poly(vec2 p,float kind){int n=vertex_count(kind);vec2 v0=vert(0,kind);float d=dot(p-v0,p-v0);float s=1.;"
         "for(int i=0,j=n-1;i<n;j=i++){vec2 vi=vert(i,kind),vj=vert(j,kind);vec2 e=vj-vi,w=p-vi;vec2 b=w-e*clamp(dot(w,e)/dot(e,e),0.,1.);d=min(d,dot(b,b));"
         "bvec3 c=bvec3(p.y>=vi.y,p.y<vj.y,e.x*w.y>e.y*w.x);if(all(c)||all(not(c)))s=-s;}return s*sqrt(d);}"
         "void main(){float kind=p.params.w;vec2 size=p.params.xy;float sw=p.params.z;float r=min(p.extra.x,min(size.x,size.y)*.5);"
+        "if(p.a.w>0.5&&(abs(gate.x)>1.||abs(gate.y)>1.)) discard;"
         "if(kind==15.){vec2 world=uv*vec2(p.a.w,p.b.w)+size;vec2 cell=world/sw;"
         "vec2 d=abs(fract(cell-.5)-.5)/max(fwidth(cell),vec2(.0001));"
         "vec2 big=cell/5;vec2 b=abs(fract(big-.5)-.5)/max(fwidth(big),vec2(.0001));"
@@ -666,6 +671,18 @@ void fl_scene_renderer_set_viewport(Fl_SceneRenderer *p, float x, float y, float
     p->crop_x = x; p->crop_y = y; p->crop_w = width; p->crop_h = height;
 }
 
+void fl_scene_renderer_set_canvas(Fl_SceneRenderer *p, bool screen)
+{
+    if (p) p->ui_screen = screen;
+}
+
+/* Clip a 2D widget to the output rectangle. Screen mode draws it on that rectangle instead of in the world. */
+static void canvas_push(const Fl_SceneRenderer *p, float push[28])
+{
+    push[3] = 1.f;
+    if (p->ui_screen) push[7] = 1.f;
+}
+
 static void use_model(Fl_SceneRenderer *p, Fl_Mat4 model)
 {
     fl_mat4_float(fl_mat4_mul(p->view_proj, model), p->draw_mvp);
@@ -727,6 +744,7 @@ void fl_scene_renderer_model(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_
 {
     float push[28];
     push_block(push, frame, fl_affine_from_mat4(model), width, height, kind, appearance, style);
+    canvas_push(p, push);
     for (size_t i = 0; i < 28; ++i) if (!isfinite(push[i])) return;
     use_model(p, model);
     fl_scene_renderer_push(p, cmd, push, mask);
@@ -763,6 +781,7 @@ static void draw_shadow(Fl_SceneRenderer *p, VkCommandBuffer cmd, const Fl_Scene
     color.fill[3] = (unsigned char)lround(color.fill[3] * opacity);
     float push[28];
     push_block(push, frame, matrix, width + 2 * margin, height + 2 * margin, (Fl_WidgetKind)16, color, NULL);
+    canvas_push(p, push);
     push[24] = (float)fmin(radius, fmin(width, height) * .5); push[27] = (float)margin;
     for (size_t i = 0; i < 28; ++i) if (!isfinite(push[i])) return;
     use_model(p, model);
@@ -1417,7 +1436,9 @@ bool fl_scene_renderer_render(Fl_SceneRenderer *p, const Fl_Project *project, co
         if (ok) {
             fl_scene_renderer_background(p, cmd, &frame, &frame, scene->background);
             Fl_RenderTarget target = {.view = o.view, .format = format, .width = w, .height = h, .image = o.image, .depth = depth};
+            fl_scene_renderer_set_canvas(p, true);
             fl_scene_renderer_entities(p, cmd, &target, &frame, scene, state, &geometry);
+            fl_scene_renderer_set_canvas(p, false);
         }
         vkCmdEndRendering(cmd);
         transition(cmd, o.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,

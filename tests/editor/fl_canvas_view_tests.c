@@ -11,8 +11,8 @@ int main(void)
     CHECK(a.scale>0);
     CHECK(fabs(a.world.x+400/a.scale-960)<1e-8);
     CHECK(fabs(a.world.y+300/a.scale-540)<1e-8);
-    scene.camera_x=-100;scene.camera_y=200;
-    Fl_CanvasMapping pan=fl_canvas_mapping(fl_scene_frame(&scene),800,600,14);
+    Fl_SceneFrame shifted=target; shifted.x-=100; shifted.y+=200;
+    Fl_CanvasMapping pan=fl_canvas_mapping(shifted,800,600,14);
     CHECK(fabs(pan.world.x-a.world.x+100)<1e-8);
     CHECK(fabs(pan.world.y-a.world.y-200)<1e-8);
     CHECK(pan.scale==a.scale);

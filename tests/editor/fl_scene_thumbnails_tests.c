@@ -19,8 +19,7 @@ int main(void)
     scene.camera_x=1000;scene.revision++;
     unsigned char *panned=rasterize(&scene);CHECK(panned);
     if (centered && panned) {
-        size_t pixel=((size_t)FL_STYLE_SCENE_THUMB_H/2*FL_STYLE_SCENE_THUMB_W+FL_STYLE_SCENE_THUMB_W/2)*4;
-        CHECK(centered[pixel]>panned[pixel]+100);
+        CHECK(!memcmp(centered, panned, (size_t)FL_STYLE_SCENE_THUMB_W * FL_STYLE_SCENE_THUMB_H * 4));
         CHECK(entity.components[0].data==transform);
     }
     scene.camera_x=0;scene.revision++;

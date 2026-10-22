@@ -19,5 +19,5 @@ Fl_SceneFrame fl_scene_frame(const Fl_Scene *scene)
         if (width / height > ratio) width = height * ratio;
         else height = width / ratio;
     }
-    return (Fl_SceneFrame){(scene->width - width) * .5 + scene->camera_x, (scene->height - height) * .5 + scene->camera_y, width, height};
+    return (Fl_SceneFrame){(scene->width - width) * .5, (scene->height - height) * .5, width, height};
 }

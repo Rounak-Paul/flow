@@ -224,7 +224,7 @@ Fl_SceneFrame fl_scene_gate(const Fl_Scene *scene, const Fl_SceneState *state)
         if (width / height > ratio) width = height * ratio;
         else height = width / ratio;
     }
-    return (Fl_SceneFrame){(scene->width - width) * .5 + scene->camera_x, (scene->height - height) * .5 + scene->camera_y, width, height};
+    return (Fl_SceneFrame){(scene->width - width) * .5, (scene->height - height) * .5, width, height};
 }
 
 bool fl_spatial_create(Fl_Project *project, Fl_Id scene, Fl_Id parent, const char *kind, double x, double y, double z, Fl_Id *out_id)

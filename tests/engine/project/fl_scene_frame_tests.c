@@ -67,7 +67,7 @@ int main(int argc, char **argv)
     scene = fl_project_scene(project, id);
     CHECK(scene && scene->aspect_width == 9 && scene->aspect_height == 16);
     Fl_SceneFrame frame = fl_scene_frame(scene);
-    CHECK(fabs(frame.x - 781.25) < 1e-8 && frame.y == -75 && frame.width == 607.5 && frame.height == 1080);
+    CHECK(fabs(frame.x - 656.25) < 1e-8 && frame.y == 0 && frame.width == 607.5 && frame.height == 1080);
     CHECK(scene->camera_x==125 && scene->camera_y==-75);
     uint64_t camera_revision=scene->revision;
     CHECK(fl_project_apply(project, &(Fl_Op){.kind=FL_OP_SCENE_CAMERA,.scene=id,.camera_x=125,.camera_y=-75}, NULL));
@@ -100,7 +100,7 @@ int main(int argc, char **argv)
     scene = fl_project_scene(project, id);
     Fl_SceneFrame square = fl_scene_frame(scene);
     CHECK(fabs(square.width - 1080) < 1e-6 && fabs(square.height - 1080) < 1e-6);
-    CHECK(fabs(square.x - 545) < 1e-6 && fabs(square.y + 75) < 1e-6);
+    CHECK(fabs(square.x - 420) < 1e-6 && fabs(square.y) < 1e-6);
     fl_project_destroy(project);
     return FLOW_TEST_RESULT("fl_scene_frame_tests");
 }
