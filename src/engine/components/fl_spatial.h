@@ -66,6 +66,8 @@ void fl_scene_camera(const Fl_Scene *scene, const Fl_SceneState *state, double f
                      double frame_width, double frame_height, Fl_Mat4 *view_proj, Fl_Vec3 *right, Fl_Vec3 *up, double *bloom);
 /* The first visible camera entity. False when the view is the scene frame. */
 bool fl_scene_view_camera(const Fl_Scene *scene, const Fl_SceneState *state, Fl_Pose *pose, Fl_Camera *camera, double *bloom);
+/* One camera entity, including a hidden one chosen from the viewport. False when id is not a camera. */
+bool fl_scene_camera_entity(const Fl_Scene *scene, const Fl_SceneState *state, Fl_Id id, Fl_Pose *pose, Fl_Camera *camera, double *bloom);
 /* Output gate. A shot camera's aspect replaces the scene ratio. The gate stays on the canvas. */
 Fl_SceneFrame fl_scene_gate(const Fl_Scene *scene, const Fl_SceneState *state);
 

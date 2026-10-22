@@ -41,6 +41,9 @@ struct Fl_ScenePanel {
     Fl_Id rename_scene, rename_entity;
     Fl_Id *collapsed;
     size_t collapsed_count, collapsed_capacity;
+    Fl_Id view_camera;          /* 0 is the editor camera */
+    Fl_Id *camera_ids;
+    size_t camera_count;
 };
 
 /* Invalidate the panel after a model event, retaining only ids still in the document. */
@@ -125,21 +128,66 @@ static bool snap_changed(const Fl_Event *event, void *data)
     return false;
 }
 
-/* Right-align the editor-camera controls. Aspect lives on each camera entity. */
+/* Choose the viewport camera. Index 0 is always the editor camera. */
+static void camera_chosen(Ca_Select *select, void *data)
+{
+    Fl_ScenePanel *p = data;
+    int index = ca_select_get(select);
+    Fl_Id id = index > 0 && (size_t)index <= p->camera_count ? p->camera_ids[index - 1] : 0;
+    if (p->view_camera == id) return;
+    p->view_camera = id;
+    if (p->navigating) p->navigating = 0;
+    fl_scene_preview_set_camera(p->preview, id);
+    if (p->dock) ca_dock_invalidate_panel(p->dock, "scene");
+}
+
+/* Drop a view camera that is no longer in this scene. */
+static void retain_view_camera(Fl_ScenePanel *p, const Fl_Scene *scene)
+{
+    if (!p->view_camera) return;
+    const Fl_Entity *entity = fl_scene_entity(scene, p->view_camera);
+    if (entity && fl_entity_component(entity, FL_COMPONENT_CAMERA)) return;
+    p->view_camera = 0;
+    if (p->navigating) p->navigating = 0;
+    fl_scene_preview_set_camera(p->preview, 0);
+}
+
+/* Right-align the view camera and the editor-camera controls. */
 static void build_view_tools(Fl_ScenePanel *p)
 {
+    const Fl_Scene *scene = fl_project_scene(p->project, fl_scene_edit_scene(p->edit));
+    retain_view_camera(p, scene);
+    size_t count = 0;
+    if (scene) for (size_t i = 0; i < scene->entity_count; ++i)
+        if (fl_entity_component(&scene->entities[i], FL_COMPONENT_CAMERA)) count++;
+    Fl_Id *ids = count ? malloc(count * sizeof(*ids)) : NULL;
+    const char **options = malloc((count + 1) * sizeof(*options));
+    if (!options || (count && !ids)) { free(ids); free(options); options = NULL; ids = NULL; count = 0; }
+    int selected = 0;
+    if (options) {
+        options[0] = "Editor camera";
+        size_t n = 0;
+        if (scene) for (size_t i = 0; i < scene->entity_count; ++i) {
+            if (!fl_entity_component(&scene->entities[i], FL_COMPONENT_CAMERA)) continue;
+            ids[n] = scene->entities[i].id;
+            options[n + 1] = scene->entities[i].name && scene->entities[i].name[0] ? scene->entities[i].name : "Camera";
+            if (ids[n] == p->view_camera) selected = (int)n + 1;
+            n++;
+        }
+        count = n;
+    }
+    free(p->camera_ids); p->camera_ids = ids; p->camera_count = count;
     ca_div_begin(&(Ca_DivDesc){.style = FL_CLASS_TOOLBAR_SPACER}); ca_div_end();
+    if (options) ca_select(&(Ca_SelectDesc){.options = options, .option_count = (int)count + 1, .selected = selected,
+        .id = "scene-camera", .style = FL_CLASS_CAMERA_SELECT, .on_change = camera_chosen, .change_data = p});
+    free(options);
+    bool editor = p->view_camera == 0;
     fl_button(&(Fl_ButtonDesc){.text=CA_ICON_NF_MD_FIT_TO_PAGE_OUTLINE,.id="scene-fit-canvas",
-        .on_click=reset_canvas,.click_data=p, .kind = FL_BUTTON_ICON,
-        .tooltip = "Frame the scene. Right-drag looks. Middle-drag pans. Scroll dollies. Hold right-click and use WASD, Q and E to fly."});
+        .on_click=reset_canvas,.click_data=p, .kind = FL_BUTTON_ICON, .disabled = !editor,
+        .tooltip = editor ? "Frame the scene. Right-drag looks. Middle-drag pans. Scroll dollies. Hold right-click and use WASD, Q and E to fly." : "Frame is available on the editor camera"});
     fl_button(&(Fl_ButtonDesc){.text=CA_ICON_NF_MD_MAGNET,.id="scene-toggle-snap",
         .on_click=toggle_snap,.click_data=p, .kind = FL_BUTTON_ICON, .active = fl_scene_edit_snap(p->edit), .tooltip = fl_scene_edit_snap(p->edit) ? "Grid snapping on (64 units)" : "Grid snapping off"});
-    if (p->playing) {
-        const Fl_Scene *scene = fl_project_scene(p->project, fl_scene_edit_scene(p->edit));
-        Fl_Pose pose = fl_pose_identity(); Fl_Camera camera;
-        bool shot = fl_scene_view_camera(scene, fl_scene_edit_state(p->edit), &pose, &camera, NULL);
-        ca_text(&(Ca_TextDesc){.text = shot ? "Playing camera" : "Playing", .style = FL_CLASS_LABEL});
-    }
+    if (p->playing) ca_text(&(Ca_TextDesc){.text = "Playing", .style = FL_CLASS_LABEL});
 }
 
 /* Select a card or hierarchy row by stable identity. */
@@ -324,7 +372,7 @@ static void check_keys(void *data)
         else if (p->viewport) fl_scene_preview_pan(p->preview,p->viewport,-p->pan_dx,-p->pan_dy);
         p->navigating=0;
     }
-    if (!p->playing && !p->gesturing && !p->navigating && p->viewport && p->window && ca_window_focused(p->window) && ca_window_mouse_button_down(p->window,1)) {
+    if (!fl_scene_preview_shot(p->preview) && !p->gesturing && !p->navigating && p->viewport && p->window && ca_window_focused(p->window) && ca_window_mouse_button_down(p->window,1)) {
         double forward=0, right=0, up=0;
         if (ca_window_key_down(p->window,CA_KEY_W)) forward+=1;
         if (ca_window_key_down(p->window,CA_KEY_S)) forward-=1;
@@ -368,7 +416,6 @@ static bool playback_changed(const Fl_Event *event, void *data)
     if (!change || change->playback != p->playback) return false;
     p->playing = change->playing;
     if (p->navigating) p->navigating = 0;
-    fl_scene_preview_set_shot(p->preview, p->playing);
     if (p->viewport) ca_viewport_request_redraw(p->viewport);
     if (p->dock) ca_dock_invalidate_panel(p->dock, "scene");
     return false;
@@ -379,7 +426,6 @@ void fl_scene_panel_set_playback(Fl_ScenePanel *p, Fl_Playback *playback)
     if (!p || !playback || p->playback) return;
     p->playback = playback;
     p->playing = fl_playback_playing(playback);
-    fl_scene_preview_set_shot(p->preview, p->playing);
     Fl_EventType type = fl_event_type_find(p->bus, FL_EVENT_PLAYBACK_CHANGED);
     if (type != FL_EVENT_TYPE_INVALID)
         fl_event_subscribe(p->bus, &(Fl_SubscribeDesc){.type = type, .fn = playback_changed, .user_data = p, .owner = p});
@@ -398,7 +444,7 @@ void fl_scene_panel_destroy(Fl_ScenePanel *p)
     ca_effect_destroy(p->keys);
     fl_scene_preview_destroy(p->preview);
     fl_scene_thumbnails_destroy(p->thumbnails);
-    free(p->collapsed); free(p->rows); free(p);
+    free(p->collapsed); free(p->rows); free(p->camera_ids); free(p);
 }
 
 /* Position of an entity in the collapsed set, or the set's size when it is expanded. */

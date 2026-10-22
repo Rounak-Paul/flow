@@ -51,8 +51,6 @@ VkImageView fl_scene_renderer_depth(Fl_SceneRenderer *renderer, VkCommandBuffer 
 void fl_scene_renderer_set_view(Fl_SceneRenderer *renderer, Fl_Mat4 view_proj, Fl_Vec3 right, Fl_Vec3 up, double bloom);
 /* Letterbox later passes on the main target. A zero size clears it. Offscreen layers stay full-frame. */
 void fl_scene_renderer_set_viewport(Fl_SceneRenderer *renderer, float x, float y, float width, float height);
-/* When set, 2D widgets are drawn on the output rectangle in screen space, clipped to it. */
-void fl_scene_renderer_set_canvas(Fl_SceneRenderer *renderer, bool screen);
 /* Fill target (scene units) with the backdrop colour; frame is the visible world rectangle the target maps into. */
 void fl_scene_renderer_background(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, const Fl_SceneFrame *frame, const Fl_SceneFrame *target,
                                   const unsigned char color[4]);

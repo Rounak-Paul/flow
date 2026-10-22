@@ -178,6 +178,27 @@ static bool scene_camera(const Fl_Scene *scene, const Fl_SceneState *state, size
     return true;
 }
 
+bool fl_scene_camera_entity(const Fl_Scene *scene, const Fl_SceneState *state, Fl_Id id, Fl_Pose *pose, Fl_Camera *camera, double *bloom)
+{
+    const Fl_Entity *entity = scene && id ? fl_scene_entity(scene, id) : NULL;
+    if (!entity || !pose || !camera) return false;
+    size_t index = (size_t)(entity - scene->entities);
+    double strength = 0;
+    if (state && state->valid && index < state->count && state->entities[index].has_camera) {
+        *pose = state->entities[index].pose;
+        *camera = state->entities[index].camera;
+        strength = state->entities[index].has_post ? state->entities[index].post.bloom : 0;
+    } else if (!fl_camera_decode(fl_entity_component(entity, FL_COMPONENT_CAMERA), camera)) return false;
+    else {
+        fl_pose_decode(fl_entity_component(entity, FL_COMPONENT_POSE), pose);
+        Fl_Post post;
+        strength = fl_post_decode(fl_entity_component(entity, FL_COMPONENT_POST), &post) ? post.bloom : 0;
+    }
+    pose->sx = pose->sy = pose->sz = 1; pose->px = pose->py = pose->pz = 0;
+    if (bloom) *bloom = strength;
+    return true;
+}
+
 bool fl_scene_view_camera(const Fl_Scene *scene, const Fl_SceneState *state, Fl_Pose *pose, Fl_Camera *camera, double *bloom)
 {
     if (!scene || !pose || !camera) return false;

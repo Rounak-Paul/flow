@@ -26,9 +26,9 @@ void fl_scene_preview_zoom(Fl_ScenePreview *preview, Ca_Viewport *viewport, doub
 void fl_scene_preview_look(Fl_ScenePreview *preview, Ca_Viewport *viewport, double dx, double dy);
 /* Fly the editor camera. forward, right and up are axes in camera space, typically -1, 0 or 1. */
 void fl_scene_preview_fly(Fl_ScenePreview *preview, Ca_Viewport *viewport, double forward, double right, double up);
-/* While shot is set, the viewport shows the scene's camera instead of the editor camera. */
-void fl_scene_preview_set_shot(Fl_ScenePreview *preview, bool shot);
-/* True while playback is showing the scene camera. */
+/* Look through a hierarchy camera. Zero selects the editor camera. */
+void fl_scene_preview_set_camera(Fl_ScenePreview *preview, Fl_Id camera);
+/* True while the viewport is looking through a hierarchy camera. */
 bool fl_scene_preview_shot(const Fl_ScenePreview *preview);
 /* Put the editor camera back in front of the output gate. */
 void fl_scene_preview_reset_view(Fl_ScenePreview *preview);

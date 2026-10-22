@@ -383,6 +383,7 @@
 #define FL_CLASS_SCENE_TOOLBAR "fl-toolbar fl-scene-toolbar"
 #define FL_CLASS_TOOLBAR_SPACER "fl-toolbar-spacer"
 #define FL_CLASS_ASPECT_SELECT "fl-aspect-select"
+#define FL_CLASS_CAMERA_SELECT "fl-camera-select"
 #define FL_CLASS_VIEW_GUTTER "fl-view-gutter"
 #define FL_CLASS_VIEW_RIM "fl-view-rim"
 #define FL_CLASS_VIEWPORT "fl-viewport"
@@ -420,6 +421,7 @@
 #define FL_STYLE_CSS_SCENE_PANES \
     ".fl-toolbar-spacer { flex-grow: 1; min-width: 0px; }" \
     ".fl-aspect-select { width: 96px; min-width: 60px; height: 24px; flex-shrink: 1; border-radius: " FL_RADIUS_PILL "; background: " FL_COLOR_FIELD "; color: " FL_COLOR_TEXT_BRIGHT "; }" \
+    ".fl-camera-select { width: 180px; min-width: 120px; height: 24px; flex-shrink: 1; border-radius: " FL_RADIUS_PILL "; background: " FL_COLOR_FIELD "; color: " FL_COLOR_TEXT_BRIGHT "; }" \
     ".fl-hierarchy-pane { width: 100%; height: 100%; padding: 0px " FL_SPACE_SM " " FL_SPACE_SM "; gap: 0px; }" \
     ".fl-hierarchy { width: 100%; flex-grow: 1; min-height: 0px; overflow-y: auto; gap: 0px; background: transparent; }" \
     ".fl-view { width: 100%; height: 100%; padding: 0px " FL_SPACE_SM " " FL_SPACE_SM "; gap: 0px; overflow: hidden; }" \

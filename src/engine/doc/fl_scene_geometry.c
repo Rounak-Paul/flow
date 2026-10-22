@@ -78,19 +78,9 @@ bool fl_scene_geometry_update(Fl_SceneGeometry *g, const Fl_Scene *s, const Fl_S
             Fl_Mat4 local = v->mesh ? fl_mesh_model(&v->pose, &v->bounds) : fl_pose_model(&v->pose);
             v->model = fl_mat4_mul(parent ? next.entities[parent-s->entities].model : fl_mat4_identity(), local);
             v->world = fl_affine_from_mat4(v->model);
-            const Fl_WidgetDef *def = fl_widget_for_entity(e); v->kind = def ? def->kind : FL_WIDGET_GROUP;
-            /* 2D widgets lie on the canvas. Their picture is clipped to the output rectangle. */
-            if (!v->mesh && v->kind != FL_WIDGET_GROUP) {
-                Fl_Affine flat = v->world;
-                v->model = fl_mat4_identity();
-                v->model.m[0] = flat.v[0]; v->model.m[1] = flat.v[3];
-                v->model.m[4] = flat.v[1]; v->model.m[5] = flat.v[4];
-                v->model.m[10] = 1;
-                v->model.m[12] = flat.v[2]; v->model.m[13] = flat.v[5];
-                v->world = flat;
-            }
             v->invertible = fl_affine_inverse(v->world, &v->inverse) && fl_mat4_inverse(v->model, &v->inverse_model);
             v->visible = e->visible && (!parent || next.entities[parent-s->entities].visible);
+            const Fl_WidgetDef *def = fl_widget_for_entity(e); v->kind = def ? def->kind : FL_WIDGET_GROUP;
             resolved[index] = 1;
         }
     }
