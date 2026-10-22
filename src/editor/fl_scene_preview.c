@@ -368,7 +368,7 @@ Fl_EditGesture fl_scene_preview_handle(Fl_ScenePreview *p, Ca_Viewport *viewport
     letterbox_rect(vx, vy, w, h, p->shot ? &gate : NULL, &box_x, &box_y, &box_w, &box_h);
     (void)box_x; (void)box_y; (void)box_w;
     const Fl_Entity *e = fl_scene_entity(scene, fl_scene_edit_focus(p->edit));
-    if (!e || fl_scene_edit_count(p->edit) != 1) return FL_GESTURE_MOVE;
+    if (!e || fl_scene_edit_count(p->edit) != 1 || fl_entity_component(e, FL_COMPONENT_CAMERA)) return FL_GESTURE_MOVE;
     const Fl_ResolvedEntity *entity = &g->entities[e - scene->entities];
     if (!entity->visible || !entity->invertible) return FL_GESTURE_MOVE;
     for (unsigned i = 0; i < 5; ++i) {
@@ -384,6 +384,95 @@ Fl_EditGesture fl_scene_preview_handle(Fl_ScenePreview *p, Ca_Viewport *viewport
             return (Fl_EditGesture)(FL_GESTURE_NW + i);
     }
     return FL_GESTURE_MOVE;
+}
+
+static Fl_Vec3 vec_cross(Fl_Vec3 a, Fl_Vec3 b)
+{
+    return (Fl_Vec3){a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
+}
+
+static bool vec_unit(Fl_Vec3 v, Fl_Vec3 *out)
+{
+    double n = hypot(hypot(v.x, v.y), v.z);
+    if (!(n > 1e-8)) return false;
+    *out = (Fl_Vec3){v.x / n, v.y / n, v.z / n};
+    return true;
+}
+
+/* Screen-facing ribbon from a to b, about 1.5 logical pixels wide at the nearer end. */
+static void draw_frustum_edge(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, const Fl_SceneFrame *gate, const PreviewView *view,
+                              float viewport_h, VkDescriptorSet white, Fl_Vec3 a, Fl_Vec3 b)
+{
+    Fl_Vec3 dir = {b.x - a.x, b.y - a.y, b.z - a.z};
+    if (!(hypot(hypot(dir.x, dir.y), dir.z) > 1e-6)) return;
+    double ppw = fmax(pixels_per_world(view, viewport_h, a), pixels_per_world(view, viewport_h, b));
+    if (!(ppw > 0)) return;
+    Fl_Vec3 side = vec_cross(dir, view->look);
+    if (!vec_unit(side, &side) && !vec_unit(vec_cross(dir, view->up), &side)) return;
+    double thick = 1.5 / ppw;
+    side.x *= thick; side.y *= thick; side.z *= thick;
+    Fl_Vec3 normal = vec_cross(dir, side);
+    Fl_Mat4 m = fl_mat4_identity();
+    m.m[0] = dir.x; m.m[1] = dir.y; m.m[2] = dir.z;
+    m.m[4] = side.x; m.m[5] = side.y; m.m[6] = side.z;
+    m.m[8] = normal.x; m.m[9] = normal.y; m.m[10] = normal.z;
+    m.m[12] = a.x - side.x * 0.5; m.m[13] = a.y - side.y * 0.5; m.m[14] = a.z - side.z * 0.5;
+    Fl_Appearance stroke = {.stroke = {120, 196, 255, 230}, .stroke_width = 1};
+    fl_scene_renderer_model(renderer, cmd, gate, m, 1, 1, FL_WIDGET_LINE, stroke, white, NULL);
+}
+
+static Fl_Vec3 frustum_corner(Fl_Vec3 origin, Fl_Vec3 right, Fl_Vec3 up, Fl_Vec3 look, double distance, double x, double y)
+{
+    return (Fl_Vec3){origin.x + look.x * distance + right.x * x + up.x * y,
+                     origin.y + look.y * distance + right.y * x + up.y * y,
+                     origin.z + look.z * distance + right.z * x + up.z * y};
+}
+
+/* View pyramid of one selected camera. The far face is the picture, placed along the camera look. */
+static void draw_camera_frustum(Fl_SceneRenderer *renderer, VkCommandBuffer cmd, const Fl_Scene *scene, const Fl_SceneFrame *gate,
+                                const PreviewView *view, float viewport_h, VkDescriptorSet white, Fl_Mat4 model, const Fl_Camera *camera)
+{
+    Fl_Vec3 right, up, look, origin;
+    if (!vec_unit((Fl_Vec3){model.m[0], model.m[1], model.m[2]}, &right)) return;
+    if (!vec_unit((Fl_Vec3){model.m[4], model.m[5], model.m[6]}, &up)) return;
+    if (!vec_unit((Fl_Vec3){-model.m[8], -model.m[9], -model.m[10]}, &look)) return;
+    origin = (Fl_Vec3){model.m[12], model.m[13], model.m[14]};
+    Fl_SceneFrame picture = camera_picture(scene, camera);
+    if (!(picture.width > 0) || !(picture.height > 0)) return;
+    double aspect = picture.width / picture.height;
+    double near_z = camera->near_z > 1e-4 ? camera->near_z : 0.1;
+    double far_z = camera->far_z;
+    if (!(far_z > near_z) || !isfinite(far_z)) return;
+    double near_w, near_h, far_w, far_h, far_draw = far_z;
+    if (camera->perspective) {
+        if (!(camera->fov_y > 0.01) || camera->fov_y >= 3.1) return;
+        double t = tan(camera->fov_y * 0.5);
+        double fit = picture.height * 0.5 / t;
+        if (fit > near_z && fit < far_z) far_draw = fit;
+        near_h = near_z * t; far_h = far_draw * t;
+        near_w = near_h * aspect; far_w = far_h * aspect;
+    } else {
+        double height = camera->ortho_height > 0 ? camera->ortho_height : picture.height;
+        if (!(height > 0)) return;
+        if (picture.height > near_z && picture.height < far_z) far_draw = picture.height;
+        near_h = far_h = height * 0.5;
+        near_w = far_w = near_h * aspect;
+    }
+    if (!isfinite(near_w) || !isfinite(far_w)) return;
+    Fl_Vec3 near_mid = frustum_corner(origin, right, up, look, near_z, 0, 0);
+    double near_px = pixels_per_world(view, viewport_h, near_mid) * near_h * 2;
+    bool draw_near = near_px >= 8;
+    const double sx[4] = {-1, 1, 1, -1}, sy[4] = {-1, -1, 1, 1};
+    Fl_Vec3 near_corner[4], far_corner[4];
+    for (int i = 0; i < 4; ++i) {
+        near_corner[i] = frustum_corner(origin, right, up, look, near_z, sx[i] * near_w, sy[i] * near_h);
+        far_corner[i] = frustum_corner(origin, right, up, look, far_draw, sx[i] * far_w, sy[i] * far_h);
+    }
+    for (int i = 0; i < 4; ++i) {
+        if (draw_near) draw_frustum_edge(renderer, cmd, gate, view, viewport_h, white, near_corner[i], near_corner[(i + 1) % 4]);
+        draw_frustum_edge(renderer, cmd, gate, view, viewport_h, white, far_corner[i], far_corner[(i + 1) % 4]);
+        draw_frustum_edge(renderer, cmd, gate, view, viewport_h, white, draw_near ? near_corner[i] : origin, far_corner[i]);
+    }
 }
 
 static Fl_Mat4 billboard(Fl_Vec3 right, Fl_Vec3 up, Fl_Vec3 point, double size)
@@ -444,20 +533,11 @@ void fl_scene_preview_render(Ca_Viewport *viewport, void *data)
         Fl_RenderTarget surface = {.view = ca_viewport_image_view(viewport), .format = ca_viewport_format(viewport), .width = w, .height = h, .slot = ca_viewport_frame_index(viewport), .image = ca_viewport_image(viewport), .depth = depth};
         fl_scene_renderer_entities(p->renderer, cmd, &surface, &gate, scene, state, g);
         VkDescriptorSet white = fl_scene_renderer_white(p->renderer);
-        if (!p->shot) {
-            Fl_Vec3 mid = {gate.x + gate.width * 0.5, gate.y + gate.height * 0.5, 0};
-            double ppw = pixels_per_world(&view, logical_h, mid);
-            Fl_Appearance frame_edge = {.stroke = FL_STYLE_CANVAS_FRAME_RGBA, .stroke_width = ppw > 0 ? 1.5 / ppw : 0};
-            Fl_Affine origin = fl_affine_identity(); origin.v[2] = gate.x; origin.v[5] = gate.y;
-            fl_scene_renderer_primitive(p->renderer, cmd, &gate, origin, gate.width, gate.height, FL_WIDGET_RECTANGLE, frame_edge, white);
-            Fl_Appearance marker = {.fill = {120, 196, 255, 230}, .font_size = 48};
-            for (size_t i = 0; i < g->count; ++i) {
-                if (!fl_entity_component(&scene->entities[i], FL_COMPONENT_CAMERA) || !g->entities[i].visible) continue;
-                Fl_Vec3 at = {g->entities[i].model.m[12], g->entities[i].model.m[13], g->entities[i].model.m[14]};
-                double mark = pixels_per_world(&view, logical_h, at);
-                if (!(mark > 0)) continue;
-                fl_scene_renderer_model(p->renderer, cmd, &gate, billboard(view.right, view.up, at, 18 / mark), 1, 1, FL_WIDGET_RECTANGLE, marker, white, NULL);
-            }
+        if (!p->shot) for (size_t i = 0; i < g->count; ++i) {
+            if (!fl_scene_edit_contains(p->edit, scene->entities[i].id)) continue;
+            Fl_Pose pose = fl_pose_identity(); Fl_Camera camera;
+            if (!fl_scene_camera_entity(scene, state, scene->entities[i].id, &pose, &camera, NULL)) continue;
+            draw_camera_frustum(p->renderer, cmd, scene, &gate, &view, logical_h, white, g->entities[i].model, &camera);
         }
         if (view.perspective) {
             float box_x, box_y, box_w, box_h;
@@ -466,7 +546,7 @@ void fl_scene_preview_render(Ca_Viewport *viewport, void *data)
             Fl_Appearance outline = {.stroke = FL_STYLE_GIZMO_RGBA, .font_size = 48};
             for (size_t i = 0; i < g->count; ++i) {
                 const Fl_ResolvedEntity *v = &g->entities[i];
-                if (!v->visible || !fl_scene_edit_contains(p->edit, scene->entities[i].id)) continue;
+                if (!v->visible || !fl_scene_edit_contains(p->edit, scene->entities[i].id) || fl_entity_component(&scene->entities[i], FL_COMPONENT_CAMERA)) continue;
                 double gw, gh;
                 Fl_Mat4 face = widget_face(v, &gw, &gh);
                 double axis = hypot(hypot(face.m[0], face.m[1]), face.m[2]);
@@ -478,7 +558,7 @@ void fl_scene_preview_render(Ca_Viewport *viewport, void *data)
             Fl_Appearance handle = {.fill = FL_STYLE_GIZMO_RGBA, .font_size = 48};
             for (unsigned i = 0; i < 5; ++i) {
                 const Fl_Entity *e = fl_scene_entity(scene, fl_scene_edit_focus(p->edit));
-                if (!e || fl_scene_edit_count(p->edit) != 1) break;
+                if (!e || fl_scene_edit_count(p->edit) != 1 || fl_entity_component(e, FL_COMPONENT_CAMERA)) break;
                 const Fl_ResolvedEntity *entity = &g->entities[e - scene->entities];
                 Fl_Vec3 probe;
                 if (!handle_world(entity, i < 4 ? i : 4, 1, &probe)) break;
