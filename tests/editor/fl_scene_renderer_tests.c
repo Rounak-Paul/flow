@@ -16,6 +16,7 @@
 #include "media/fl_audio.h"
 #include "project/fl_resource_snapshot.h"
 #include "components/fl_style.h"
+#include "components/fl_effect.h"
 #include "schema/fl_widgets.h"
 #include "components/fl_spatial.h"
 #include "text/fl_fonts.h"
@@ -64,6 +65,21 @@ static void write_camera(Fl_Project *p, Fl_Id scene, Fl_Id id, const Fl_Componen
     fl_camera_encode(camera, bytes);
     CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_COMPONENT_SET, .scene = scene, .entity = id,
         .component = {.type = FL_COMPONENT_CAMERA, .version = 1, .size = FL_CAMERA_BYTES, .data = bytes, .id = component->id}}, NULL));
+}
+
+/* Replace an effect's built-in kind with custom GLSL. source is copied into the component. */
+static void set_custom_effect(Fl_Project *p, Fl_Id scene, Fl_Id id, const char *source)
+{
+    const Fl_Entity *e = fl_scene_entity(fl_project_scene(p, scene), id);
+    const Fl_Component *existing = e ? fl_entity_component(e, FL_COMPONENT_EFFECT) : NULL;
+    Fl_Effect effect = fl_effect_default();
+    effect.kind = FL_EFFECT_CUSTOM; effect.source = source; effect.source_size = source ? strlen(source) : 0;
+    unsigned char bytes[8192];
+    size_t size = fl_effect_encode(&effect, bytes, sizeof(bytes));
+    CHECK(existing && size);
+    if (!existing || !size) return;
+    Fl_Component component = {.type = FL_COMPONENT_EFFECT, .version = 1, .size = size, .data = bytes, .id = existing->id};
+    CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_COMPONENT_SET, .scene = scene, .entity = id, .component = component}, NULL));
 }
 
 /* Orthographic camera that frames the canvas. Scene output draws only through a camera entity. */
@@ -340,6 +356,78 @@ int main(int argc, char **argv)
     CHECK(near(at(&frame, 204, 154), 25, 31, 47, 3) && near(at(&frame, 212, 160), 255, 0, 0, 1));
     CHECK(near(at(&frame, 650, 200), 255, 255, 255, 12) && at(&frame, 596, 200).r > 70 && at(&frame, 596, 200).r < 200 && near(at(&frame, 540, 200), 25, 31, 47, 6));
     fl_frame_free(&frame);
+
+    /* A custom effect that reads sceneColor gets its children as a picture, not a sticker on top.
+       One that does not keeps drawing those children afterwards. */
+    {
+        Fl_Id world = 0, lens = 0, plate = 0, flat = 0, sticker = 0;
+        CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_SCENE_ADD, .name = "Shader world"}, &world));
+        lens = make(p, world, FL_WIDGET_EFFECT, 0, 0, 1920, 1080, white);
+        plate = make(p, world, FL_WIDGET_RECTANGLE, 100, 100, 200, 200, red);
+        CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ENTITY_PARENT, .scene = world, .entity = plate, .parent = lens}, NULL));
+        set_custom_effect(p, world, lens,
+            "vec4 effect(vec2 uv,float time,vec4 a,vec4 b){vec4 s=sceneColor(pixelUv());"
+            "if(s.a>0.5)return vec4(0.,1.,0.,1.);return vec4(0.,0.,1.,1.);}");
+        flat = make(p, world, FL_WIDGET_EFFECT, 0, 400, 500, 300, white);
+        sticker = make(p, world, FL_WIDGET_RECTANGLE, 40, 60, 120, 120, green);
+        CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_ENTITY_PARENT, .scene = world, .entity = sticker, .parent = flat}, NULL));
+        set_custom_effect(p, world, flat, "vec4 effect(vec2 uv,float time,vec4 a,vec4 b){return vec4(1.,0.,0.,1.);}");
+        frame_camera(p, world);
+        scene = fl_project_scene(p, world);
+        CHECK(fl_scene_renderer_render(renderer, p, scene, 0, 960, &frame));
+        if (frame.rgba) {
+            CHECK(near(at(&frame, 100, 100), 0, 255, 0, 2));
+            CHECK(near(at(&frame, 20, 20), 0, 0, 255, 2));
+            CHECK(near(at(&frame, 40, 250), 0, 255, 0, 2));
+            CHECK(near(at(&frame, 10, 220), 255, 0, 0, 2));
+        }
+        fl_frame_free(&frame);
+    }
+
+    /* The scene camera is a value the shader can ray through the same pixel, and sceneDepth lets a mesh
+       stay in front of a closer shader quad. */
+    {
+        Fl_Id space = 0, lens = 0, camera = 0;
+        CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_SCENE_ADD, .name = "Shader camera"}, &space));
+        lens = make(p, space, FL_WIDGET_EFFECT, 0, 0, 1920, 1080, white);
+        set_custom_effect(p, space, lens, "vec4 effect(vec2 uv,float time,vec4 a,vec4 b){vec3 d=cameraRay(pixelUv());return vec4(d*.5+.5,1.);}");
+        CHECK(fl_spatial_create(p, space, 0, "camera", 0, 0, 0, &camera));
+        scene = fl_project_scene(p, space);
+        CHECK(fl_scene_renderer_render(renderer, p, scene, 0, 960, &frame));
+        if (frame.rgba) {
+            Pixel ray = at(&frame, 480, 270);
+            CHECK(ray.r > 160 && ray.r < 210 && ray.g > 160 && ray.g < 210 && ray.b < 40);
+        }
+        fl_frame_free(&frame);
+
+        Fl_Id depth_scene = 0, cover = 0, cube = 0;
+        CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_SCENE_ADD, .name = "Shader depth"}, &depth_scene));
+        cover = make(p, depth_scene, FL_WIDGET_EFFECT, 0, 0, 1920, 1080, white);
+        set_custom_effect(p, depth_scene, cover, "vec4 effect(vec2 uv,float time,vec4 a,vec4 b){sceneDepth(vec3(960.,540.,-2000.));return vec4(0.,1.,0.,1.);}");
+        CHECK(fl_spatial_create(p, depth_scene, 0, "cube", 960, 540, -400, &cube));
+        CHECK(fl_spatial_create(p, depth_scene, 0, "camera", 0, 0, 0, &camera));
+        {
+            const Fl_Entity *mesh = fl_scene_entity(fl_project_scene(p, depth_scene), cube);
+            const Fl_Component *material_component = fl_entity_component(mesh, FL_COMPONENT_MATERIAL);
+            Fl_Material material = fl_material_default();
+            memcpy(material.base, red, 4); material.emissive = 2;
+            unsigned char material_bytes[FL_MATERIAL_BYTES];
+            fl_material_encode(&material, material_bytes);
+            CHECK(material_component);
+            if (material_component) {
+                Fl_Component component = {.type = FL_COMPONENT_MATERIAL, .version = 1, .size = FL_MATERIAL_BYTES, .data = material_bytes, .id = material_component->id};
+                CHECK(fl_project_apply(p, &(Fl_Op){.kind = FL_OP_COMPONENT_SET, .scene = depth_scene, .entity = cube, .component = component}, NULL));
+            }
+        }
+        scene = fl_project_scene(p, depth_scene);
+        CHECK(fl_scene_renderer_render(renderer, p, scene, 0, 960, &frame));
+        if (frame.rgba) {
+            Pixel hole = at(&frame, 480, 270), sky = at(&frame, 200, 270);
+            CHECK(hole.r > 150 && hole.g < 80);
+            CHECK(sky.g > 200 && sky.r < 40);
+        }
+        fl_frame_free(&frame);
+    }
 
     /* A camera's aspect frames the output; invalid requests fail without drawing. */
     picture_aspect(p, scene_id, 1, 1);

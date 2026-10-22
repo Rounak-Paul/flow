@@ -8,7 +8,13 @@
 #define FL_EFFECT_CUSTOM 6u
 
 /* A shader component. Kinds 1..5 are built in. Kind 6 is custom GLSL: a function
-   `vec4 effect(vec2 uv, float time, vec4 a, vec4 b)`. Uniforms are keyframeable. */
+   `vec4 effect(vec2 uv, float time, vec4 a, vec4 b)`. Uniforms are keyframeable.
+   Custom source may call pixelUv(), sceneColor(fragUv), cameraRay(fragUv),
+   cameraOrigin(fragUv) and sceneDepth(world). sceneColor is the straight-alpha
+   picture of entities parented under the effect (white when it has none); those
+   children are not drawn again. cameraRay and cameraOrigin follow the scene camera
+   through that pixel. sceneDepth writes the same camera's depth so the shader
+   interleaves with meshes. */
 typedef struct Fl_Effect {
     uint32_t kind;
     double u[8];
