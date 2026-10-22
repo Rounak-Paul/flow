@@ -51,7 +51,7 @@ struct Fl_AssetPanel {
     char message[256];
 };
 
-/* Rebuild the panel on the next frame. */
+/* Rebuild the panel immediately. The flush frees p->rows, so callers must copy row data first. */
 static void invalidate(Fl_AssetPanel *p)
 {
     if (p->dock) ca_dock_invalidate_panel(p->dock, PANEL_ID);
@@ -345,13 +345,16 @@ static void row_menu(int index, void *data)
 static void row_clicked(Ca_Button *button, void *data)
 {
     Fl_AssetRow *row = data;
+    Fl_AssetPanel *panel = row->panel;
+    Fl_Id asset = row->asset;
     float x, y;
-    row->panel->selected = row->asset;
-    invalidate(row->panel);
-    const Fl_Asset *record = fl_project_asset(fl_scene_edit_project(row->panel->edit), row->asset);
-    if (!ca_button_get_click_pos(button,&x,&y) && record) {
-        if (record->kind==FL_ASSET_PROTOTYPE) add_prototype(row->panel,row->asset,0,0,0);
-        else if (visual(record->kind)) add_to_scene(row->panel,row->asset);
+    bool keyboard = !ca_button_get_click_pos(button, &x, &y);
+    panel->selected = asset;
+    invalidate(panel);
+    const Fl_Asset *record = fl_project_asset(fl_scene_edit_project(panel->edit), asset);
+    if (keyboard && record) {
+        if (record->kind==FL_ASSET_PROTOTYPE) add_prototype(panel, asset, 0, 0, 0);
+        else if (visual(record->kind)) add_to_scene(panel, asset);
     }
 }
 
