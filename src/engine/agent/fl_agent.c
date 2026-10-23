@@ -30,7 +30,7 @@ const char *fl_agent_instructions(void)
            "Lua scripting API. Build with apply_ops (atomic, undoable batches), then verify with review_scene. "
            "render_frame returns one small contact sheet and is for a procedural background, not every edit. "
            "evaluate_scene sparse:true reads numbers. Times are in seconds, rotations in degrees. "
-           "The manuscript is the spoken script: read it with get_manuscript and edit it with phase.add/update/remove/move and voice.set.";
+           "The manuscript is the spoken script: read it with get_manuscript and edit it with phase.add/update/remove/move and voice.set. get_manuscript includes measured word/sentence cues. Bind key/event/clock anchors with {cue, edge, offset}; cue.set explicitly repairs timing.";
 }
 
 Fl_Agent *fl_agent_create(const Fl_AgentHost *host)
@@ -684,7 +684,7 @@ static const ToolDef TOOLS[] = {
      true, tool_evaluate_scene},
     {"apply_ops", "Apply a batch of document operations atomically (all succeed or none do) as one undoable changeset. "
      "Operations: scene.add/remove/rename/move/set, entity.create/set/remove/reparent/reorder, key.set/remove, track.remove, beat.add/update/remove/move/split, "
-     "clip.add/update/remove, phase.add/update/remove/move, voice.set, prototype.capture/instantiate/overrides/detach, scope.edit, asset.source/rename/remove, script.create/update/remove/attach/detach. Name created objects with \"as\":\"$name\" and reuse \"$name\" as an id later in the batch. "
+     "clip.add/update/remove, phase.add/update/remove/move, voice.set, cue.set, prototype.capture/instantiate/overrides/detach, scope.edit, asset.source/rename/remove, script.create/update/remove/attach/detach. Name created objects with \"as\":\"$name\" and reuse \"$name\" as an id later in the batch. "
      "Pass expect:{\"<scene id>\": revision} to refuse the batch if a scene changed since you read it. Full field lists are in get_reference.",
      "{\"type\":\"object\",\"properties\":{\"ops\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"object\",\"properties\":{\"op\":{\"type\":\"string\"},\"as\":{\"type\":\"string\"}},\"required\":[\"op\"]}},"
      "\"label\":{\"type\":\"string\",\"description\":\"Short name shown for undo\"},\"expect\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"integer\"}},\"dry_run\":{\"type\":\"boolean\"}},\"required\":[\"ops\"],\"additionalProperties\":false}",

@@ -1,6 +1,7 @@
 #include "doc/fl_json.h"
 #include "fl_agent_internal.h"
 #include "project/fl_manuscript.h"
+#include "project/fl_speech_cues.h"
 #include "doc/fl_document.h"
 #include "components/fl_script.h"
 #include "components/fl_style.h"
@@ -160,14 +161,22 @@ bool agent_parse_anchor(const cJSON *v, const Fl_AgentRefs *refs, Fl_TimeAnchor 
     if (cJSON_IsNumber(v)) {
         if (!agent_seconds_to_ticks(v->valuedouble, &anchor.offset)) return fl_fail(f, "invalid_argument", "%s is out of range", ctx);
     } else if (cJSON_IsObject(v)) {
-        static const char *const keys[] = {"time", "beat", "edge", "offset", "position", NULL};
+        static const char *const keys[] = {"time", "beat", "cue", "edge", "offset", "position", NULL};
         if (!agent_only_keys(v, f, ctx, keys)) return false;
         bool has;
         if (cJSON_GetObjectItemCaseSensitive(v, "time")) {
-            if (cJSON_GetObjectItemCaseSensitive(v,"beat") || cJSON_GetObjectItemCaseSensitive(v,"edge") ||
+            if (cJSON_GetObjectItemCaseSensitive(v,"cue") || cJSON_GetObjectItemCaseSensitive(v,"beat") || cJSON_GetObjectItemCaseSensitive(v,"edge") ||
                 cJSON_GetObjectItemCaseSensitive(v,"offset") || cJSON_GetObjectItemCaseSensitive(v,"position"))
                 return fl_fail(f,"invalid_argument","%s: absolute time cannot combine with beat fields",ctx);
             if (!agent_get_seconds(v, "time", true, &anchor.offset, &has, f, ctx)) return false;
+        } else if (cJSON_GetObjectItemCaseSensitive(v,"cue")) {
+            const char *edge = "start"; anchor.kind = FL_ANCHOR_SPEECH;
+            if (cJSON_GetObjectItemCaseSensitive(v,"beat") || cJSON_GetObjectItemCaseSensitive(v,"position") ||
+                !agent_get_id(v,"cue",refs,true,&anchor.cue,f,ctx) || !agent_get_string(v,"edge",false,&edge,f,ctx) ||
+                !agent_get_seconds(v,"offset",false,&anchor.offset,&has,f,ctx)) return fl_fail(f,"invalid_argument","%s: invalid speech cue anchor",ctx);
+            if (!edge) edge = "start";
+            if (strcmp(edge,"start") && strcmp(edge,"end")) return fl_fail(f,"invalid_argument","%s: cue edge must be start or end",ctx);
+            anchor.end = !strcmp(edge,"end");
         } else {
             const char *edge = "start";
             anchor.kind = FL_ANCHOR_BEAT;
@@ -315,7 +324,7 @@ cJSON *agent_anchor_json(const Fl_Scene *s, const Fl_TimeAnchor *a)
     if (fl_anchor_sample(s, a, &tick)) cJSON_AddNumberToObject(o, "time", agent_ticks_to_seconds(tick));
     else cJSON_AddStringToObject(o, "diagnostic", "Unbound time anchor");
     if (a->kind != FL_ANCHOR_ABSOLUTE) {
-        cJSON_AddItemToObject(o, "beat", agent_id_json(a->beat));
+        cJSON_AddItemToObject(o, a->kind == FL_ANCHOR_SPEECH ? "cue" : "beat", agent_id_json(a->kind == FL_ANCHOR_SPEECH ? a->cue : a->beat));
         if (a->kind == FL_ANCHOR_BEAT_POSITION) cJSON_AddNumberToObject(o, "position", a->position);
         else cJSON_AddStringToObject(o, "edge", a->end ? "end" : "start");
         cJSON_AddNumberToObject(o, "offset", agent_ticks_to_seconds(a->offset));
@@ -451,6 +460,19 @@ cJSON *agent_manuscript_json(const Fl_Scene *s)
         cJSON_AddItemToObject(item, "id", agent_id_json(phase->id));
         cJSON_AddStringToObject(item, "title", phase->title);
         cJSON_AddStringToObject(item, "text", phase->text);
+        cJSON_AddItemToObject(item,"alignment_asset",agent_id_json(phase->cue_asset));
+        cJSON *cues = cJSON_AddArrayToObject(item,"cues");
+        for (size_t j = 0; cues && j < phase->cue_count; ++j) {
+            const Fl_SpeechCue *cue = &phase->cues[j]; cJSON *record = cJSON_CreateObject(); Fl_Tick tick;
+            cJSON_AddItemToObject(record,"id",agent_id_json(cue->id)); cJSON_AddStringToObject(record,"text",cue->text);
+            cJSON_AddStringToObject(record,"kind",cue->kind == FL_CUE_SENTENCE ? "sentence" : "word");
+            cJSON_AddNumberToObject(record,"start",agent_ticks_to_seconds(cue->start)); cJSON_AddNumberToObject(record,"end",agent_ticks_to_seconds(cue->end));
+            bool resolved = fl_phase_speech_cue_sample(s,phase,cue,false,&tick);
+            cJSON_AddBoolToObject(record,"resolved",resolved); cJSON_AddBoolToObject(record,"retired",cue->retired);
+            if (resolved) cJSON_AddNumberToObject(record,"time",agent_ticks_to_seconds(tick));
+            else cJSON_AddStringToObject(record,"diagnostic",cue->retired ? "Removed or ambiguous cue; rebind explicitly" : "Speech timing unresolved");
+            cJSON_AddItemToArray(cues,record);
+        }
         cJSON_AddItemToObject(item, "beat", agent_id_json(phase->beat));
         cJSON_AddItemToObject(item, "clip", agent_id_json(phase->clip));
         cJSON_AddNumberToObject(item, "words", (double)count);

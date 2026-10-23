@@ -288,6 +288,9 @@ Fl_Composition *fl_composition_create(const Fl_Scene *source, const atomic_bool 
         c->scene.identity_index=NULL; c->scene.identity_capacity=0;
         c->scene.name=c->scopes[0].prototype.scope.name;
         c->scene.beats=c->scopes[0].prototype.scope.beats; c->scene.clips=c->scopes[0].prototype.scope.clips;
+        c->scene.phases=c->scopes[0].prototype.scope.phases;
+        c->scene.voice=c->scopes[0].prototype.scope.voice; c->scene.language=c->scopes[0].prototype.scope.language;
+        c->scene.voice_transcript=c->scopes[0].prototype.scope.voice_transcript;
         ok=expand(c,0,(Fl_Origin){0},0,NULL,0);
         if (ok) ok=component_identities_valid(c);
     }

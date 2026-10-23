@@ -2,6 +2,7 @@
 #include "fl_file_browser.h"
 #include "project/fl_asset_import.h"
 #include "project/fl_manuscript.h"
+#include "project/fl_speech_cues.h"
 #include "media/fl_audio_player.h"
 #include "media/fl_voice.h"
 #include "core/fl_clock.h"
@@ -28,6 +29,9 @@ typedef struct Fl_ManuscriptRow {
     Fl_Id phase;
 } Fl_ManuscriptRow;
 
+/* Stable cue callback context for one visible page. */
+typedef struct Fl_ManuscriptCueRow {struct Fl_ManuscriptPanel *panel; Fl_Id cue;} Fl_ManuscriptCueRow;
+
 struct Fl_ManuscriptPanel {
     Fl_SceneEdit *edit;
     Fl_Speech *speech;
@@ -50,6 +54,11 @@ struct Fl_ManuscriptPanel {
     Fl_Id *asset_ids;
     size_t asset_count;
     Fl_Id generated_scene, generated_phase, browser_scene;
+    Fl_Id expanded_phase, selected_cue;
+    size_t cue_page;
+    int cue_kind;
+    Fl_ManuscriptCueRow cue_rows[40];
+    char cue_start[48], cue_end[48];
     uint64_t generated_revision, started, playing;
     bool was_running, applying, building;
     char message[256];
@@ -306,6 +315,117 @@ static void new_phase(Ca_Button *button, void *data)
     invalidate(p);
 }
 
+/* Show a saved phase's measured word/sentence cues. */
+static void toggle_cues(Ca_Button *button, void *data)
+{
+    (void)button; Fl_ManuscriptRow row = *(Fl_ManuscriptRow *)data; Fl_ManuscriptPanel *p = row.panel;
+    p->expanded_phase = p->expanded_phase == row.phase ? 0 : row.phase;
+    p->cue_page = 0; p->selected_cue = 0; invalidate(p);
+}
+
+/* Switch the cue browser between words and sentences. */
+static void cue_kind_changed(Ca_TabBar *tabs, void *data)
+{
+    Fl_ManuscriptPanel *p = data; p->cue_kind = ca_tabs_active(tabs); p->cue_page = 0; p->selected_cue = 0; invalidate(p);
+}
+
+/* Browse the preceding fixed-size cue page. */
+static void previous_cues(Ca_Button *button, void *data)
+{
+    (void)button; Fl_ManuscriptPanel *p = data; if (p->cue_page) --p->cue_page; invalidate(p);
+}
+
+/* Browse the following fixed-size cue page. */
+static void next_cues(Ca_Button *button, void *data)
+{
+    (void)button; Fl_ManuscriptPanel *p = data; ++p->cue_page; invalidate(p);
+}
+
+/* Select a cue for timing inspection/repair and seek to its available scene time. */
+static void select_cue(Ca_Button *button, void *data)
+{
+    (void)button; Fl_ManuscriptCueRow row = *(Fl_ManuscriptCueRow *)data; Fl_ManuscriptPanel *p = row.panel;
+    const Fl_Scene *scene = active_scene(p); const Fl_SpeechCue *cue = fl_scene_speech_cue(scene,row.cue,NULL);
+    if (!cue) return;
+    p->selected_cue = cue->id;
+    snprintf(p->cue_start,sizeof(p->cue_start),"%.3f",(double)cue->start / FL_TICKS_PER_SECOND);
+    snprintf(p->cue_end,sizeof(p->cue_end),"%.3f",(double)cue->end / FL_TICKS_PER_SECOND);
+    Fl_Tick tick; if (fl_speech_cue_sample(scene,cue->id,false,&tick)) fl_scene_edit_set_time(p->edit,tick);
+    invalidate(p);
+}
+
+/* Retain a manual cue start draft without publishing incomplete numeric input. */
+static void cue_start_changed(Ca_TextInput *input, void *data)
+{
+    Fl_ManuscriptPanel *p = data; snprintf(p->cue_start,sizeof(p->cue_start),"%s",ca_input_text(input));
+}
+
+/* Retain a manual cue end draft without publishing incomplete numeric input. */
+static void cue_end_changed(Ca_TextInput *input, void *data)
+{
+    Fl_ManuscriptPanel *p = data; snprintf(p->cue_end,sizeof(p->cue_end),"%s",ca_input_text(input));
+}
+
+/* Explicitly correct one cue's offsets within the current aligned audio asset. */
+static void repair_cue(Ca_Button *button, void *data)
+{
+    (void)button; Fl_ManuscriptPanel *p = data; const Fl_Scene *scene = active_scene(p);
+    char *end_a, *end_b; double a = strtod(p->cue_start,&end_a), b = strtod(p->cue_end,&end_b); Fl_Tick start, end;
+    if (!scene || !p->selected_cue || end_a == p->cue_start || *end_a || end_b == p->cue_end || *end_b ||
+        !fl_time_from_seconds(a,&start) || !fl_time_from_seconds(b,&end)) {status(p,"Enter valid start and end times in seconds."); return;}
+    if (!fl_project_apply(fl_scene_edit_project(p->edit),&(Fl_Op){.kind = FL_OP_CUE_UPDATE, .scene = scene->id,
+        .cue = p->selected_cue, .cue_start = start, .cue_end = end},NULL)) status(p,"Timing must be inside the current audio. Removed cues must be rebound.");
+    else status(p,"Speech cue timing updated.");
+}
+
+/* Render a bounded, scrollable cue page with explicit unresolved diagnostics. */
+static void build_cues(Fl_ManuscriptPanel *p, const Fl_Scene *scene, const Fl_Phase *phase, bool running)
+{
+    const char *tabs[] = {"Words","Sentences"};
+    ca_tabs(&(Ca_TabBarDesc){.labels = tabs, .count = 2, .active = p->cue_kind, .on_change = cue_kind_changed, .change_data = p});
+    size_t count = 0;
+    for (size_t i = 0; i < phase->cue_count; ++i) if ((int)phase->cues[i].kind == p->cue_kind) ++count;
+    if (p->cue_page * 40 >= count) p->cue_page = count ? (count - 1) / 40 : 0;
+    ca_text(&(Ca_TextDesc){.text = "Select a cue to seek or correct its timing. Bind animation keys in the Timeline's Speech cue controls.", .wrap = true, .style = FL_CLASS_MUTED});
+    ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .inline_style = "width: 100%; max-height: 220px; min-height: 40px; flex-shrink: 0; gap: 4px; padding: 8px; overflow-y: auto;"});
+    size_t index = 0, visible = 0;
+    for (size_t i = 0; i < phase->cue_count && visible < 40; ++i) {
+        const Fl_SpeechCue *cue = &phase->cues[i]; if ((int)cue->kind != p->cue_kind) continue;
+        if (index++ < p->cue_page * 40) continue;
+        Fl_ManuscriptCueRow *row = &p->cue_rows[visible++]; *row = (Fl_ManuscriptCueRow){p,cue->id};
+        Fl_Tick tick; bool resolved = fl_phase_speech_cue_sample(scene,phase,cue,false,&tick);
+        ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .inline_style = "width: 100%; flex-shrink: 0; gap: 8px; align-items: center;"});
+        char time[96];
+        if (resolved) snprintf(time,sizeof(time),"%.2f–%.2fs",(double)cue->start / FL_TICKS_PER_SECOND,(double)cue->end / FL_TICKS_PER_SECOND);
+        else snprintf(time,sizeof(time),"%s",cue->retired ? "Removed / ambiguous" : "Needs timing review");
+        fl_button(&(Fl_ButtonDesc){.text = "Select", .on_click = select_cue, .click_data = row, .active = p->selected_cue == cue->id});
+        ca_text(&(Ca_TextDesc){.text = time, .style = resolved ? FL_CLASS_MUTED : FL_CLASS_WARNING});
+        ca_text(&(Ca_TextDesc){.text = cue->text, .wrap = true});
+        ca_div_end();
+    }
+    if (!count) ca_text(&(Ca_TextDesc){.text = "Generate narration to measure speech cues.", .style = FL_CLASS_MUTED});
+    ca_div_end();
+    ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .inline_style = "width: 100%; flex-shrink: 0; gap: 8px; flex-wrap: wrap; align-items: center;"});
+    fl_button(&(Fl_ButtonDesc){.text = "Previous", .on_click = previous_cues, .click_data = p, .disabled = !p->cue_page});
+    char page[64]; snprintf(page,sizeof(page),"%zu–%zu of %zu",count ? p->cue_page * 40 + 1 : 0,p->cue_page * 40 + visible,count);
+    ca_text(&(Ca_TextDesc){.text = page, .style = FL_CLASS_MUTED});
+    fl_button(&(Fl_ButtonDesc){.text = "Next", .on_click = next_cues, .click_data = p, .disabled = (p->cue_page + 1) * 40 >= count});
+    ca_div_end();
+    const Fl_Phase *owner = NULL; const Fl_SpeechCue *cue = fl_scene_speech_cue(scene,p->selected_cue,&owner);
+    if (cue && owner == phase && !cue->retired) {
+        ca_text(&(Ca_TextDesc){.text = "Timing in seconds into this phase's audio. Regeneration measures it again.", .wrap = true, .style = FL_CLASS_MUTED});
+        ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .inline_style = "width: 100%; flex-shrink: 0; gap: 8px; flex-wrap: wrap; align-items: center;"});
+        ca_text(&(Ca_TextDesc){.text = "Start"});
+        ca_input(&(Ca_InputDesc){.text = p->cue_start, .id = "manuscript-cue-start", .input_mode = CA_INPUT_FLOAT, .max_length = 47, .width = 80,
+            .style = FL_CLASS_PROPERTY_INPUT, .inline_style = "flex-grow: 0;", .on_change = cue_start_changed, .change_data = p, .disabled = running});
+        ca_text(&(Ca_TextDesc){.text = "End"});
+        ca_input(&(Ca_InputDesc){.text = p->cue_end, .id = "manuscript-cue-end", .input_mode = CA_INPUT_FLOAT, .max_length = 47, .width = 80,
+            .style = FL_CLASS_PROPERTY_INPUT, .inline_style = "flex-grow: 0;", .on_change = cue_end_changed, .change_data = p, .disabled = running});
+        fl_button(&(Fl_ButtonDesc){.text = "Set timing", .on_click = repair_cue, .click_data = p, .disabled = running});
+        ca_div_end();
+    }
+}
+
 /* Observe document/selection/playback changes without overwriting unaccepted writing. */
 static bool changed(const Fl_Event *event, void *data)
 {
@@ -389,7 +509,7 @@ void fl_manuscript_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
     const Fl_Scene *scene = active_scene(p);
     p->draft = scene ? scene_draft(p, scene) : NULL;
     Fl_ManuscriptDraft *d = p->draft; bool running = fl_speech_running(p->speech);
-    ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_SCRIPTS, .inline_style = "padding: 16px; gap: 12px;"});
+    ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .id = "manuscript-body", .style = FL_CLASS_SCRIPTS, .inline_style = "padding: 16px; gap: 12px;"});
     if (!d) {
         ca_text(&(Ca_TextDesc){.text = scene ? "Could not open manuscript." : "Open a scene to write narration.", .style = FL_CLASS_EMPTY});
         ca_div_end(); p->building = false; return;
@@ -454,7 +574,12 @@ void fl_manuscript_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
             fl_button(&(Fl_ButtonDesc){.text = CA_ICON_NF_FA_PLAY, .kind = FL_BUTTON_ICON, .tooltip = "Play phase narration",
                 .on_click = play_phase, .click_data = row, .disabled = !phase_asset(scene, phase)});
             fl_button(&(Fl_ButtonDesc){.text = "Edit", .on_click = edit_phase, .click_data = row, .disabled = running});
+            fl_button(&(Fl_ButtonDesc){.text = "Speech cues", .on_click = toggle_cues, .click_data = row, .active = p->expanded_phase == phase->id});
+            size_t unresolved = 0;
+            for (size_t j = 0; j < phase->cue_count; ++j) {Fl_Tick tick; if (!fl_phase_speech_cue_sample(scene,phase,&phase->cues[j],false,&tick)) ++unresolved;}
+            if (unresolved) {char warning[96]; snprintf(warning,sizeof(warning),"%zu cues need review",unresolved); ca_text(&(Ca_TextDesc){.text = warning, .style = FL_CLASS_WARNING});}
             ca_div_end();
+            if (p->expanded_phase == phase->id) build_cues(p,scene,phase,running);
         }
     }
     ca_div_end(); p->building = false;

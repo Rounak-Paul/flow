@@ -14,6 +14,8 @@ bool fl_time_anchor_valid(const Fl_TimeAnchor *anchor)
 {
     if (!anchor) return false;
     if (!isfinite(anchor->position)) return false;
+    if (anchor->kind == FL_ANCHOR_SPEECH) return anchor->cue && !anchor->beat && anchor->position == 0;
+    if (anchor->cue) return false;
     if (anchor->kind == FL_ANCHOR_ABSOLUTE) return !anchor->beat && !anchor->end && anchor->position == 0;
     if (anchor->kind == FL_ANCHOR_BEAT) return anchor->beat && anchor->position == 0;
     return anchor->kind == FL_ANCHOR_BEAT_POSITION && anchor->beat && !anchor->end &&
@@ -25,6 +27,7 @@ void fl_time_anchor_write(const Fl_TimeAnchor *anchor, Fl_Binary *stream)
     fl_binary_u64(stream, anchor->kind); fl_binary_u64(stream, anchor->beat); fl_binary_u64(stream, anchor->end);
     fl_binary_u64(stream, (uint64_t)anchor->offset);
     uint64_t bits; memcpy(&bits, &anchor->position, sizeof(bits)); fl_binary_u64(stream, bits);
+    if (anchor->kind == FL_ANCHOR_SPEECH) fl_binary_u64(stream, anchor->cue);
 }
 
 bool fl_time_anchor_read(Fl_TimeAnchor *anchor, Fl_Binary *stream)
@@ -33,5 +36,6 @@ bool fl_time_anchor_read(Fl_TimeAnchor *anchor, Fl_Binary *stream)
     uint64_t end = fl_binary_get_u64(stream), offset = fl_binary_get_u64(stream), position = fl_binary_get_u64(stream);
     anchor->kind = (Fl_AnchorKind)kind; anchor->end = end != 0;
     memcpy(&anchor->offset, &offset, sizeof(offset)); memcpy(&anchor->position, &position, sizeof(position));
-    return !stream->failed && kind <= FL_ANCHOR_BEAT_POSITION && end <= 1 && fl_time_anchor_valid(anchor);
+    anchor->cue = kind == FL_ANCHOR_SPEECH ? fl_binary_get_u64(stream) : 0;
+    return !stream->failed && kind <= FL_ANCHOR_SPEECH && end <= 1 && fl_time_anchor_valid(anchor);
 }

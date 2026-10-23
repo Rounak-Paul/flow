@@ -128,6 +128,27 @@ int main(int argc, char **argv)
     CHECK(fl_fs_join(path, sizeof(path), argv[1], "narrow.png"));
     CHECK(ca_window_capture(narrow, captured, path));
     for (int i = 0; i < 4; ++i) CHECK(ca_instance_tick(instance));
+    Fl_Id phase, clip; Fl_Id scene = fl_scene_edit_scene(edit), asset = panel->draft->reference;
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind = FL_OP_PHASE_ADD, .scene = scene, .name = "Greeting", .source = "Hello."},&phase));
+    Fl_Id beat = fl_scene_phase(fl_project_scene(project,scene),phase)->beat;
+    Fl_AudioClip audio = {.asset = asset, .start = {.kind = FL_ANCHOR_BEAT, .beat = beat}, .gain = 1};
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind = FL_OP_CLIP_ADD, .scene = scene, .clip_record = &audio},&clip));
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind = FL_OP_PHASE_UPDATE, .scene = scene, .phase = phase,
+        .name = "Greeting", .source = "Hello.", .beat = beat, .clip = clip},NULL));
+    Fl_SpeechCue cue = {.text = "Hello", .start = 12000, .end = 60000, .resolved = true};
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind = FL_OP_PHASE_CUES, .scene = scene, .phase = phase, .asset = asset, .cues = &cue, .cue_count = 1},NULL));
+    panel->expanded_phase = phase; invalidate(panel);
+    for (int i = 0; i < 4; ++i) CHECK(ca_instance_tick(instance));
+    CHECK(panel->cue_rows[0].cue == fl_scene_phase(fl_project_scene(project,scene),phase)->cues[0].id);
+    select_cue(NULL,&panel->cue_rows[0]);
+    snprintf(panel->cue_start,sizeof(panel->cue_start),"0.2"); snprintf(panel->cue_end,sizeof(panel->cue_end),"0.6"); repair_cue(NULL,panel);
+    CHECK(fl_scene_phase(fl_project_scene(project,scene),phase)->cues[0].start == 24000);
+    for (int i = 0; i < 4; ++i) CHECK(ca_instance_tick(instance));
+    ca_scroll_to_bottom(narrow,"manuscript-body");
+    for (int i = 0; i < 4; ++i) CHECK(ca_instance_tick(instance));
+    CHECK(input_by_id(narrow,"manuscript-cue-start"));
+    CHECK(fl_fs_join(path,sizeof(path),argv[1],"cues.png")); CHECK(ca_window_capture(narrow,captured,path));
+    for (int i = 0; i < 4; ++i) CHECK(ca_instance_tick(instance));
     ca_dock_destroy(dock); fl_manuscript_panel_destroy(panel); fl_speech_destroy(speech);
     fl_asset_importer_destroy(importer); fl_audio_player_destroy(player); fl_scene_edit_destroy(edit);
     fl_jobs_destroy(jobs); fl_project_destroy(project); fl_event_bus_destroy(bus);

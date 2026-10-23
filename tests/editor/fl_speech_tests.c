@@ -24,10 +24,16 @@ static void wait_ms(uint32_t milliseconds)
 /* Act as a deterministic child TTS executable, writing valid short WAVs without downloading a model. */
 static int runner(int argc, char **argv)
 {
-    const char *out = NULL, *text = "";
+    const char *out = NULL, *text = "", *alignment = NULL;
     for (int i = 1; i + 1 < argc; ++i) {
+        if (!strcmp(argv[i], "-of")) alignment = argv[i + 1];
         if (!strcmp(argv[i], "-o")) out = argv[i + 1];
         if (!strcmp(argv[i], "-p")) text = argv[i + 1];
+    }
+    if (alignment) {
+        char path[FL_PATH_MAX]; snprintf(path,sizeof(path),"%s.json",alignment);
+        const char *json = "{\"transcription\":[{\"text\":\"First paragraph. A second café paragraph.\",\"offsets\":{\"from\":0,\"to\":90},\"tokens\":[]}]}";
+        return fl_fs_write_atomic(path,json,strlen(json)) ? 0 : 5;
     }
     if (!out) return 3;
     if (strstr(text, "fail_late") || !strcmp(text, "fail")) {fputs("Expected runner failure\n", stderr); return 7;}
@@ -142,6 +148,7 @@ int main(int argc, char **argv)
 #else
     setenv("FLOW_LLAMA_TTS", argv[0], 1);
 #endif
+    environment("FLOW_WHISPER",argv[0]); environment("FLOW_WHISPER_MODEL",argv[0]);
     Fl_EventBus *bus = fl_event_bus_create(NULL);
     Fl_JobSystem *jobs = fl_jobs_create(&(Fl_JobSystemDesc){.worker_count = 1, .bus = bus});
     Fl_Project *project = fl_project_create(argv[1], "Speech", bus);

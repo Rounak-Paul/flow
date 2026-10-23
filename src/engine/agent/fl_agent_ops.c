@@ -1070,6 +1070,18 @@ static bool voice_set(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
            rejected(f, "voice.set", "voice must be a speaker id, language one of the Qwen3-TTS languages, and reference an audio asset or 0");
 }
 
+/* Explicitly repair a measured cue's start/end offsets in seconds into its aligned asset. */
+static bool cue_update(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    (void)result; static const char *const keys[] = {"op","scene","cue","start","end",NULL};
+    const Fl_Scene *scene; Fl_Id cue; Fl_Tick start, end; bool present;
+    if (!agent_only_keys(op,f,"cue.set",keys) || !(scene = need_scene(x,op,"scene",f,"cue.set")) ||
+        !agent_get_id(op,"cue",&x->refs,true,&cue,f,"cue.set") || !agent_get_seconds(op,"start",true,&start,&present,f,"cue.set") ||
+        !agent_get_seconds(op,"end",true,&end,&present,f,"cue.set")) return false;
+    return apply(x,&(Fl_Op){.kind = FL_OP_CUE_UPDATE, .scene = scene->id, .cue = cue, .cue_start = start, .cue_end = end},NULL) ||
+        rejected(f,"cue.set","cue must be active and its interval must be within the aligned audio");
+}
+
 static const struct {const char *name; OpFn run;} OPERATIONS[] = {
     {"scene.add", scene_add}, {"scene.remove", scene_remove}, {"scene.rename", scene_rename}, {"scene.move", scene_move}, {"scene.set", scene_set},
     {"entity.create", entity_create}, {"entity.set", entity_set}, {"entity.remove", entity_remove}, {"entity.reparent", entity_reparent},
@@ -1077,7 +1089,7 @@ static const struct {const char *name; OpFn run;} OPERATIONS[] = {
     {"key.set", key_set}, {"key.remove", key_remove}, {"track.remove", track_remove},
     {"beat.add", beat_add}, {"beat.update", beat_update}, {"beat.remove", beat_remove}, {"beat.move", beat_move}, {"beat.split", beat_split},
     {"clip.add", clip_add}, {"clip.update", clip_update}, {"clip.remove", clip_remove},
-    {"phase.add", phase_add}, {"phase.update", phase_update}, {"phase.remove", phase_remove}, {"phase.move", phase_move}, {"voice.set", voice_set},
+    {"phase.add", phase_add}, {"phase.update", phase_update}, {"phase.remove", phase_remove}, {"phase.move", phase_move}, {"voice.set", voice_set}, {"cue.set",cue_update},
     {"prototype.capture",prototype_capture}, {"prototype.instantiate",prototype_instantiate}, {"prototype.overrides",prototype_overrides}, {"prototype.detach",prototype_detach}, {"scope.edit",scope_edit},
     {"asset.source", asset_source}, {"asset.rename", asset_edit}, {"asset.remove", asset_edit},
     {"script.create", script_create}, {"script.update", script_update}, {"script.remove", script_remove},

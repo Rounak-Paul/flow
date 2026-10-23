@@ -40,14 +40,15 @@ static bool sane(const Fl_AudioInfo *info)
     return info->sample_rate >= 1000 && info->sample_rate <= 768000 && info->channels >= 1 && info->channels <= 32;
 }
 
-Fl_AudioReader *fl_audio_open(const char *path, Fl_AudioInfo *info)
+/* Open a decoder with an optional requested PCM rate/channel layout. */
+static Fl_AudioReader *open_format(const char *path, Fl_AudioInfo *info, uint32_t rate, uint32_t channels)
 {
     if (!path || !info) return NULL;
     Fl_AudioReader *r = calloc(1, sizeof(*r));
     if (!r) return NULL;
     r->file = fl_fs_fopen(path, "rb");
     if (r->file) {
-        ma_decoder_config config = ma_decoder_config_init(ma_format_f32, 0, 0);
+        ma_decoder_config config = ma_decoder_config_init(ma_format_f32, channels, rate);
         if (ma_decoder_init(stream_read, stream_seek, r->file, &config, &r->decoder) == MA_SUCCESS) {
             ma_uint64 length = 0;
             r->info = (Fl_AudioInfo){r->decoder.outputSampleRate, r->decoder.outputChannels, 0};
@@ -58,10 +59,21 @@ Fl_AudioReader *fl_audio_open(const char *path, Fl_AudioInfo *info)
         fclose(r->file); r->file = NULL;
     }
     r->platform = fl_audio_file_open(path, &r->info.sample_rate, &r->info.channels, &r->info.frames);
-    if (r->platform && sane(&r->info)) { *info = r->info; return r; }
+    if (r->platform && sane(&r->info) && (!rate || rate == r->info.sample_rate) && (!channels || channels == r->info.channels)) { *info = r->info; return r; }
     fl_audio_file_close(r->platform);
     free(r);
     return NULL;
+}
+
+Fl_AudioReader *fl_audio_open(const char *path, Fl_AudioInfo *info)
+{
+    return open_format(path, info, 0, 0);
+}
+
+Fl_AudioReader *fl_audio_open_resampled(const char *path, Fl_AudioInfo *info, uint32_t rate, uint32_t channels)
+{
+    if (rate < 1000 || rate > 768000 || !channels || channels > 32) return NULL;
+    return open_format(path, info, rate, channels);
 }
 
 uint64_t fl_audio_read(Fl_AudioReader *r, float *out, uint64_t frames)

@@ -645,7 +645,7 @@ static bool apply_operation(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
         if (op->kind == FL_OP_BEAT_REMOVE) fl_manuscript_detach_beat(s, op->beat);
         if (op->kind == FL_OP_CLIP_REMOVE) fl_manuscript_detach_clip(s, op->clip);
         break;
-    case FL_OP_PHASE_ADD: case FL_OP_PHASE_REMOVE: case FL_OP_PHASE_UPDATE: case FL_OP_PHASE_MOVE: case FL_OP_VOICE_SET:
+    case FL_OP_PHASE_ADD: case FL_OP_PHASE_REMOVE: case FL_OP_PHASE_UPDATE: case FL_OP_PHASE_MOVE: case FL_OP_VOICE_SET: case FL_OP_PHASE_CUES: case FL_OP_CUE_UPDATE:
         if (!s || !fl_manuscript_apply(p, s, op, &p->next_id, &created)) return false;
         break;
     case FL_OP_ASSET_SOURCE_SET:

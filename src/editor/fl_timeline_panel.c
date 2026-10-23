@@ -1,4 +1,6 @@
 #include "schema/fl_properties.h"
+#include "project/fl_speech_cues.h"
+#include "project/fl_manuscript.h"
 #include "fl_timeline_panel.h"
 #include "ui/fl_button.h"
 #include "components/fl_script.h"
@@ -38,6 +40,13 @@ struct Fl_TimelinePanel {
     Fl_TimelineItem *items;
     size_t item_count, item_capacity;
     Fl_Id selected_key, selected_beat, selected_clip;
+    Fl_Id binding_key, binding_phase;
+    const char **cue_options, **phase_options, **unresolved_options;
+    Fl_Id *cue_ids, *phase_ids, *unresolved_ids;
+    size_t cue_count, phase_count, unresolved_count;
+    int cue_kind;
+    char cue_filter[128], cue_offset[48];
+    Ca_TextInput *cue_offset_input;
     Fl_Id selection_entity, timeline_scene;
     uint64_t timeline_revision;
     Fl_AnimProperty property;
@@ -402,6 +411,182 @@ static void ease_chosen(Ca_Select *select, void *data)
     memcpy(op.value, key->value, sizeof(op.value));
     if ((Fl_Ease)index == key->ease) memcpy(op.ease_param, key->ease_param, sizeof(op.ease_param));
     apply(p, op, NULL);
+}
+
+/* Free owned option labels and IDs used by the speech binding controls. */
+static void free_binding_options(Fl_TimelinePanel *p)
+{
+    for (size_t i = 0; i < p->cue_count; ++i) free((char *)p->cue_options[i]);
+    for (size_t i = 0; i < p->phase_count; ++i) free((char *)p->phase_options[i]);
+    for (size_t i = 0; i < p->unresolved_count; ++i) free((char *)p->unresolved_options[i]);
+    free(p->cue_options); free(p->cue_ids); free(p->phase_options); free(p->phase_ids);
+    free(p->unresolved_options); free(p->unresolved_ids);
+    p->cue_options = p->phase_options = p->unresolved_options = NULL;
+    p->cue_ids = p->phase_ids = p->unresolved_ids = NULL;
+    p->cue_count = p->phase_count = p->unresolved_count = 0;
+}
+
+/* Replace only a key's timing anchor, preserving its ID, value and interpolation. */
+static void bind_key(Fl_TimelinePanel *p, Fl_TimeAnchor anchor)
+{
+    const Fl_Scene *scene = scene_of(p); const Fl_Track *track;
+    const Fl_Keyframe *key = fl_scene_key(scene,p->selected_key,&track);
+    if (!key || fl_playback_playing(p->playback)) return;
+    Fl_Op op = {.kind = FL_OP_KEY_SET, .scene = scene->id, .entity = track->entity, .property = track->property,
+        .key = key->id, .anchor = anchor, .ease = key->ease};
+    memcpy(op.value,key->value,sizeof(op.value)); memcpy(op.ease_param,key->ease_param,sizeof(op.ease_param));
+    apply(p,op,NULL);
+}
+
+/* Filter the cue list to a chosen narration phase without modifying any key. */
+static void binding_phase_changed(Ca_Select *select, void *data)
+{
+    Fl_TimelinePanel *p = data; int index = ca_select_get(select);
+    if (index < 0 || (size_t)index >= p->phase_count) return;
+    p->binding_phase = p->phase_ids[index]; invalidate(p);
+}
+
+/* Filter cue choices by words or sentences. */
+static void binding_kind_changed(Ca_Select *select, void *data)
+{
+    Fl_TimelinePanel *p = data; p->cue_kind = ca_select_get(select); invalidate(p);
+}
+
+/* Filter labels while retaining native input focus across reconciliation. */
+static void binding_filter_changed(Ca_TextInput *input, void *data)
+{
+    Fl_TimelinePanel *p = data; snprintf(p->cue_filter,sizeof(p->cue_filter),"%s",ca_input_text(input)); invalidate(p);
+}
+
+/* Attach the selected key to a measured speech cue; unresolved choices remain explicitly unbound. */
+static void binding_cue_changed(Ca_Select *select, void *data)
+{
+    Fl_TimelinePanel *p = data; int index = ca_select_get(select);
+    if (index <= 0 || (size_t)index >= p->cue_count) return;
+    const Fl_Keyframe *key = fl_scene_key(scene_of(p),p->selected_key,NULL);
+    Fl_TimeAnchor anchor = key && key->at.kind == FL_ANCHOR_SPEECH ? key->at : (Fl_TimeAnchor){0};
+    anchor.kind = FL_ANCHOR_SPEECH; anchor.cue = p->cue_ids[index]; bind_key(p,anchor);
+}
+
+/* Choose the start or end edge of the bound word/sentence. */
+static void binding_edge_changed(Ca_Select *select, void *data)
+{
+    Fl_TimelinePanel *p = data; const Fl_Keyframe *key = fl_scene_key(scene_of(p),p->selected_key,NULL);
+    if (!key || key->at.kind != FL_ANCHOR_SPEECH) return;
+    Fl_TimeAnchor anchor = key->at; anchor.end = ca_select_get(select) == 1; bind_key(p,anchor);
+}
+
+/* Apply a finite seconds offset to the current speech cue binding. */
+static void binding_offset_changed(Ca_TextInput *input, void *data)
+{
+    Fl_TimelinePanel *p = data; const Fl_Keyframe *key = fl_scene_key(scene_of(p),p->selected_key,NULL);
+    if (!key || key->at.kind != FL_ANCHOR_SPEECH) return;
+    snprintf(p->cue_offset,sizeof(p->cue_offset),"%s",ca_input_text(input));
+    char *end; double seconds = strtod(ca_input_text(input),&end); Fl_Tick offset;
+    if (end == ca_input_text(input) || *end || !fl_time_from_seconds(seconds,&offset)) return;
+    Fl_TimeAnchor anchor = key->at; anchor.offset = offset; bind_key(p,anchor);
+}
+
+/* Detach at the resolved time, or explicitly at the playhead when the old cue is missing. */
+static void binding_detach(Ca_Button *button, void *data)
+{
+    (void)button; Fl_TimelinePanel *p = data; const Fl_Scene *scene = scene_of(p);
+    const Fl_Keyframe *key = fl_scene_key(scene,p->selected_key,NULL); Fl_Tick tick = fl_scene_edit_local_time(p->edit);
+    if (!key) return;
+    fl_anchor_sample(scene,&key->at,&tick); bind_key(p,(Fl_TimeAnchor){.offset = tick});
+}
+
+/* Select an orphaned key for explicit repair, including keys invisible in timed lanes. */
+static void unresolved_key_changed(Ca_Select *select, void *data)
+{
+    Fl_TimelinePanel *p = data; int index = ca_select_get(select);
+    if (index <= 0 || (size_t)index >= p->unresolved_count) return;
+    p->selected_key = p->unresolved_ids[index]; invalidate(p);
+}
+
+/* Surface unresolved keys independently of their unavailable timeline positions. */
+static void build_unresolved_keys(Fl_TimelinePanel *p, const Fl_Scene *scene)
+{
+    size_t count = 1; Fl_TrackIterator it = {.scene = scene};
+    for (const Fl_Track *track; (track = fl_scene_track_next(&it));) if (fl_scene_edit_contains(p->edit,track->entity))
+        for (size_t i = 0; i < track->key_count; ++i) {Fl_Tick tick; if (!fl_anchor_sample(scene,&track->keys[i].at,&tick)) ++count;}
+    if (count == 1) return;
+    p->unresolved_options = calloc(count,sizeof(*p->unresolved_options)); p->unresolved_ids = calloc(count,sizeof(*p->unresolved_ids));
+    if (!p->unresolved_options || !p->unresolved_ids) return;
+    p->unresolved_options[0] = strdup("Repair unresolved key…"); if (!p->unresolved_options[0]) return; p->unresolved_count = 1;
+    it = (Fl_TrackIterator){.scene = scene};
+    for (const Fl_Track *track; (track = fl_scene_track_next(&it));) if (fl_scene_edit_contains(p->edit,track->entity))
+        for (size_t i = 0; i < track->key_count; ++i) {
+            Fl_Tick tick; const Fl_Keyframe *key = &track->keys[i]; if (fl_anchor_sample(scene,&key->at,&tick)) continue;
+            char label[160]; snprintf(label,sizeof(label),"%s · key %llu",fl_property_definition(track->property)->label,(unsigned long long)key->id);
+            char *text = strdup(label); if (!text) continue;
+            size_t n = p->unresolved_count++; p->unresolved_options[n] = text; p->unresolved_ids[n] = key->id;
+        }
+    ca_select(&(Ca_SelectDesc){.options = p->unresolved_options, .option_count = (int)p->unresolved_count, .width = 220,
+        .id = "timeline-unresolved-keys", .on_change = unresolved_key_changed, .change_data = p});
+}
+
+/* Build native phase/word/sentence binding controls for one selected key. */
+static void build_speech_binding(Fl_TimelinePanel *p, const Fl_Scene *scene, const Fl_Keyframe *key, bool playing)
+{
+    if (!scene->phase_count) return;
+    if (p->binding_key != key->id) {
+        p->binding_key = key->id; p->binding_phase = 0; p->cue_filter[0] = 0; p->cue_offset_input = NULL;
+        const Fl_Phase *owner = NULL; fl_scene_speech_cue(scene,key->at.cue,&owner);
+        if (owner) p->binding_phase = owner->id;
+    }
+    p->phase_options = calloc(scene->phase_count,sizeof(*p->phase_options)); p->phase_ids = calloc(scene->phase_count,sizeof(*p->phase_ids));
+    if (!p->phase_options || !p->phase_ids) return;
+    int selected_phase = 0;
+    for (size_t i = 0; i < scene->phase_count; ++i) {
+        char *label = strdup(scene->phases[i].title); if (!label) break;
+        p->phase_options[p->phase_count] = label; p->phase_ids[p->phase_count] = scene->phases[i].id;
+        if (p->binding_phase == scene->phases[i].id) selected_phase = (int)p->phase_count;
+        ++p->phase_count;
+    }
+    if (!p->phase_count) return;
+    const Fl_Phase *phase = fl_scene_phase(scene,p->phase_ids[selected_phase]);
+    if (!phase) return;
+    p->binding_phase = phase->id;
+    p->cue_options = calloc(phase->cue_count + 1,sizeof(*p->cue_options)); p->cue_ids = calloc(phase->cue_count + 1,sizeof(*p->cue_ids));
+    if (!p->cue_options || !p->cue_ids) return;
+    p->cue_options[0] = strdup("Choose speech cue…"); if (!p->cue_options[0]) return;
+    p->cue_count = 1; int selected = 0;
+    for (size_t i = 0; i < phase->cue_count; ++i) {
+        const Fl_SpeechCue *cue = &phase->cues[i];
+        if ((p->cue_kind == 0 && cue->kind != FL_CUE_WORD) || (p->cue_kind == 1 && cue->kind != FL_CUE_SENTENCE) ||
+            (p->cue_filter[0] && !strstr(cue->text,p->cue_filter))) continue;
+        Fl_Tick tick; bool resolved = fl_phase_speech_cue_sample(scene,phase,cue,false,&tick);
+        size_t capacity = strlen(cue->text) + 96; char *label = malloc(capacity); if (!label) break;
+        snprintf(label,capacity,"%s%s · #%zu",resolved ? "" : "[unresolved] ",cue->text,i + 1);
+        if (key->at.kind == FL_ANCHOR_SPEECH && key->at.cue == cue->id) selected = (int)p->cue_count;
+        p->cue_options[p->cue_count] = label; p->cue_ids[p->cue_count++] = cue->id;
+    }
+    ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .inline_style = "width: 100%; flex-shrink: 0; gap: 6px; padding: 4px 8px; flex-wrap: wrap; align-items: center;"});
+    ca_text(&(Ca_TextDesc){.text = "Speech cue", .style = FL_CLASS_MUTED});
+    ca_select(&(Ca_SelectDesc){.options = p->phase_options, .option_count = (int)p->phase_count, .selected = selected_phase,
+        .width = 140, .on_change = binding_phase_changed, .change_data = p, .disabled = playing});
+    static const char *const kinds[] = {"Words","Sentences","All cues"};
+    ca_select(&(Ca_SelectDesc){.options = kinds, .option_count = 3, .selected = p->cue_kind, .width = 110,
+        .on_change = binding_kind_changed, .change_data = p, .disabled = playing});
+    ca_input(&(Ca_InputDesc){.text = p->cue_filter, .placeholder = "Find word…", .id = "timeline-cue-filter", .max_length = 127,
+        .style = FL_CLASS_PROPERTY_INPUT, .inline_style = "flex-grow: 0;",
+        .width = 110, .on_change = binding_filter_changed, .change_data = p, .disabled = playing});
+    ca_select(&(Ca_SelectDesc){.options = p->cue_options, .option_count = (int)p->cue_count, .selected = selected,
+        .id = "timeline-speech-cue", .width = 220, .on_change = binding_cue_changed, .change_data = p, .disabled = playing});
+    if (key->at.kind == FL_ANCHOR_SPEECH) {
+        static const char *const edges[] = {"Start","End"};
+        ca_select(&(Ca_SelectDesc){.options = edges, .option_count = 2, .selected = key->at.end ? 1 : 0, .width = 80,
+            .on_change = binding_edge_changed, .change_data = p, .disabled = playing});
+        if (!p->cue_offset_input || !ca_input_is_focused(p->cue_offset_input)) snprintf(p->cue_offset,sizeof(p->cue_offset),"%.3f",(double)key->at.offset / FL_TICKS_PER_SECOND);
+        p->cue_offset_input = ca_input(&(Ca_InputDesc){.text = p->cue_offset, .id = "timeline-cue-offset", .input_mode = CA_INPUT_FLOAT, .max_length = 47, .width = 64,
+            .style = FL_CLASS_PROPERTY_INPUT, .inline_style = "flex-grow: 0;",
+            .on_change = binding_offset_changed, .change_data = p, .disabled = playing});
+        ca_text(&(Ca_TextDesc){.text = "s", .style = FL_CLASS_MUTED});
+        fl_button(&(Fl_ButtonDesc){.text = "Detach", .on_click = binding_detach, .click_data = p, .disabled = playing,
+            .tooltip = "Keep resolved time, or use the playhead if this cue is unresolved"});
+    }
+    ca_div_end();
 }
 
 /* Scrub by dragging the playhead handle. The handle's own origin moves while it seeks, so the
@@ -777,6 +962,7 @@ void fl_timeline_panel_teardown(void *data)
 {
     Fl_TimelinePanel *p = data;
     ca_effect_destroy(p->scroll_effect); p->scroll_effect = NULL; p->label_content = NULL; p->header_content = NULL; p->beat_drop_marker = NULL; p->header_playhead = NULL; p->playhead_viewport = NULL; p->split_button = NULL;
+    p->cue_offset_input = NULL;
     p->dock = NULL; p->window = NULL; p->playhead = NULL; p->ruler = NULL; p->scroll = NULL; p->lanes = NULL; p->clock = NULL;
 }
 
@@ -790,7 +976,7 @@ void fl_timeline_panel_destroy(Fl_TimelinePanel *p)
     }
     if (p->rename_window) ca_window_destroy(p->rename_window);
     fl_event_unsubscribe_owner(p->bus, p);
-    free(p->items); free(p);
+    free_binding_options(p); free(p->items); free(p);
 }
 
 bool fl_timeline_panel_add_clip(Fl_TimelinePanel *p, Fl_Id asset, Fl_Tick tick)
@@ -886,6 +1072,7 @@ static void build_time_ruler(Fl_TimelinePanel *p, Fl_Tick length, float width)
 void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
 {
     Fl_TimelinePanel *p = data; p->dock = dock; p->window = window;
+    free_binding_options(p);
     ca_effect_destroy(p->scroll_effect); p->scroll_effect = NULL; p->label_content = NULL; p->header_content = NULL; p->beat_drop_marker = NULL; p->header_playhead = NULL; p->playhead_viewport = NULL; p->split_button = NULL;
     const Fl_Scene *s = scene_of(p);
     p->timeline_scene=s ? s->id : 0; p->timeline_revision=s ? s->revision : 0;
@@ -959,6 +1146,7 @@ void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
     ca_div_end();
 
     /* Show contextual key editing only while a visible key is selected. */
+    build_unresolved_keys(p,s);
     const Fl_Track *selected_track;
     const Fl_Keyframe *selected_key = fl_scene_key(s, p->selected_key, &selected_track);
     if (selected_key && fl_scene_edit_contains(p->edit, selected_track->entity)) {
@@ -976,6 +1164,8 @@ void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
             .on_click = delete_key, .click_data = p, .disabled = playing, .kind = FL_BUTTON_ICON, .tooltip = "Delete keyframe"});
         ca_div_end();
     }
+
+    if (selected_key && fl_scene_edit_contains(p->edit,selected_track->entity)) build_speech_binding(p,s,selected_key,playing);
 
     Fl_Tick length = fl_scene_length(s);
     float content = x_of(p, length) + FL_STYLE_TL_PAD;

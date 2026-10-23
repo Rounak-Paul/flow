@@ -19,6 +19,8 @@ typedef struct Fl_AudioReader Fl_AudioReader;
 
 /* Open path and describe it; NULL when no decoder accepts the file. */
 Fl_AudioReader *fl_audio_open(const char *path, Fl_AudioInfo *info);
+/* Open with miniaudio rate/channel conversion; unsupported platform-only conversion returns NULL. */
+Fl_AudioReader *fl_audio_open_resampled(const char *path, Fl_AudioInfo *info, uint32_t sample_rate, uint32_t channels);
 /* Decode up to frames frames into out (frames * channels floats); returns frames produced, 0 at the end. */
 uint64_t fl_audio_read(Fl_AudioReader *reader, float *out, uint64_t frames);
 /* Move to frame; false on failure. */

@@ -1,5 +1,6 @@
 #include "fl_speech.h"
 #include "media/fl_voice.h"
+#include "media/fl_speech_align.h"
 #include "project/fl_asset_import.h"
 #include "project/fl_manuscript.h"
 #include "core/fl_atomic.h"
@@ -14,6 +15,7 @@ typedef struct Fl_SpeechItem {
     Fl_Id phase;
     char title[FL_PHASE_TITLE_MAX + 1];
     char wav_path[FL_PATH_MAX];
+    Fl_SpeechAlignment alignment;
 } Fl_SpeechItem;
 
 struct Fl_Speech {
@@ -27,7 +29,8 @@ struct Fl_Speech {
     size_t count;
     Fl_Id scene;
     char work[FL_PATH_MAX];
-    volatile uint32_t done;
+    volatile uint32_t done, aligning, aligned;
+    uint32_t seen_aligning, seen_aligned;
     Fl_VoiceProgress progress;
     uint32_t seen_parts, seen_total_parts;
     atomic_bool cancel;
@@ -59,6 +62,7 @@ static void set_state(Fl_Speech *s, const char *state, const char *message)
 
 static void clear_job(Fl_Speech *s)
 {
+    for (size_t i = 0; i < s->count && s->items; ++i) fl_speech_alignment_free(&s->items[i].alignment);
     free(s->voices); free(s->items);
     s->voices = NULL; s->items = NULL; s->count = 0;
     if (s->work[0]) fl_fs_remove_tree(s->work);
@@ -115,6 +119,11 @@ static bool import_audio(Fl_Speech *s)
         const Fl_Scene *scene = fl_project_scene(p, s->scene);
         const Fl_Phase *phase = scene ? fl_scene_phase(scene, item->phase) : NULL;
         if (!phase) continue;
+        if (!s->preview) {
+            char *captured = fl_fs_read_file(s->voices[i].text_path,FL_PHASE_TEXT_MAX,NULL);
+            bool unchanged = captured && !strcmp(captured,phase->text); free(captured);
+            if (!unchanged) {fl_project_edit_cancel(p); snprintf(s->message,sizeof(s->message),"Narration changed while speech was generated. Generate it again."); return false;}
+        }
         char *title = malloc(strlen(phase->title) + 1), *text = malloc(strlen(phase->text) + 1);
         if (!title || !text) {free(title); free(text); fl_project_edit_cancel(p); snprintf(s->message, sizeof(s->message), "Out of memory."); return false;}
         memcpy(title, phase->title, strlen(phase->title) + 1);
@@ -165,6 +174,8 @@ static bool import_audio(Fl_Speech *s)
         if (ok && phase) ok = fl_project_apply(p, &(Fl_Op){.kind = FL_OP_PHASE_UPDATE, .scene = scene->id, .phase = phase->id,
             .name = title, .source = text, .beat = beat, .clip = clip}, NULL);
 
+        if (ok) ok = fl_project_apply(p, &(Fl_Op){.kind = FL_OP_PHASE_CUES, .scene = s->scene, .phase = item->phase,
+            .asset = asset, .cues = item->alignment.cues, .cue_count = item->alignment.count}, NULL);
         free(title); free(text);
         if (!ok) {fl_project_edit_cancel(p); snprintf(s->message, sizeof(s->message), "Could not place the narration."); return false;}
         placed = true;
@@ -181,7 +192,12 @@ static void finish_job(Fl_Speech *s)
     bool cancelled = atomic_load_explicit(&s->cancel, memory_order_relaxed) || s->result == FL_VOICE_CANCELLED;
     if (!cancelled && s->result == FL_VOICE_OK && s->preview) {
         s->ready = true;
-        set_state(s, "ready", "Audio ready. Play it, then add it as a phase.");
+        size_t measured = 0, unresolved = 0;
+        for (size_t i = 0; i < s->items[0].alignment.count; ++i) if (s->items[0].alignment.cues[i].kind == FL_CUE_WORD) {
+            if (s->items[0].alignment.cues[i].resolved) ++measured; else ++unresolved;
+        }
+        snprintf(s->message,sizeof(s->message),"Audio ready · %zu words timed · %zu need review. Play it before adding the phase.",measured,unresolved);
+        set_state(s, "ready", NULL);
         return;
     }
     if (!cancelled && s->result == FL_VOICE_OK) {
@@ -201,6 +217,17 @@ static void speak_job(void *data)
 {
     Fl_Speech *s = data;
     s->result = fl_voice_run(s->voices, s->count, &s->cancel, &s->done, &s->progress, s->error, sizeof(s->error));
+    if (s->result != FL_VOICE_OK) return;
+    fl_atomic_store_u32(&s->aligning, 1);
+    for (size_t i = 0; i < s->count; ++i) {
+        char name[48], work[FL_PATH_MAX]; snprintf(name,sizeof(name),"align-%zu",i);
+        char *script = fl_fs_read_file(s->voices[i].text_path,FL_PHASE_TEXT_MAX,NULL);
+        bool ok = script && fl_fs_join(work,sizeof(work),s->work,name) && fl_fs_mkdir_exclusive(work) &&
+            fl_speech_align(s->voices[i].out_path,script,s->voices[i].language,work,&s->cancel,&s->items[i].alignment,s->error,sizeof(s->error));
+        free(script);
+        if (!ok) {s->result = atomic_load_explicit(&s->cancel,memory_order_relaxed) ? FL_VOICE_CANCELLED : FL_VOICE_FAILED; return;}
+        fl_atomic_store_u32(&s->aligned,(uint32_t)(i + 1));
+    }
 }
 
 Fl_Speech *fl_speech_create(Fl_Project *project, Fl_JobSystem *jobs, Fl_EventBus *bus)
@@ -291,6 +318,7 @@ bool fl_speech_start(Fl_Speech *s, Fl_Id scene_id, Fl_Id phase_id)
     atomic_store_explicit(&s->cancel, false, memory_order_relaxed); fl_atomic_store_u32(&s->done, 0);
     s->total = (uint32_t)n; s->seen = 0; s->seen_parts = 0; s->seen_total_parts = 0;
     fl_atomic_store_u32(&s->progress.done, 0); fl_atomic_store_u32(&s->progress.total, 0);
+    fl_atomic_store_u32(&s->aligning,0); fl_atomic_store_u32(&s->aligned,0); s->seen_aligning = s->seen_aligned = 0;
     s->job = fl_job_submit(s->jobs, &(Fl_JobDesc){.fn = speak_job, .data = s, .priority = FL_JOB_PRIORITY_LOW});
     if (!s->job.index && !s->job.generation) {
         clear_job(s); snprintf(s->message, sizeof(s->message), "Could not start speech."); set_state(s, "failed", NULL); return false;
@@ -320,6 +348,12 @@ void fl_speech_pump(Fl_Speech *s)
         s->seen = done;
         if (!atomic_load_explicit(&s->cancel, memory_order_relaxed))
             snprintf(s->message, sizeof(s->message), "Generating narration · %u/%u parts", parts, total_parts);
+        publish(s);
+    }
+    uint32_t aligning = fl_atomic_load_u32(&s->aligning), aligned = fl_atomic_load_u32(&s->aligned);
+    if (aligning && (aligning != s->seen_aligning || aligned != s->seen_aligned)) {
+        s->seen_aligning = aligning; s->seen_aligned = aligned;
+        if (!atomic_load_explicit(&s->cancel,memory_order_relaxed)) snprintf(s->message,sizeof(s->message),"Measuring speech timing · %u/%zu phases",aligned,s->count);
         publish(s);
     }
     if (!fl_job_is_done(s->jobs, s->job)) return;
@@ -369,6 +403,7 @@ bool fl_speech_preview(Fl_Speech *s, Fl_Id scene, const char *text, const char *
     atomic_store_explicit(&s->cancel, false, memory_order_relaxed); fl_atomic_store_u32(&s->done, 0);
     s->total = 1; s->seen = 0; s->seen_parts = 0; s->seen_total_parts = 0;
     fl_atomic_store_u32(&s->progress.done, 0); fl_atomic_store_u32(&s->progress.total, 0);
+    fl_atomic_store_u32(&s->aligning,0); fl_atomic_store_u32(&s->aligned,0); s->seen_aligning = s->seen_aligned = 0;
     s->job = fl_job_submit(s->jobs, &(Fl_JobDesc){.fn = speak_job, .data = s, .priority = FL_JOB_PRIORITY_LOW});
     if (!s->job.index && !s->job.generation) goto failed;
     s->running = true;

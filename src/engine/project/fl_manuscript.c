@@ -1,4 +1,5 @@
 #include "fl_manuscript.h"
+#include "fl_speech_cues.h"
 #include "fl_timeline_internal.h"
 #include "doc/fl_json.h"
 #include <stdio.h>
@@ -157,7 +158,7 @@ static bool phase_add(const Fl_Project *project, Fl_Scene *s, const Fl_Op *op, u
     Fl_Phase *phases = (Fl_Phase *)s->phases;
     memmove(phases + op->position + 1, phases + op->position, (s->phase_count - op->position) * sizeof(*phases));
     Fl_Id id = (*next_id)++;
-    phases[op->position] = (Fl_Phase){id, beat, 0, title, body};
+    phases[op->position] = (Fl_Phase){.id = id, .beat = beat, .title = title, .text = body};
     ++s->phase_count;
     if (created) *created = id;
     return true;
@@ -173,6 +174,7 @@ static bool phase_update(Fl_Scene *s, const Fl_Op *op)
     char *title = copy_text(op->name), *body = copy_text(text);
     if (!title || !body) { free(title); free(body); return false; }
     Fl_Phase *phase = (Fl_Phase *)&s->phases[i];
+    if (strcmp(phase->text, body)) for (size_t k = 0; k < phase->cue_count; ++k) ((Fl_SpeechCue *)phase->cues)[k].resolved = false;
     free((void *)phase->title); free((void *)phase->text);
     phase->title = title; phase->text = body; phase->beat = op->beat; phase->clip = op->clip;
     return true;
@@ -184,6 +186,7 @@ static bool phase_remove(Fl_Scene *s, const Fl_Op *op)
     if (i == SIZE_MAX) return false;
     Fl_Phase *phases = (Fl_Phase *)s->phases;
     free((void *)phases[i].title); free((void *)phases[i].text);
+    fl_speech_cues_free((Fl_SpeechCue *)phases[i].cues, phases[i].cue_count);
     memmove(phases + i, phases + i + 1, (s->phase_count - i - 1) * sizeof(*phases));
     --s->phase_count;
     return true;
@@ -225,6 +228,17 @@ bool fl_manuscript_apply(const Fl_Project *project, Fl_Scene *s, const Fl_Op *op
     case FL_OP_PHASE_REMOVE: return phase_remove(s, op);
     case FL_OP_PHASE_MOVE: return phase_move(s, op);
     case FL_OP_VOICE_SET: return voice_set(project, s, op);
+    case FL_OP_PHASE_CUES: return fl_speech_cues_apply(project, s, op, next_id);
+    case FL_OP_CUE_UPDATE: {
+        const Fl_Phase *phase = NULL;
+        Fl_SpeechCue *cue = (Fl_SpeechCue *)fl_scene_speech_cue(s,op->cue,&phase);
+        const Fl_Asset *asset = phase ? fl_project_asset(project,phase->cue_asset) : NULL;
+        bool current = false;
+        for (size_t i = 0; phase && i < s->clip_count; ++i) if (s->clips[i].id == phase->clip &&
+            s->clips[i].asset == phase->cue_asset && s->clips[i].start.kind != FL_ANCHOR_SPEECH) current = true;
+        if (!current || !cue || cue->retired || !asset || op->cue_start < 0 || op->cue_end <= op->cue_start || (uint64_t)op->cue_end > asset->duration) return false;
+        cue->start = op->cue_start; cue->end = op->cue_end; cue->resolved = true; return true;
+    }
     default: return false;
     }
 }
@@ -243,7 +257,7 @@ void fl_manuscript_detach_clip(Fl_Scene *s, Fl_Id clip)
 void fl_manuscript_free(Fl_Scene *s)
 {
     if (!s) return;
-    for (size_t i = 0; i < s->phase_count; ++i) { free((void *)s->phases[i].title); free((void *)s->phases[i].text); }
+    for (size_t i = 0; i < s->phase_count; ++i) { free((void *)s->phases[i].title); free((void *)s->phases[i].text); fl_speech_cues_free((Fl_SpeechCue *)s->phases[i].cues, s->phases[i].cue_count); }
     free((void *)s->phases); free((void *)s->voice); free((void *)s->language); free((void *)s->voice_transcript);
     s->phases = NULL; s->voice = NULL; s->language = NULL; s->voice_transcript = NULL;
     s->phase_count = 0; s->voice_reference = 0;
@@ -267,18 +281,30 @@ bool fl_manuscript_valid(const Fl_Project *p, const Fl_Scene *s, uint64_t next_i
             !bounded_text(phase->text, FL_PHASE_TEXT_MAX, true)) return false;
         if (phase->beat && beat_index(s, phase->beat) == SIZE_MAX) return false;
         if (phase->clip && !clip_exists(s, phase->clip)) return false;
+        if (!fl_speech_cues_valid(p, s, phase, next_id)) return false;
     }
     return true;
 }
 
-size_t fl_manuscript_id_count(const Fl_Scene *s) { return s ? s->phase_count : 0; }
+size_t fl_manuscript_id_count(const Fl_Scene *s)
+{
+    size_t count = s ? s->phase_count : 0;
+    for (size_t i = 0; s && i < s->phase_count; ++i) count += s->phases[i].cue_count;
+    return count;
+}
 void fl_manuscript_ids(const Fl_Scene *s, Fl_Id *ids)
 {
-    for (size_t i = 0; s && i < s->phase_count; ++i) ids[i] = s->phases[i].id;
+    size_t count = 0;
+    for (size_t i = 0; s && i < s->phase_count; ++i) {
+        ids[count++] = s->phases[i].id;
+        for (size_t j = 0; j < s->phases[i].cue_count; ++j) ids[count++] = s->phases[i].cues[j].id;
+    }
 }
 size_t fl_manuscript_asset_uses(const Fl_Scene *s, Fl_Id asset)
 {
-    return s && asset && s->voice_reference == asset ? 1 : 0;
+    size_t count = s && asset && s->voice_reference == asset ? 1 : 0;
+    for (size_t i = 0; s && asset && i < s->phase_count; ++i) count += s->phases[i].cue_asset == asset;
+    return count;
 }
 
 void fl_manuscript_save(const Fl_Scene *s, Fl_Binary *b)
@@ -292,6 +318,13 @@ void fl_manuscript_save(const Fl_Scene *s, Fl_Binary *b)
         const Fl_Phase *phase = &s->phases[i];
         fl_binary_u64(b, phase->id); fl_binary_u64(b, phase->beat); fl_binary_u64(b, phase->clip);
         fl_binary_string(b, phase->title); fl_binary_string(b, phase->text);
+        fl_binary_u64(b, phase->cue_asset); fl_binary_u64(b, phase->cue_count);
+        for (size_t j = 0; j < phase->cue_count; ++j) {
+            const Fl_SpeechCue *cue = &phase->cues[j];
+            fl_binary_u64(b, cue->id); fl_binary_string(b, cue->text);
+            fl_binary_u64(b, (uint64_t)cue->start); fl_binary_u64(b, (uint64_t)cue->end);
+            fl_binary_u64(b, cue->kind); fl_binary_u64(b, cue->resolved); fl_binary_u64(b, cue->retired);
+        }
     }
 }
 
@@ -315,6 +348,19 @@ bool fl_manuscript_load(Fl_Scene *s, Fl_Binary *b)
         Fl_Phase *phase = &phases[i];
         phase->id = fl_binary_get_u64(b); phase->beat = fl_binary_get_u64(b); phase->clip = fl_binary_get_u64(b);
         phase->title = fl_binary_get_string(b); phase->text = fl_binary_get_string(b);
+        phase->cue_asset = fl_binary_get_u64(b); uint64_t n = fl_binary_get_u64(b);
+        if (n > FL_SPEECH_CUE_MAX) {b->failed = true; continue;}
+        Fl_SpeechCue *cues = n ? calloc((size_t)n, sizeof(*cues)) : NULL;
+        if (n && !cues) {b->failed = true; continue;}
+        phase->cues = cues; phase->cue_count = (size_t)n;
+        for (size_t j = 0; !b->failed && j < (size_t)n; ++j) {
+            cues[j].id = fl_binary_get_u64(b); cues[j].text = fl_binary_get_string(b);
+            uint64_t start = fl_binary_get_u64(b), end = fl_binary_get_u64(b), kind = fl_binary_get_u64(b);
+            uint64_t resolved = fl_binary_get_u64(b), retired = fl_binary_get_u64(b);
+            if (start > INT64_MAX || end > INT64_MAX || kind > FL_CUE_SENTENCE || resolved > 1 || retired > 1) b->failed = true;
+            cues[j].start = (Fl_Tick)start; cues[j].end = (Fl_Tick)end; cues[j].kind = (Fl_SpeechCueKind)kind;
+            cues[j].resolved = resolved != 0; cues[j].retired = retired != 0;
+        }
     }
     return !b->failed;
 }

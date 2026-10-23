@@ -68,6 +68,17 @@ cJSON *fl_document_scene_write(Fl_Json *c, const Fl_Scene *s)
         uint_field(c,item,"id",phase->id); uint_field(c,item,"beat",phase->beat); uint_field(c,item,"clip",phase->clip);
         fl_json_add(c,item,"title",cJSON_CreateString(phase->title ? phase->title : ""));
         fl_json_add(c,item,"text",cJSON_CreateString(phase->text ? phase->text : ""));
+        uint_field(c,item,"cue_asset",phase->cue_asset);
+        cJSON *cues = cJSON_CreateArray();
+        for (size_t j = 0; j < phase->cue_count; ++j) {
+            const Fl_SpeechCue *cue = &phase->cues[j]; cJSON *v = cJSON_CreateObject();
+            uint_field(c,v,"id",cue->id); fl_json_add(c,v,"text",cJSON_CreateString(cue->text));
+            fl_json_add(c,v,"start",fl_json_i64(cue->start)); fl_json_add(c,v,"end",fl_json_i64(cue->end));
+            fl_json_add(c,v,"kind",cJSON_CreateString(cue->kind == FL_CUE_SENTENCE ? "sentence" : "word"));
+            fl_json_add(c,v,"resolved",cJSON_CreateBool(cue->resolved)); fl_json_add(c,v,"retired",cJSON_CreateBool(cue->retired));
+            fl_json_add(c,cues,NULL,v);
+        }
+        fl_json_add(c,item,"cues",cues);
         fl_json_add(c,phases,NULL,item);
     }
     fl_json_add(c,o,"phases",phases);
@@ -125,10 +136,29 @@ static bool read_manuscript(Fl_Json *c, const cJSON *o, Fl_Scene *s)
     size_t i=0;
     for (const cJSON *v=phases->child;v;v=v->next,++i) {
         Fl_Phase *phase=&storage[i];
-        if (!fl_json_object(c,v,"id beat clip title text") || !read_uint(c,v,"id",&phase->id) || !read_uint(c,v,"beat",&phase->beat) || !read_uint(c,v,"clip",&phase->clip)) return false;
+        if (!fl_json_object(c,v,"id beat clip title text cue_asset cues") || !read_uint(c,v,"id",&phase->id) || !read_uint(c,v,"beat",&phase->beat) || !read_uint(c,v,"clip",&phase->clip)) return false;
         phase->title=fl_json_string(c,fl_json_member(c,v,"title",cJSON_String));
         phase->text=fl_json_string(c,fl_json_member(c,v,"text",cJSON_String));
         if (!phase->title || !phase->text) return fl_json_fail(c,"Invalid phase");
+        const cJSON *alignment = cJSON_GetObjectItemCaseSensitive(v,"cues");
+        if (cJSON_GetObjectItemCaseSensitive(v,"cue_asset") && !read_uint(c,v,"cue_asset",&phase->cue_asset)) return false;
+        if (alignment) {
+            if (!cJSON_IsArray(alignment) || cJSON_GetArraySize(alignment) > (int)FL_SPEECH_CUE_MAX) return fl_json_fail(c,"Invalid speech cues");
+            size_t n = (size_t)cJSON_GetArraySize(alignment);
+            Fl_SpeechCue *cues = n ? calloc(n,sizeof(*cues)) : NULL;
+            if (n && !cues) return fl_json_fail(c,"Cannot allocate speech cues");
+            phase->cues = cues; phase->cue_count = n; size_t j = 0;
+            for (const cJSON *record = alignment->child; record; record = record->next, ++j) {
+                const cJSON *kind = fl_json_member(c,record,"kind",cJSON_String), *resolved = fl_json_member(c,record,"resolved",0),
+                    *retired = fl_json_member(c,record,"retired",0);
+                if (!fl_json_object(c,record,"id text start end kind resolved retired") || !read_uint(c,record,"id",&cues[j].id) ||
+                    !(cues[j].text = fl_json_string(c,fl_json_member(c,record,"text",cJSON_String))) ||
+                    !fl_json_int(c,fl_json_member(c,record,"start",0),&cues[j].start) || !fl_json_int(c,fl_json_member(c,record,"end",0),&cues[j].end) ||
+                    !kind || (strcmp(kind->valuestring,"word") && strcmp(kind->valuestring,"sentence")) || !cJSON_IsBool(resolved) || !cJSON_IsBool(retired)) return fl_json_fail(c,"Invalid speech cue");
+                cues[j].kind = !strcmp(kind->valuestring,"word") ? FL_CUE_WORD : FL_CUE_SENTENCE;
+                cues[j].resolved = cJSON_IsTrue(resolved); cues[j].retired = cJSON_IsTrue(retired);
+            }
+        }
     }
     return !c->error[0];
 }

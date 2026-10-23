@@ -119,3 +119,14 @@ add_custom_command(TARGET fl_manuscript_panel_tests POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${PROJECT_SOURCE_DIR}/resources/voices" "$<TARGET_FILE_DIR:fl_manuscript_panel_tests>/voices")
 flow_register_test(fl_manuscript_panel_tests)
 set_tests_properties(fl_manuscript_panel_tests PROPERTIES TIMEOUT 30 RESOURCE_LOCK flow_gpu)
+
+flow_engine_test(fl_speech_cues_tests engine/project/fl_speech_cues_tests.c)
+
+add_executable(fl_speech_binding_tests editor/fl_speech_binding_tests.c)
+target_include_directories(fl_speech_binding_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${PROJECT_SOURCE_DIR}/vendors/causality/causality/src/core"
+    "${PROJECT_SOURCE_DIR}/vendors/causality/causality/src/ui")
+target_link_libraries(fl_speech_binding_tests PRIVATE flow_editor causality)
+flow_target_warnings(fl_speech_binding_tests)
+flow_register_test(fl_speech_binding_tests)
+set_tests_properties(fl_speech_binding_tests PROPERTIES TIMEOUT 30 RESOURCE_LOCK flow_gpu)

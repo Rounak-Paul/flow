@@ -1,4 +1,5 @@
 #include "fl_timeline_internal.h"
+#include "fl_speech_cues.h"
 #include "schema/fl_properties.h"
 #include "components/fl_animation.h"
 #include "components/fl_component.h"
@@ -51,6 +52,13 @@ bool fl_anchor_sample(const Fl_Scene *scene, const Fl_TimeAnchor *anchor, Fl_Tic
 {
     if (!out || !fl_time_anchor_valid(anchor)) return false;
     if (anchor->kind == FL_ANCHOR_ABSOLUTE) {*out = anchor->offset; return true;}
+    if (anchor->kind == FL_ANCHOR_SPEECH) {
+        Fl_Tick base;
+        if (!fl_speech_cue_sample(scene, anchor->cue, anchor->end, &base) ||
+            (anchor->offset > 0 && base > INT64_MAX - anchor->offset) ||
+            (anchor->offset < 0 && base < INT64_MIN - anchor->offset)) return false;
+        *out = base + anchor->offset; return true;
+    }
     Fl_Tick start, end;
     if (!fl_scene_beat_range(scene, anchor->beat, &start, &end)) return false;
     Fl_Tick base = anchor->end ? end : start;
@@ -294,12 +302,14 @@ static void remove_track(Fl_Scene *s, const Fl_Track *track)
 }
 
 /* Validate ease/anchor/value of a key operation for entity's property. */
+/* Check key structure and preserve explicit unresolved speech bindings for later repair. */
 static bool key_op_valid(const Fl_Scene *s, const Fl_Op *op)
 {
-    return fl_scene_entity(s, op->entity) && op->property >= 0 && op->property < FL_PROP_COUNT &&
-           op->ease >= 0 && op->ease < FL_EASE_COUNT && anchor_valid(s, &op->anchor) &&
-           fl_anchor_resolve(s, &op->anchor) >= 0 && fl_anchor_resolve(s, &op->anchor) <= fl_scene_length(s) &&
-           fl_property_value_valid(op->property, op->value);
+    if (!fl_scene_entity(s,op->entity) || op->property < 0 || op->property >= FL_PROP_COUNT ||
+        op->ease < 0 || op->ease >= FL_EASE_COUNT || !anchor_valid(s,&op->anchor) || !fl_property_value_valid(op->property,op->value)) return false;
+    Fl_Tick tick; bool resolved = fl_anchor_sample(s,&op->anchor,&tick);
+    if (op->anchor.kind == FL_ANCHOR_SPEECH && !fl_scene_speech_cue(s,op->anchor.cue,NULL)) return false;
+    return (!resolved && op->anchor.kind == FL_ANCHOR_SPEECH) || (resolved && tick >= 0 && tick <= fl_scene_length(s));
 }
 
 bool fl_timeline_apply(const Fl_Project *p, Fl_Scene *s, const Fl_Op *op, uint64_t *next_id, Fl_Id *created)
@@ -384,7 +394,7 @@ bool fl_timeline_apply(const Fl_Project *p, Fl_Scene *s, const Fl_Op *op, uint64
     case FL_OP_KEY_SET: {
         if (!key_op_valid(s, op)) return false;
         Fl_TimeAnchor anchor = op->anchor;
-        if (anchor.kind != FL_ANCHOR_ABSOLUTE) {
+        if (anchor.kind == FL_ANCHOR_BEAT || anchor.kind == FL_ANCHOR_BEAT_POSITION) {
             Fl_Tick start, end, time = fl_anchor_resolve(s, &anchor);
             if (!fl_scene_beat_range(s, anchor.beat, &start, &end) || time < start || time > end) return false;
         }
@@ -399,7 +409,9 @@ bool fl_timeline_apply(const Fl_Project *p, Fl_Scene *s, const Fl_Op *op, uint64
         if (*next_id >= UINT64_MAX - 1) return false;
         Fl_Track *t = (Fl_Track *)fl_scene_track(s, op->entity, op->property);
         Fl_Tick at = fl_anchor_resolve(s, &op->anchor);
-        for (size_t i = 0; t && i < t->key_count; ++i) if (fl_anchor_resolve(s, &t->keys[i].at) == at) {
+        for (size_t i = 0; t && i < t->key_count; ++i) if ((at != FL_TIME_UNBOUND && fl_anchor_resolve(s, &t->keys[i].at) == at) ||
+            (at == FL_TIME_UNBOUND && anchor.kind == FL_ANCHOR_SPEECH && t->keys[i].at.kind == FL_ANCHOR_SPEECH &&
+             t->keys[i].at.cue == anchor.cue && t->keys[i].at.end == anchor.end && t->keys[i].at.offset == anchor.offset)) {
             value.id = t->keys[i].id; t->keys[i] = value; *created = value.id;
             return true;
         }

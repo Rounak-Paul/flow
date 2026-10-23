@@ -55,19 +55,22 @@ static cJSON *numbers(Fl_Json *c, const double *v, size_t count)
 cJSON *fl_document_anchor_write(Fl_Json *c, const Fl_TimeAnchor *a)
 {
     cJSON *o = cJSON_CreateObject();
-    fl_json_add(c,o,"kind",cJSON_CreateString(a->kind == FL_ANCHOR_BEAT_POSITION ? "position" : a->kind == FL_ANCHOR_BEAT ? "beat" : "absolute"));
+    fl_json_add(c,o,"kind",cJSON_CreateString(a->kind == FL_ANCHOR_SPEECH ? "speech" : a->kind == FL_ANCHOR_BEAT_POSITION ? "position" : a->kind == FL_ANCHOR_BEAT ? "beat" : "absolute"));
     fl_json_add(c,o,"beat",fl_json_u64(a->beat)); fl_json_add(c,o,"end",cJSON_CreateBool(a->end));
     fl_json_add(c,o,"offset",fl_json_i64(a->offset));
     fl_json_add(c,o,"position",cJSON_CreateNumber(a->position));
+    if (a->kind == FL_ANCHOR_SPEECH) fl_json_add(c,o,"cue",fl_json_u64(a->cue));
     return o;
 }
 
 bool fl_document_anchor_read(Fl_Json *c, const cJSON *o, Fl_TimeAnchor *a)
 {
-    if (!fl_json_object(c,o,"kind beat end offset position")) return false;
+    if (!fl_json_object(c,o,"kind beat end offset position cue")) return false;
     const cJSON *kind=fl_json_member(c,o,"kind",cJSON_String), *end=fl_json_member(c,o,"end",0);
-    if (!kind || !cJSON_IsBool(end) || (strcmp(kind->valuestring,"beat") && strcmp(kind->valuestring,"absolute") && strcmp(kind->valuestring,"position"))) return fl_json_fail(c,"Invalid time anchor");
-    a->kind = !strcmp(kind->valuestring,"position") ? FL_ANCHOR_BEAT_POSITION : !strcmp(kind->valuestring,"beat") ? FL_ANCHOR_BEAT : FL_ANCHOR_ABSOLUTE; a->end=cJSON_IsTrue(end);
+    if (!kind || !cJSON_IsBool(end) || (strcmp(kind->valuestring,"speech") && strcmp(kind->valuestring,"beat") && strcmp(kind->valuestring,"absolute") && strcmp(kind->valuestring,"position"))) return fl_json_fail(c,"Invalid time anchor");
+    a->cue = 0;
+    if (cJSON_GetObjectItemCaseSensitive(o,"cue") && !fl_json_uint(c,cJSON_GetObjectItemCaseSensitive(o,"cue"),&a->cue)) return false;
+    a->kind = !strcmp(kind->valuestring,"speech") ? FL_ANCHOR_SPEECH : !strcmp(kind->valuestring,"position") ? FL_ANCHOR_BEAT_POSITION : !strcmp(kind->valuestring,"beat") ? FL_ANCHOR_BEAT : FL_ANCHOR_ABSOLUTE; a->end=cJSON_IsTrue(end);
     return fl_json_uint(c,fl_json_member(c,o,"beat",0),&a->beat) && fl_json_int(c,fl_json_member(c,o,"offset",0),&a->offset) &&
         fl_json_number(c,fl_json_member(c,o,"position",0),&a->position) && (fl_time_anchor_valid(a) || fl_json_fail(c,"Invalid anchor structure"));
 }

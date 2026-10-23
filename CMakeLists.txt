@@ -18,6 +18,7 @@ if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
 endif()
 
 option(FLOW_BUILD_TESTS "Build Flow's unit tests" ON)
+option(FLOW_BUILD_SPEECH_ALIGNMENT "Bundle local word timing analysis" ON)
 option(FLOW_BUILD_LLAMA_TTS "Build the llama-tts voice runner beside the flow executable" ON)
 
 # Matches causality: the Vulkan SDK's shaderc_combined only ships against the
@@ -135,6 +136,10 @@ endforeach()
 add_custom_command(TARGET flow POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${PROJECT_SOURCE_DIR}/resources/voices" "$<TARGET_FILE_DIR:flow>/voices"
     COMMENT "Bundling narration voices")
+
+if(FLOW_BUILD_SPEECH_ALIGNMENT)
+    include("${PROJECT_SOURCE_DIR}/cmake/speech_alignment.cmake")
+endif()
 
 if(FLOW_BUILD_LLAMA_TTS)
     include("${PROJECT_SOURCE_DIR}/cmake/llama_tts.cmake")

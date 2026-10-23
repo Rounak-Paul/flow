@@ -48,7 +48,7 @@ Tools need an open project. With the project launcher showing they return `no_pr
 
 Look properties beyond fill and stroke: `radius`, a two-colour gradient (`fill2`, `gradient_angle`), a soft drop shadow (`shadow_blur`, `shadow_x`, `shadow_y`, `shadow_color`), text `align`, a `crop` window and animatable `crop_x/y/w/h` for images and videos (zoom and pan inside a fixed frame), and scene `background`. Video entities (`kind: "video"`, asset from `import_asset`) play from `start` at source `offset` and `rate`; the decoder uses a bounded timestamp-based ffmpeg frame cache. Lua scripts can replace a text entity's content through `ctx.entity.text`, for example to count up a number.
 
-Units: times in seconds, rotation in degrees, colours `#RRGGBB[AA]`, positions in scene pixels. Operations: `scene.add/remove/rename/move/set`, `entity.create/set/remove/reparent/reorder`, `key.set/remove`, `track.remove`, `beat.add/update/remove/move/split`, `clip.add/update/remove`, `phase.add/update/remove/move`, `voice.set`, `script.create/update/remove/attach/detach`, `component.set/remove`.
+Units: times in seconds, rotation in degrees, colours `#RRGGBB[AA]`, positions in scene pixels. Operations: `scene.add/remove/rename/move/set`, `entity.create/set/remove/reparent/reorder`, `key.set/remove`, `track.remove`, `beat.add/update/remove/move/split`, `clip.add/update/remove`, `phase.add/update/remove/move`, `voice.set`, `cue.set`, `script.create/update/remove/attach/detach`, `component.set/remove`.
 
 `phase.add` writes one spoken section and adopts the scene's only beat, or creates a beat timed to the reading (about 150 words a minute). `phase.remove` leaves that beat and its clip in place. `voice.set` chooses a speaker name and language. `reference` is an audio asset used to clone a voice. Without one, `voices/<speaker>.wav` beside Flow is used when that file exists. A transcript of the recording is stored with the scene.
 
@@ -91,3 +91,20 @@ Units: times in seconds, rotation in degrees, colours `#RRGGBB[AA]`, positions i
 `bake_scene` takes `action: start` with scene, start/end/step in seconds and numeric tolerance. It returns a token and running/ready/failed/cancelled/applied status. Use action status/cancel/apply with that token. Application is an atomic undoable edit and rejects intervening document changes. Work never mutates the live document from a worker. See LUA_RUNTIME.md for capture accuracy and budgets.
 
 Native `events` component1 contains events={next_id,points:[{id,at,name,value}]}; anchors use the regular document anchor schema. Fixed-step behaviors consume deterministic ctx.events. Inspector, files and MCP configure the same component.
+
+
+### Speech cue anchors
+
+Generation also measures word and sentence timing locally. Each phase in
+`get_manuscript` includes `alignment_asset` and `cues`: stable `id`, `text`,
+`kind` (`word`/`sentence`), audio-relative `start`/`end` seconds, `resolved`,
+`retired`, and a resolved scene `time` when available.
+
+Use `{"cue":"<id>","edge":"start","offset":-0.2}` in `key.set.at`, audio,
+event, or local-clock anchors. Regeneration updates measured times while keeping
+unambiguously matched cue IDs. Key IDs, values, easing and declared offsets stay
+unchanged. Missing/ambiguous cues remain unresolved; explicitly rebind their keys
+or detach them. `cue.set {scene,cue,start,end}` manually corrects an active cue in
+seconds into its aligned audio asset. Regeneration measures timestamps again.
+
+Native controls and local analysis are described in [Speech cues](speech-cues.md).

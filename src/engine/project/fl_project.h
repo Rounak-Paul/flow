@@ -43,11 +43,25 @@ typedef struct Fl_Beat {
     uint64_t duration;          /* ticks, > 0 */
     bool auto_advance;          /* presenter: continue without a click */
 } Fl_Beat;
+/* Phase-owned alignment point; retired/unresolved cues remain addressable for binding repair. */
+typedef enum Fl_SpeechCueKind { FL_CUE_WORD, FL_CUE_SENTENCE } Fl_SpeechCueKind;
+typedef struct Fl_SpeechCue {
+    Fl_Id id;
+    const char *text;
+    Fl_Tick start, end;         /* offsets into the aligned audio asset */
+    Fl_SpeechCueKind kind;
+    bool resolved, retired;
+} Fl_SpeechCue;
+#define FL_SPEECH_CUE_MAX 32768u
+
 /* One spoken section of a scene's manuscript. beat 0 is unbound; clip 0 has not been generated. */
 typedef struct Fl_Phase {
     Fl_Id id, beat, clip;
     const char *title;
     const char *text;
+    Fl_Id cue_asset;
+    const Fl_SpeechCue *cues;
+    size_t cue_count;
 } Fl_Phase;
 /* Audio asset placed on the scene timeline. */
 typedef struct Fl_AudioClip {
@@ -98,7 +112,7 @@ typedef enum Fl_OpKind {
     FL_OP_KEY_SET, FL_OP_KEY_REMOVE, FL_OP_TRACK_REMOVE,
     FL_OP_CLIP_ADD, FL_OP_CLIP_UPDATE, FL_OP_CLIP_REMOVE, FL_OP_BEAT_SPLIT, FL_OP_SCENE_ASPECT, FL_OP_SCENE_CAMERA, FL_OP_SCENE_BACKGROUND,
     FL_OP_ASSET_SOURCE_SET,
-    FL_OP_PHASE_ADD, FL_OP_PHASE_REMOVE, FL_OP_PHASE_UPDATE, FL_OP_PHASE_MOVE, FL_OP_VOICE_SET,
+    FL_OP_PHASE_ADD, FL_OP_PHASE_REMOVE, FL_OP_PHASE_UPDATE, FL_OP_PHASE_MOVE, FL_OP_VOICE_SET, FL_OP_PHASE_CUES, FL_OP_CUE_UPDATE,
     FL_OP_RESTORE /* notification kind only: scenes were replaced by fl_project_restore; never a valid operation */
 } Fl_OpKind;
 /* One local transform replacement in an atomic selection gesture. */
@@ -152,6 +166,10 @@ typedef struct Fl_Op {
     bool keyed;
     Fl_Tick tick;
     const char *language;               /* FL_OP_VOICE_SET */
+    const Fl_SpeechCue *cues;            /* FL_OP_PHASE_CUES: new alignment; IDs assigned/reconciled by owner */
+    size_t cue_count;
+    Fl_Id cue;                         /* FL_OP_CUE_UPDATE: explicit measured/manual timing repair */
+    Fl_Tick cue_start, cue_end;
 } Fl_Op;
 #define FL_EVENT_PROJECT_CHANGED "project.changed"
 typedef struct Fl_ProjectChange { Fl_Project *project; Fl_OpKind kind; Fl_Id scene, entity, asset; } Fl_ProjectChange;
