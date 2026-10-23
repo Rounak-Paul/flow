@@ -180,11 +180,16 @@ static bool phase_update(Fl_Scene *s, const Fl_Op *op)
     return true;
 }
 
-static bool phase_remove(Fl_Scene *s, const Fl_Op *op)
+/* Remove phase metadata and its exclusively owned narration clip; keep scene timing and assets. */
+static bool phase_remove(const Fl_Project *project, Fl_Scene *s, const Fl_Op *op, uint64_t *next_id)
 {
     size_t i = phase_index(s, op->phase);
     if (i == SIZE_MAX) return false;
     Fl_Phase *phases = (Fl_Phase *)s->phases;
+    Fl_Id clip = phases[i].clip;
+    bool shared = false;
+    for (size_t j = 0; j < s->phase_count; ++j) if (j != i && phases[j].clip == clip) shared = true;
+    if (clip && !shared && !fl_timeline_apply(project, s, &(Fl_Op){.kind = FL_OP_CLIP_REMOVE, .clip = clip}, next_id, NULL)) return false;
     free((void *)phases[i].title); free((void *)phases[i].text);
     fl_speech_cues_free((Fl_SpeechCue *)phases[i].cues, phases[i].cue_count);
     memmove(phases + i, phases + i + 1, (s->phase_count - i - 1) * sizeof(*phases));
@@ -225,7 +230,7 @@ bool fl_manuscript_apply(const Fl_Project *project, Fl_Scene *s, const Fl_Op *op
     switch (op->kind) {
     case FL_OP_PHASE_ADD: return phase_add(project, s, op, next_id, created);
     case FL_OP_PHASE_UPDATE: return phase_update(s, op);
-    case FL_OP_PHASE_REMOVE: return phase_remove(s, op);
+    case FL_OP_PHASE_REMOVE: return phase_remove(project, s, op, next_id);
     case FL_OP_PHASE_MOVE: return phase_move(s, op);
     case FL_OP_VOICE_SET: return voice_set(project, s, op);
     case FL_OP_PHASE_CUES: return fl_speech_cues_apply(project, s, op, next_id);

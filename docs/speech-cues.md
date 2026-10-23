@@ -43,3 +43,15 @@ DTW). Disabling packaging requires supplying both runner and model explicitly.
 
 Upstream: [whisper.cpp](https://github.com/ggml-org/whisper.cpp), MIT license;
 [converted model](https://huggingface.co/ggerganov/whisper.cpp).
+
+## Removing narration
+
+Each saved Manuscript phase has **Remove phase**. This removes its script and
+its timeline narration together. The beat and audio file in Assets remain.
+Undo restores the phase, clip and cue timing. Audio shared by another phase
+stays on the timeline.
+
+To remove only the timeline audio, use the trash button beside its audio row
+in Timeline (or its context menu). The phase script stays available for editing
+and regeneration. Cue-bound keys stay authored but unresolved until narration
+is restored or those keys are rebound. Deleting a beat is a separate timing edit.

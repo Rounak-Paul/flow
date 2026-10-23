@@ -1,5 +1,6 @@
 #include "flow_test.h"
 #include "platform/fl_fs.h"
+#include "project/fl_history.h"
 #include "platform/fl_paths.h"
 #include "media/fl_png.h"
 #include "schema/fl_widgets.h"
@@ -56,7 +57,7 @@ int main(int argc, char **argv)
     CHECK(fl_project_apply(project,&(Fl_Op){.kind = FL_OP_PHASE_ADD, .scene = scene, .name = "Introduction", .source = "Reveal the diagram."},&phase));
     Fl_Id beat = fl_scene_phase(fl_project_scene(project,scene),phase)->beat;
     CHECK(fl_project_apply(project,&(Fl_Op){.kind = FL_OP_BEAT_UPDATE, .scene = scene, .beat = beat, .name = "Introduction", .beat_duration = 10 * SECOND},NULL));
-    Fl_Asset record = {.name = "Narration", .kind = FL_ASSET_AUDIO, .hash = {39}, .extension = "wav", .size = 8, .duration = 10 * SECOND, .sample_rate = 24000, .channels = 1};
+    Fl_Asset record = {.name = "Journey original score with a very long filename that must leave the remove button visible", .kind = FL_ASSET_AUDIO, .hash = {39}, .extension = "wav", .size = 8, .duration = 10 * SECOND, .sample_rate = 24000, .channels = 1};
     CHECK(fl_project_apply(project,&(Fl_Op){.kind = FL_OP_ASSET_ADD, .asset_record = &record},&asset));
     Fl_AudioClip audio = {.asset = asset, .start = {.kind = FL_ANCHOR_BEAT, .beat = beat}, .gain = 1};
     CHECK(fl_project_apply(project,&(Fl_Op){.kind = FL_OP_CLIP_ADD, .scene = scene, .clip_record = &audio},&clip));
@@ -78,6 +79,20 @@ int main(int argc, char **argv)
     ca_ui_begin(window,&(Ca_DivDesc){.direction = CA_VERTICAL, .width = 1100, .height = 440}); CHECK(ca_dock_mount(dock)); ca_ui_end();
     for (int i = 0; i < 5; ++i) CHECK(ca_instance_tick(instance));
     CHECK(panel->cue_count == 2 && panel->cue_ids[1] == cue);
+    size_t audio_contexts = 0;
+    for (size_t i = 0; i < panel->item_count; ++i) if (panel->items[i].kind == ITEM_CLIP && panel->items[i].id == clip) ++audio_contexts;
+    CHECK(audio_contexts == 2);
+    char remove_id[64]; snprintf(remove_id,sizeof(remove_id),"timeline-remove-audio-%llu",(unsigned long long)clip);
+    Ca_Button *remove_button = NULL;
+    for (uint32_t i = 0; i < ca_pool_slot_count(&window->button_pool); ++i) {
+        Ca_Button *candidate = CA_POOL_AT(window->button_pool,Ca_Button,i);
+        if (candidate->node && !strcmp(candidate->node->id,remove_id)) remove_button = candidate;
+    }
+    CHECK(remove_button);
+    if (remove_button) {
+        Ca_Node *node = remove_button->node, *parent = node->parent;
+        CHECK(node->w >= 20 && node->x >= parent->x && node->x + node->w <= parent->x + parent->w);
+    }
     Ca_Select *choice = select_by_id(window,"timeline-speech-cue"); CHECK(choice);
     if (choice) {ca_select_set(choice,1); binding_cue_changed(choice,panel);}
     for (int i = 0; i < 4; ++i) CHECK(ca_instance_tick(instance));
@@ -101,6 +116,22 @@ int main(int argc, char **argv)
     for (int i = 0; i < 4; ++i) CHECK(ca_instance_tick(instance));
     CHECK(panel->unresolved_count == 0);
     bound = fl_scene_key(fl_project_scene(project,scene),key,NULL); CHECK(bound && bound->at.cue == replacement && bound->value[0] == 1);
+    Fl_TimelineItem audio_row = {panel,ITEM_CLIP,clip};
+    panel->selected_clip = clip;
+    remove_audio(NULL,&audio_row);
+    const Fl_Scene *without_audio = fl_project_scene(project,scene);
+    CHECK(without_audio->clip_count == 0 && fl_scene_phase(without_audio,phase)->clip == 0);
+    CHECK(fl_project_asset(project,asset) && panel->selected_clip == 0);
+    Fl_Tick missing_time;
+    CHECK(!fl_anchor_sample(without_audio,&fl_scene_key(without_audio,key,NULL)->at,&missing_time));
+    CHECK(fl_history_undo(fl_project_history(project),project,NULL,NULL));
+    CHECK(fl_project_scene(project,scene)->clip_count == 1);
+    CHECK(fl_scene_phase(fl_project_scene(project,scene),phase)->clip == clip);
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind = FL_OP_PHASE_REMOVE, .scene = scene, .phase = phase},NULL));
+    CHECK(fl_project_scene(project,scene)->clip_count == 0 && !fl_scene_phase(fl_project_scene(project,scene),phase));
+    CHECK(fl_scene_key(fl_project_scene(project,scene),key,NULL));
+    CHECK(fl_history_undo(fl_project_history(project),project,NULL,NULL));
+    CHECK(fl_anchor_sample(fl_project_scene(project,scene),&fl_scene_key(fl_project_scene(project,scene),key,NULL)->at,&missing_time));
     ca_dock_destroy(dock); fl_timeline_panel_destroy(panel); fl_playback_destroy(playback); fl_scene_edit_destroy(edit);
     fl_jobs_destroy(jobs); fl_project_destroy(project); fl_event_bus_destroy(bus); ca_instance_destroy(instance); ca_css_destroy(sheet);
     return FLOW_TEST_RESULT("fl_speech_binding_tests");

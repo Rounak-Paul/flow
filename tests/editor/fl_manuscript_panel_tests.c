@@ -1,5 +1,6 @@
 #include "flow_test.h"
 #include "media/fl_png.h"
+#include "project/fl_history.h"
 #include "platform/fl_fs.h"
 typedef struct GLFWwindow GLFWwindow;
 #include "ca_internal.h"
@@ -139,6 +140,12 @@ int main(int argc, char **argv)
     CHECK(fl_project_apply(project,&(Fl_Op){.kind = FL_OP_PHASE_CUES, .scene = scene, .phase = phase, .asset = asset, .cues = &cue, .cue_count = 1},NULL));
     panel->expanded_phase = phase; invalidate(panel);
     for (int i = 0; i < 4; ++i) CHECK(ca_instance_tick(instance));
+    Ca_Node *cue_list = NULL;
+    for (uint32_t i = 0; i < ca_pool_slot_count(&narrow->node_pool); ++i) {
+        Ca_Node *node = CA_POOL_AT(narrow->node_pool,Ca_Node,i);
+        if (!strcmp(node->id,"manuscript-cue-list")) cue_list = node;
+    }
+    CHECK(cue_list && cue_list->h >= 320);
     CHECK(panel->cue_rows[0].cue == fl_scene_phase(fl_project_scene(project,scene),phase)->cues[0].id);
     select_cue(NULL,&panel->cue_rows[0]);
     snprintf(panel->cue_start,sizeof(panel->cue_start),"0.2"); snprintf(panel->cue_end,sizeof(panel->cue_end),"0.6"); repair_cue(NULL,panel);
@@ -149,6 +156,17 @@ int main(int argc, char **argv)
     CHECK(input_by_id(narrow,"manuscript-cue-start"));
     CHECK(fl_fs_join(path,sizeof(path),argv[1],"cues.png")); CHECK(ca_window_capture(narrow,captured,path));
     for (int i = 0; i < 4; ++i) CHECK(ca_instance_tick(instance));
+    edit_phase(NULL,&panel->rows[0]);
+    CHECK(panel->draft->phase == phase);
+    Fl_ManuscriptRow removal = {panel,phase};
+    remove_phase(NULL,&removal);
+    const Fl_Scene *removed = fl_project_scene(project,scene);
+    CHECK(!fl_scene_phase(removed,phase) && removed->clip_count == 0);
+    CHECK(removed->beat_count == 1 && fl_project_asset(project,asset));
+    CHECK(panel->draft->phase == 0 && panel->expanded_phase == 0);
+    CHECK(fl_history_undo(fl_project_history(project),project,NULL,NULL));
+    removed = fl_project_scene(project,scene);
+    CHECK(fl_scene_phase(removed,phase) && removed->clip_count == 1 && removed->clips[0].id == clip);
     ca_dock_destroy(dock); fl_manuscript_panel_destroy(panel); fl_speech_destroy(speech);
     fl_asset_importer_destroy(importer); fl_audio_player_destroy(player); fl_scene_edit_destroy(edit);
     fl_jobs_destroy(jobs); fl_project_destroy(project); fl_event_bus_destroy(bus);

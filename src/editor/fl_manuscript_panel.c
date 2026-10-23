@@ -315,6 +315,23 @@ static void new_phase(Ca_Button *button, void *data)
     invalidate(p);
 }
 
+/* Remove a saved phase and its narration; preserve the draft on failure. */
+static void remove_phase(Ca_Button *button, void *data)
+{
+    (void)button; Fl_ManuscriptRow row = *(Fl_ManuscriptRow *)data; Fl_ManuscriptPanel *p = row.panel;
+    const Fl_Scene *scene = active_scene(p);
+    if (!scene || !fl_scene_phase(scene,row.phase) || fl_speech_running(p->speech)) return;
+    stop_audio(p); p->applying = true;
+    bool ok = fl_project_apply(fl_scene_edit_project(p->edit), &(Fl_Op){.kind = FL_OP_PHASE_REMOVE,
+        .scene = scene->id, .phase = row.phase}, NULL);
+    p->applying = false;
+    if (ok) {
+        if (p->expanded_phase == row.phase) {p->expanded_phase = p->selected_cue = 0; p->cue_page = 0;}
+        if (p->draft && p->draft->phase == row.phase) new_phase(NULL,p);
+    }
+    status(p,ok ? "Phase and narration removed. Audio remains in Assets. Undo to restore." : "Could not remove phase.");
+}
+
 /* Show a saved phase's measured word/sentence cues. */
 static void toggle_cues(Ca_Button *button, void *data)
 {
@@ -387,7 +404,7 @@ static void build_cues(Fl_ManuscriptPanel *p, const Fl_Scene *scene, const Fl_Ph
     for (size_t i = 0; i < phase->cue_count; ++i) if ((int)phase->cues[i].kind == p->cue_kind) ++count;
     if (p->cue_page * 40 >= count) p->cue_page = count ? (count - 1) / 40 : 0;
     ca_text(&(Ca_TextDesc){.text = "Select a cue to seek or correct its timing. Bind animation keys in the Timeline's Speech cue controls.", .wrap = true, .style = FL_CLASS_MUTED});
-    ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .inline_style = "width: 100%; max-height: 220px; min-height: 40px; flex-shrink: 0; gap: 4px; padding: 8px; overflow-y: auto;"});
+    ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .id = "manuscript-cue-list", .inline_style = "width: 100%; height: 320px; min-height: 320px; flex-shrink: 0; gap: 4px; padding: 8px; overflow-y: auto;"});
     size_t index = 0, visible = 0;
     for (size_t i = 0; i < phase->cue_count && visible < 40; ++i) {
         const Fl_SpeechCue *cue = &phase->cues[i]; if ((int)cue->kind != p->cue_kind) continue;
@@ -565,21 +582,27 @@ void fl_manuscript_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
     if (p->message[0]) ca_text(&(Ca_TextDesc){.text = p->message, .wrap = true, .style = FL_CLASS_WARNING});
     if (scene->phase_count) {
         ca_text(&(Ca_TextDesc){.text = "Phases", .style = FL_CLASS_HEADING});
+        ca_text(&(Ca_TextDesc){.text = "Saved narration · removing a phase also removes its audio from the timeline. Beats stay in place.", .wrap = true, .style = FL_CLASS_MUTED});
         p->rows = calloc(scene->phase_count, sizeof(*p->rows));
         if (p->rows) for (size_t i = 0; i < scene->phase_count; ++i) {
             const Fl_Phase *phase = &scene->phases[i]; Fl_ManuscriptRow *row = &p->rows[p->row_count++];
             *row = (Fl_ManuscriptRow){p, phase->id};
-            ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .inline_style = "width: 100%; flex-shrink: 0; padding: 8px; gap: 8px; flex-wrap: wrap; align-items: center; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: 8px;"});
-            ca_text(&(Ca_TextDesc){.text = phase->title, .wrap = true});
+            ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .inline_style = "width: 100%; flex-shrink: 0; padding: 12px; gap: 8px; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: 8px;"});
+            ca_text(&(Ca_TextDesc){.text = phase->title, .wrap = true, .style = FL_CLASS_HEADING});
+            ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .inline_style = "width: 100%; flex-shrink: 0; gap: 8px; flex-wrap: wrap; align-items: center;"});
             fl_button(&(Fl_ButtonDesc){.text = CA_ICON_NF_FA_PLAY, .kind = FL_BUTTON_ICON, .tooltip = "Play phase narration",
                 .on_click = play_phase, .click_data = row, .disabled = !phase_asset(scene, phase)});
             fl_button(&(Fl_ButtonDesc){.text = "Edit", .on_click = edit_phase, .click_data = row, .disabled = running});
             fl_button(&(Fl_ButtonDesc){.text = "Speech cues", .on_click = toggle_cues, .click_data = row, .active = p->expanded_phase == phase->id});
+            fl_button(&(Fl_ButtonDesc){.text = "Remove phase", .destructive = true, .on_click = remove_phase,
+                .click_data = row, .disabled = running, .tooltip = "Remove script and timeline narration; keep the audio asset and beat. Undo restores both."});
+            if (!phase->clip) ca_text(&(Ca_TextDesc){.text = "No timeline audio", .style = FL_CLASS_MUTED});
             size_t unresolved = 0;
             for (size_t j = 0; j < phase->cue_count; ++j) {Fl_Tick tick; if (!fl_phase_speech_cue_sample(scene,phase,&phase->cues[j],false,&tick)) ++unresolved;}
             if (unresolved) {char warning[96]; snprintf(warning,sizeof(warning),"%zu cues need review",unresolved); ca_text(&(Ca_TextDesc){.text = warning, .style = FL_CLASS_WARNING});}
             ca_div_end();
             if (p->expanded_phase == phase->id) build_cues(p,scene,phase,running);
+            ca_div_end();
         }
     }
     ca_div_end(); p->building = false;

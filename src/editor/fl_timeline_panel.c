@@ -897,6 +897,15 @@ static void track_menu(int index, void *data)
     if (index == 0 && s) apply(it->panel, (Fl_Op){.kind = FL_OP_TRACK_REMOVE, .scene = s->id, .track = it->id}, NULL);
 }
 
+/* Remove the clip identified by a row action, retaining its source asset and phase script. */
+static void remove_audio(Ca_Button *button, void *data)
+{
+    (void)button; Fl_TimelineItem row = *(Fl_TimelineItem *)data;
+    Fl_TimelinePanel *p = row.panel; const Fl_Scene *scene = scene_of(p);
+    if (!scene || fl_playback_playing(p->playback)) return;
+    apply(p,(Fl_Op){.kind = FL_OP_CLIP_REMOVE, .scene = scene->id, .clip = row.id},NULL);
+}
+
 /* Clip actions: gain steps, fades, delete. */
 static void clip_menu(int index, void *data)
 {
@@ -931,6 +940,10 @@ static bool changed(const Fl_Event *event, void *data)
     if (!fl_scene_key(scene_of(p), p->selected_key, &track) || !fl_scene_edit_contains(p->edit, track->entity))
         p->selected_key = 0;
     if (!fl_scene_beat_range(scene_of(p), p->selected_beat, NULL, NULL)) p->selected_beat = 0;
+    bool clip_exists = false;
+    const Fl_Scene *current = scene_of(p);
+    for (size_t i = 0; current && i < current->clip_count; ++i) if (current->clips[i].id == p->selected_clip) clip_exists = true;
+    if (!clip_exists) p->selected_clip = 0;
     invalidate(p); return false;
 }
 static bool time_changed(const Fl_Event *event, void *data)
@@ -1022,14 +1035,6 @@ static void element(Fl_TimelinePanel *p, Fl_TimelineItem *it, const char *id, co
     (void)p;
 }
 
-/* Emit a label-column row. */
-static void label_row(const char *text, const char *style)
-{
-    ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = style});
-    ca_text(&(Ca_TextDesc){.text = text, .style = FL_CLASS_TL_LABEL_TEXT});
-    ca_div_end();
-}
-
 /* Draw bounded clock-style subdivisions with labeled major ticks at each zoom level. */
 static void build_time_ruler(Fl_TimelinePanel *p, Fl_Tick length, float width)
 {
@@ -1087,7 +1092,7 @@ void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
     for (const Fl_Track *track; (track = fl_scene_track_next(&scan));) if (fl_scene_edit_contains(p->edit, track->entity)) {
         keys += track->key_count; ++tracks;
     }
-    size_t needed = 1 + s->beat_count * 2 + tracks + keys + s->clip_count;
+    size_t needed = 1 + s->beat_count * 2 + tracks + keys + s->clip_count * 2;
     if (needed > p->item_capacity) {
         Fl_TimelineItem *grown = realloc(p->items, needed * sizeof(*grown));
         if (grown) { p->items = grown; p->item_capacity = needed; }
@@ -1214,7 +1219,18 @@ void fl_timeline_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
     for (size_t i = 0; i < s->clip_count; ++i) {
         const Fl_Asset *a = fl_project_asset(project, s->clips[i].asset);
         char text[192]; snprintf(text, sizeof(text), "%s  %s", CA_ICON_NF_FA_MUSIC, a ? a->name : "?");
-        label_row(text, FL_CLASS_TL_LABEL);
+        ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = p->selected_clip == s->clips[i].id ? FL_CLASS_TL_LABEL_SELECTED : FL_CLASS_TL_LABEL,
+            .height = FL_STYLE_TL_ROW_H});
+        ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .width = FL_STYLE_TL_LABEL_W - 48,
+            .inline_style = "flex-shrink: 0; overflow: hidden;"});
+        ca_text(&(Ca_TextDesc){.text = text, .style = FL_CLASS_TL_TRACK_NAME});
+        ca_div_end();
+        char remove_id[64]; snprintf(remove_id,sizeof(remove_id),"timeline-remove-audio-%llu",(unsigned long long)s->clips[i].id);
+        Fl_TimelineItem *audio = item(p, ITEM_CLIP, s->clips[i].id);
+        fl_button(&(Fl_ButtonDesc){.text = CA_ICON_NF_MD_DELETE_OUTLINE, .kind = FL_BUTTON_ICON,
+            .id = remove_id, .destructive = true, .tooltip = "Remove audio from timeline; keep script and source asset",
+            .on_click = remove_audio, .click_data = audio, .disabled = playing || !audio});
+        ca_div_end();
     }
     ca_div_end();
     ca_div_end();
