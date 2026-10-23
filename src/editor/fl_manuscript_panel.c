@@ -9,6 +9,7 @@
 #include "ui/fl_button.h"
 #include "style.h"
 #include <ca_icons.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -56,9 +57,14 @@ struct Fl_ManuscriptPanel {
     Fl_Id generated_scene, generated_phase, browser_scene;
     Fl_Id expanded_phase, selected_cue;
     size_t cue_page;
-    int cue_kind;
+    int cue_kind, tab, cue_filter;
+    Fl_Id review_scene;
+    char cue_search[128], phase_search[128];
     Fl_ManuscriptCueRow cue_rows[40];
     char cue_start[48], cue_end[48];
+    Fl_Id selected_asset;
+    Fl_Tick selected_start, selected_end;
+    bool selected_resolved;
     uint64_t generated_revision, started, playing;
     bool was_running, applying, building;
     char message[256];
@@ -189,11 +195,30 @@ static void accept_phase(Ca_Button *button, void *data)
     p->applying = true; stop_audio(p);
     bool ok = fl_speech_accept(p->speech, d->scene, d->phase, d->title);
     if (ok) {
+        Fl_Id saved = d->phase;
         d->phase = 0; d->text[0] = 0; ++d->revision;
         const Fl_Scene *scene = active_scene(p);
+        p->expanded_phase = saved ? saved : scene && scene->phase_count ? scene->phases[scene->phase_count - 1].id : 0;
+        p->selected_cue = 0; p->tab = 1;
         snprintf(d->title, sizeof(d->title), "Phase %zu", scene ? scene->phase_count + 1 : 1);
     }
     p->applying = false; status(p, fl_speech_message(p->speech));
+}
+
+/* Discard the temporary take while retaining its authored text and voice settings. */
+static void discard_take(Ca_Button *button, void *data)
+{
+    (void)button; Fl_ManuscriptPanel *p = data; stop_audio(p); fl_speech_discard(p->speech);
+    p->generated_scene = 0; status(p,"Generated take discarded. Your writing is retained.");
+}
+
+/* Save the current matching take and open its timing review after successful acceptance. */
+static void save_and_review(Ca_Button *button, void *data)
+{
+    Fl_ManuscriptPanel *p = data;
+    if (!ready_audio(p)) return;
+    accept_phase(button,data);
+    if (p->tab == 1 && p->expanded_phase) {p->tab = 2; p->cue_filter = 1; p->cue_page = 0; invalidate(p);}
 }
 
 /* Switch between built-in and recording sources without discarding either source's settings. */
@@ -301,7 +326,7 @@ static void edit_phase(Ca_Button *button, void *data)
     stop_audio(p); p->draft->phase = phase->id;
     snprintf(p->draft->title, sizeof(p->draft->title), "%s", phase->title);
     snprintf(p->draft->text, sizeof(p->draft->text), "%s", phase->text);
-    ++p->draft->revision; p->message[0] = 0; invalidate(p);
+    ++p->draft->revision; p->message[0] = 0; p->tab = 0; invalidate(p);
 }
 
 /* Start a fresh phase draft, leaving all accepted phases untouched. */
@@ -312,7 +337,7 @@ static void new_phase(Ca_Button *button, void *data)
     stop_audio(p); p->draft->phase = 0; p->draft->text[0] = 0; ++p->draft->revision;
     const Fl_Scene *scene = active_scene(p);
     snprintf(p->draft->title, sizeof(p->draft->title), "Phase %zu", scene ? scene->phase_count + 1 : 1);
-    invalidate(p);
+    p->tab = 0; invalidate(p);
 }
 
 /* Remove a saved phase and its narration; preserve the draft on failure. */
@@ -336,7 +361,7 @@ static void remove_phase(Ca_Button *button, void *data)
 static void toggle_cues(Ca_Button *button, void *data)
 {
     (void)button; Fl_ManuscriptRow row = *(Fl_ManuscriptRow *)data; Fl_ManuscriptPanel *p = row.panel;
-    p->expanded_phase = p->expanded_phase == row.phase ? 0 : row.phase;
+    p->expanded_phase = row.phase; p->tab = 2;
     p->cue_page = 0; p->selected_cue = 0; invalidate(p);
 }
 
@@ -362,11 +387,17 @@ static void next_cues(Ca_Button *button, void *data)
 static void select_cue(Ca_Button *button, void *data)
 {
     (void)button; Fl_ManuscriptCueRow row = *(Fl_ManuscriptCueRow *)data; Fl_ManuscriptPanel *p = row.panel;
-    const Fl_Scene *scene = active_scene(p); const Fl_SpeechCue *cue = fl_scene_speech_cue(scene,row.cue,NULL);
+    const Fl_Scene *scene = active_scene(p); const Fl_Phase *owner = NULL;
+    const Fl_SpeechCue *cue = fl_scene_speech_cue(scene,row.cue,&owner);
     if (!cue) return;
     p->selected_cue = cue->id;
-    snprintf(p->cue_start,sizeof(p->cue_start),"%.3f",(double)cue->start / FL_TICKS_PER_SECOND);
-    snprintf(p->cue_end,sizeof(p->cue_end),"%.3f",(double)cue->end / FL_TICKS_PER_SECOND);
+    p->selected_asset = owner ? owner->cue_asset : 0;
+    p->selected_start = cue->start; p->selected_end = cue->end; p->selected_resolved = cue->resolved;
+    p->cue_start[0] = p->cue_end[0] = 0;
+    if (cue->end > cue->start) {
+        snprintf(p->cue_start,sizeof(p->cue_start),"%.3f",(double)cue->start / FL_TICKS_PER_SECOND);
+        snprintf(p->cue_end,sizeof(p->cue_end),"%.3f",(double)cue->end / FL_TICKS_PER_SECOND);
+    }
     Fl_Tick tick; if (fl_speech_cue_sample(scene,cue->id,false,&tick)) fl_scene_edit_set_time(p->edit,tick);
     invalidate(p);
 }
@@ -384,43 +415,259 @@ static void cue_end_changed(Ca_TextInput *input, void *data)
 }
 
 /* Explicitly correct one cue's offsets within the current aligned audio asset. */
-static void repair_cue(Ca_Button *button, void *data)
+static bool save_cue_timing(Fl_ManuscriptPanel *p)
 {
-    (void)button; Fl_ManuscriptPanel *p = data; const Fl_Scene *scene = active_scene(p);
+    const Fl_Scene *scene = active_scene(p);
+    const Fl_Phase *owner = NULL; const Fl_SpeechCue *cue = fl_scene_speech_cue(scene,p->selected_cue,&owner);
+    if (!cue || !owner || owner->id != p->expanded_phase || owner->cue_asset != p->selected_asset ||
+        cue->start != p->selected_start || cue->end != p->selected_end || cue->resolved != p->selected_resolved) {
+        status(p,"This cue changed. Go back and select it again before accepting timing."); return false;
+    }
     char *end_a, *end_b; double a = strtod(p->cue_start,&end_a), b = strtod(p->cue_end,&end_b); Fl_Tick start, end;
     if (!scene || !p->selected_cue || end_a == p->cue_start || *end_a || end_b == p->cue_end || *end_b ||
-        !fl_time_from_seconds(a,&start) || !fl_time_from_seconds(b,&end)) {status(p,"Enter valid start and end times in seconds."); return;}
+        !fl_time_from_seconds(a,&start) || !fl_time_from_seconds(b,&end)) {status(p,"Enter valid start and end times in seconds."); return false;}
     if (!fl_project_apply(fl_scene_edit_project(p->edit),&(Fl_Op){.kind = FL_OP_CUE_UPDATE, .scene = scene->id,
-        .cue = p->selected_cue, .cue_start = start, .cue_end = end},NULL)) status(p,"Timing must be inside the current audio. Removed cues must be rebound.");
-    else status(p,"Speech cue timing updated.");
+        .cue = p->selected_cue, .cue_start = start, .cue_end = end},NULL)) {status(p,"Timing must be inside the current audio. Removed cues must be rebound."); return false;}
+    else {
+        p->selected_start = start; p->selected_end = end; p->selected_resolved = true;
+        status(p,"Speech cue timing updated."); return true;
+    }
 }
 
-/* Render a bounded, scrollable cue page with explicit unresolved diagnostics. */
+/* Publish the selected cue's visible timing draft through the document owner. */
+static void repair_cue(Ca_Button *button, void *data)
+{
+    (void)button; save_cue_timing(data);
+}
+
+/* Reanalyze the selected narration through the speech worker without replacing audio. */
+static void reanalyze_phase(Ca_Button *button, void *data)
+{
+    (void)button; Fl_ManuscriptPanel *p = data; const Fl_Scene *scene = active_scene(p);
+    if (!scene) return;
+    stop_audio(p);
+    if (fl_speech_reanalyze(p->speech,scene->id,p->expanded_phase)) p->selected_cue = 0;
+    status(p,fl_speech_message(p->speech));
+}
+
+/* Open the phase chooser without discarding the writing draft. */
+static void choose_review_phase(Ca_Button *button, void *data)
+{
+    (void)button; Fl_ManuscriptPanel *p = data; p->expanded_phase = p->selected_cue = 0; p->cue_page = 0; invalidate(p);
+}
+
+/* Change workspace without modifying the active writing draft or generation job. */
+static void workspace_changed(Ca_TabBar *tabs, void *data)
+{
+    Fl_ManuscriptPanel *p = data; p->tab = ca_tabs_active(tabs); invalidate(p);
+}
+
+/* Filter cue rows without discarding the currently selected timing draft. */
+static void cue_filter_changed(Ca_Select *select, void *data)
+{
+    Fl_ManuscriptPanel *p = data; p->cue_filter = ca_select_get(select); p->cue_page = 0; invalidate(p);
+}
+
+/* Retain search text across rebuilds and restart the bounded cue page. */
+static void cue_search_changed(Ca_TextInput *input, void *data)
+{
+    Fl_ManuscriptPanel *p = data;
+    snprintf(p->cue_search,sizeof(p->cue_search),"%s",ca_input_text(input)); p->cue_page = 0; invalidate(p);
+}
+
+/* Match query as a substring, folding ASCII case while preserving UTF-8 bytes. */
+static bool contains_text(const char *text, const char *query)
+{
+    if (!query[0]) return true;
+    for (; *text; ++text) {
+        size_t i = 0;
+        while (query[i] && text[i] && tolower((unsigned char)query[i]) == tolower((unsigned char)text[i])) ++i;
+        if (!query[i]) return true;
+    }
+    return false;
+}
+
+/* Retain the saved-narration search without modifying writing drafts. */
+static void phase_search_changed(Ca_TextInput *input, void *data)
+{
+    Fl_ManuscriptPanel *p = data;
+    snprintf(p->phase_search,sizeof(p->phase_search),"%s",ca_input_text(input)); invalidate(p);
+}
+
+/* Return whether a cue matches the current kind, text and resolution filter. */
+static bool cue_visible(const Fl_ManuscriptPanel *p, const Fl_Scene *scene, const Fl_Phase *phase, const Fl_SpeechCue *cue)
+{
+    if ((int)cue->kind != p->cue_kind || !contains_text(cue->text,p->cue_search)) return false;
+    Fl_Tick tick; bool timed = fl_phase_speech_cue_sample(scene,phase,cue,false,&tick) && fl_phase_speech_cue_sample(scene,phase,cue,true,&tick);
+    if (p->cue_filter == 1) return !cue->retired && !cue->resolved;
+    if (p->cue_filter == 2) return timed;
+    if (p->cue_filter == 3) return cue->retired || (cue->resolved && !timed);
+    return true;
+}
+
+/* Return the linked clip only when its audio still owns this alignment. */
+static const Fl_AudioClip *review_clip(const Fl_Scene *scene, const Fl_Phase *phase)
+{
+    for (size_t i = 0; scene && phase && i < scene->clip_count; ++i)
+        if (scene->clips[i].id == phase->clip && scene->clips[i].asset == phase->cue_asset &&
+            scene->clips[i].start.kind != FL_ANCHOR_SPEECH) return &scene->clips[i];
+    return NULL;
+}
+
+/* Audition the selected audio-relative interval, including a short bounded context. */
+static void audition_cue(Ca_Button *button, void *data)
+{
+    (void)button; Fl_ManuscriptPanel *p = data;
+    if (p->playing && fl_audio_player_current(p->player) == p->playing) {stop_audio(p); invalidate(p); return;}
+    const Fl_Scene *scene = active_scene(p); const Fl_Phase *phase = NULL;
+    const Fl_SpeechCue *cue = fl_scene_speech_cue(scene,p->selected_cue,&phase);
+    Fl_Project *project = fl_scene_edit_project(p->edit);
+    const Fl_Asset *asset = phase ? fl_project_asset(project,phase->cue_asset) : NULL;
+    char *a, *b, path[FL_PATH_MAX]; double start = strtod(p->cue_start,&a), end = strtod(p->cue_end,&b);
+    Fl_Tick first, last;
+    if (!cue || cue->retired || !review_clip(scene,phase) || !asset || !p->cue_start[0] || *a || !p->cue_end[0] || *b ||
+        !fl_time_from_seconds(start,&first) || !fl_time_from_seconds(end,&last) || first < 0 || last <= first ||
+        (uint64_t)last > asset->duration || !fl_project_asset_path(project,asset,path,sizeof(path))) {
+        status(p,"Enter a valid interval inside the current narration audio to audition it."); return;
+    }
+    stop_audio(p);
+    start = start > 0.15 ? start - 0.15 : 0;
+    end += 0.15; double duration = (double)asset->duration / FL_TICKS_PER_SECOND;
+    if (end > duration) end = duration;
+    p->playing = fl_audio_player_play_range(p->player,path,start,end);
+    if (!p->playing) status(p,"Could not play this audio interval.");
+    invalidate(p);
+}
+
+/* Capture the scene playhead as an audio-relative start or end draft. */
+static void capture_playhead(Fl_ManuscriptPanel *p, bool end)
+{
+    const Fl_Scene *scene = active_scene(p); const Fl_Phase *phase = NULL;
+    const Fl_SpeechCue *cue = fl_scene_speech_cue(scene,p->selected_cue,&phase);
+    const Fl_AudioClip *clip = review_clip(scene,phase); Fl_Tick base;
+    const Fl_Asset *asset = phase ? fl_project_asset(fl_scene_edit_project(p->edit),phase->cue_asset) : NULL;
+    Fl_Tick now = fl_scene_edit_time(p->edit);
+    uint64_t delta = 0;
+    bool placed = clip && fl_anchor_sample(scene,&clip->start,&base) && now >= base;
+    if (placed) delta = (uint64_t)now - (uint64_t)base;
+    if (!cue || cue->retired || !clip || !asset || !placed ||
+        (clip->duration && delta > clip->duration) ||
+        clip->source_offset > asset->duration || delta > asset->duration - clip->source_offset) {
+        status(p,"The playhead must be inside this phase's current audio clip."); return;
+    }
+    double seconds = ((double)delta + (double)clip->source_offset) / FL_TICKS_PER_SECOND;
+    snprintf(end ? p->cue_end : p->cue_start,48,"%.3f",seconds); invalidate(p);
+}
+
+/* Copy the playhead into the selected cue's start draft. */
+static void capture_start(Ca_Button *button, void *data) {(void)button; capture_playhead(data,false);}
+/* Copy the playhead into the selected cue's end draft. */
+static void capture_end(Ca_Button *button, void *data) {(void)button; capture_playhead(data,true);}
+
+/* Accept the visible draft and move to the next unresolved live cue of this kind. */
+static void accept_next(Ca_Button *button, void *data)
+{
+    Fl_ManuscriptPanel *p = data; Fl_Id selected = p->selected_cue;
+    (void)button; if (!save_cue_timing(p)) return;
+    const Fl_Scene *scene = active_scene(p); const Fl_Phase *phase = NULL;
+    const Fl_SpeechCue *cue = fl_scene_speech_cue(scene,selected,&phase);
+    if (!cue || !cue->resolved) return;
+    size_t at = 0;
+    while (at < phase->cue_count && phase->cues[at].id != selected) ++at;
+    for (size_t offset = 1; offset <= phase->cue_count; ++offset) {
+        const Fl_SpeechCue *next = &phase->cues[(at + offset) % phase->cue_count];
+        if (next->retired || next->resolved || (int)next->kind != p->cue_kind) continue;
+        Fl_ManuscriptCueRow row = {p,next->id}; select_cue(NULL,&row); return;
+    }
+    status(p,"All active cues of this kind have timing.");
+}
+
+/* Return to the cue list while retaining its filter and page. */
+static void close_cue(Ca_Button *button, void *data)
+{
+    (void)button; Fl_ManuscriptPanel *p = data; p->selected_cue = 0; invalidate(p);
+}
+
+/* Build the selected cue inspector outside the scrolling list. */
+static void build_cue_inspector(Fl_ManuscriptPanel *p, const Fl_Scene *scene, const Fl_Phase *phase, bool running)
+{
+    const Fl_Phase *owner = NULL; const Fl_SpeechCue *cue = fl_scene_speech_cue(scene,p->selected_cue,&owner);
+    if (!cue || owner != phase) {p->selected_cue = 0; return;}
+    fl_button(&(Fl_ButtonDesc){.text = "Back to cues", .on_click = close_cue, .click_data = p});
+    ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .id = "manuscript-cue-detail",
+        .inline_style = "width: 100%; flex-grow: 1; flex-shrink: 1; min-height: 0px; overflow-y: auto; gap: 10px;"});
+    ca_text(&(Ca_TextDesc){.text = cue->text, .wrap = true, .style = FL_CLASS_HEADING});
+    bool current = review_clip(scene,phase) != NULL;
+    Fl_Tick start, end; bool resolved = fl_phase_speech_cue_sample(scene,phase,cue,false,&start) && fl_phase_speech_cue_sample(scene,phase,cue,true,&end);
+    const Fl_Asset *asset = fl_project_asset(fl_scene_edit_project(p->edit),phase->cue_asset);
+    bool outside_source = asset && (uint64_t)cue->end > asset->duration;
+    char label[160];
+    if (resolved) snprintf(label,sizeof(label),"Scene time: %.3f–%.3f s",(double)start / FL_TICKS_PER_SECOND,(double)end / FL_TICKS_PER_SECOND);
+    else snprintf(label,sizeof(label),"%s",cue->retired ? "Removed or ambiguous cue. Repair its bindings in Timeline." :
+        !current ? "Current audio is missing or replaced. Restore or regenerate narration." :
+        cue->resolved ? "Timing is outside the visible clip or its placement cannot resolve." :
+        outside_source ? "Recognition timing exceeds the source audio. Correct the interval before accepting." :
+        cue->end > cue->start ? "Suggested timing from recognition. Listen and accept, or correct it." : "No reliable match. Set start and end manually.");
+    ca_text(&(Ca_TextDesc){.text = label, .wrap = true, .style = resolved ? FL_CLASS_MUTED : FL_CLASS_WARNING});
+    ca_text(&(Ca_TextDesc){.text = "Audio time · seconds from the start of the source audio. Regeneration measures timing again.", .wrap = true, .style = FL_CLASS_MUTED});
+    bool stale = phase->cue_asset != p->selected_asset || cue->start != p->selected_start ||
+        cue->end != p->selected_end || cue->resolved != p->selected_resolved;
+    if (stale) ca_text(&(Ca_TextDesc){.text = "Cue changed. Go back and select it again to review current timing.", .wrap = true, .style = FL_CLASS_WARNING});
+    bool disabled = running || cue->retired || !current || stale;
+    ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .inline_style = "width: 100%; flex-shrink: 0; gap: 8px; flex-wrap: wrap; align-items: center;"});
+    ca_text(&(Ca_TextDesc){.text = "Start"});
+    ca_input(&(Ca_InputDesc){.text = p->cue_start, .id = "manuscript-cue-start", .input_mode = CA_INPUT_FLOAT, .max_length = 47, .width = 100,
+        .style = FL_CLASS_PROPERTY_INPUT, .inline_style = "flex-grow: 0;", .on_change = cue_start_changed, .change_data = p, .disabled = disabled});
+    ca_text(&(Ca_TextDesc){.text = "End"});
+    ca_input(&(Ca_InputDesc){.text = p->cue_end, .id = "manuscript-cue-end", .input_mode = CA_INPUT_FLOAT, .max_length = 47, .width = 100,
+        .style = FL_CLASS_PROPERTY_INPUT, .inline_style = "flex-grow: 0;", .on_change = cue_end_changed, .change_data = p, .disabled = disabled});
+    ca_div_end();
+    ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .inline_style = "width: 100%; flex-shrink: 0; gap: 8px; flex-wrap: wrap;"});
+    fl_button(&(Fl_ButtonDesc){.text = "Play interval / Stop", .on_click = audition_cue, .click_data = p, .disabled = disabled});
+    fl_button(&(Fl_ButtonDesc){.text = "Playhead → start", .on_click = capture_start, .click_data = p, .disabled = disabled});
+    fl_button(&(Fl_ButtonDesc){.text = "Playhead → end", .on_click = capture_end, .click_data = p, .disabled = disabled});
+    ca_div_end();
+    ca_div_end();
+    ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .inline_style = "width: 100%; flex-shrink: 0; gap: 8px; flex-wrap: wrap;"});
+    fl_button(&(Fl_ButtonDesc){.text = cue->resolved ? "Save timing" : "Accept timing", .on_click = repair_cue, .click_data = p, .disabled = disabled});
+    fl_button(&(Fl_ButtonDesc){.text = "Accept & next", .on_click = accept_next, .click_data = p, .disabled = disabled});
+    ca_div_end();
+}
+
+/* Render a bounded cue page in the sole scrolling viewport of the review tab. */
 static void build_cues(Fl_ManuscriptPanel *p, const Fl_Scene *scene, const Fl_Phase *phase, bool running)
 {
+    if (p->selected_cue && fl_scene_speech_cue(scene,p->selected_cue,NULL)) {build_cue_inspector(p,scene,phase,running); return;}
     const char *tabs[] = {"Words","Sentences"};
     ca_tabs(&(Ca_TabBarDesc){.labels = tabs, .count = 2, .active = p->cue_kind, .on_change = cue_kind_changed, .change_data = p});
+    const char *filters[] = {"All cues","Needs timing","Timed","Unavailable"};
+    ca_select(&(Ca_SelectDesc){.options = filters, .option_count = 4, .selected = p->cue_filter, .width = 180,
+        .on_change = cue_filter_changed, .change_data = p});
+    ca_input(&(Ca_InputDesc){.id = "manuscript-cue-search", .text = p->cue_search, .placeholder = "Find cue text…", .max_length = 127,
+        .style = FL_CLASS_PROPERTY_INPUT, .inline_style = "width: 100%; height: 30px; flex-grow: 0; flex-shrink: 0;", .on_change = cue_search_changed, .change_data = p});
     size_t count = 0;
-    for (size_t i = 0; i < phase->cue_count; ++i) if ((int)phase->cues[i].kind == p->cue_kind) ++count;
+    for (size_t i = 0; i < phase->cue_count; ++i) if (cue_visible(p,scene,phase,&phase->cues[i])) ++count;
     if (p->cue_page * 40 >= count) p->cue_page = count ? (count - 1) / 40 : 0;
-    ca_text(&(Ca_TextDesc){.text = "Select a cue to seek or correct its timing. Bind animation keys in the Timeline's Speech cue controls.", .wrap = true, .style = FL_CLASS_MUTED});
-    ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .id = "manuscript-cue-list", .inline_style = "width: 100%; height: 320px; min-height: 320px; flex-shrink: 0; gap: 4px; padding: 8px; overflow-y: auto;"});
+    ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .id = "manuscript-cue-list", .inline_style = "width: 100%; flex-grow: 1; flex-shrink: 1; min-height: 0px; gap: 6px; overflow-y: auto;"});
+    const Fl_Asset *asset = fl_project_asset(fl_scene_edit_project(p->edit),phase->cue_asset);
     size_t index = 0, visible = 0;
     for (size_t i = 0; i < phase->cue_count && visible < 40; ++i) {
-        const Fl_SpeechCue *cue = &phase->cues[i]; if ((int)cue->kind != p->cue_kind) continue;
+        const Fl_SpeechCue *cue = &phase->cues[i]; if (!cue_visible(p,scene,phase,cue)) continue;
         if (index++ < p->cue_page * 40) continue;
         Fl_ManuscriptCueRow *row = &p->cue_rows[visible++]; *row = (Fl_ManuscriptCueRow){p,cue->id};
-        Fl_Tick tick; bool resolved = fl_phase_speech_cue_sample(scene,phase,cue,false,&tick);
-        ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .inline_style = "width: 100%; flex-shrink: 0; gap: 8px; align-items: center;"});
-        char time[96];
-        if (resolved) snprintf(time,sizeof(time),"%.2f–%.2fs",(double)cue->start / FL_TICKS_PER_SECOND,(double)cue->end / FL_TICKS_PER_SECOND);
-        else snprintf(time,sizeof(time),"%s",cue->retired ? "Removed / ambiguous" : "Needs timing review");
-        fl_button(&(Fl_ButtonDesc){.text = "Select", .on_click = select_cue, .click_data = row, .active = p->selected_cue == cue->id});
-        ca_text(&(Ca_TextDesc){.text = time, .style = resolved ? FL_CLASS_MUTED : FL_CLASS_WARNING});
+        Fl_Tick tick; bool resolved = fl_phase_speech_cue_sample(scene,phase,cue,false,&tick) && fl_phase_speech_cue_sample(scene,phase,cue,true,&tick);
+        ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .inline_style = "width: 100%; flex-shrink: 0; gap: 6px; padding: 10px; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: 8px;"});
         ca_text(&(Ca_TextDesc){.text = cue->text, .wrap = true});
+        char time[128];
+        if (cue->retired) snprintf(time,sizeof(time),"Removed / ambiguous");
+        else if (cue->end > cue->start) snprintf(time,sizeof(time),"%s %.3f–%.3f s%s",cue->resolved ? "Audio:" : asset && (uint64_t)cue->end > asset->duration ? "Outside source:" : "Suggested:",
+            (double)cue->start / FL_TICKS_PER_SECOND,(double)cue->end / FL_TICKS_PER_SECOND,cue->resolved && !resolved ? " · unavailable in scene" : "");
+        else snprintf(time,sizeof(time),"No reliable timestamp · set manually");
+        ca_text(&(Ca_TextDesc){.text = time, .wrap = true, .style = resolved ? FL_CLASS_MUTED : FL_CLASS_WARNING});
+        fl_button(&(Fl_ButtonDesc){.text = "Review timing", .on_click = select_cue, .click_data = row});
         ca_div_end();
     }
-    if (!count) ca_text(&(Ca_TextDesc){.text = "Generate narration to measure speech cues.", .style = FL_CLASS_MUTED});
+    if (!count) ca_text(&(Ca_TextDesc){.text = "No matching cues. Choose another filter or generate narration to measure timing.", .wrap = true, .style = FL_CLASS_MUTED});
     ca_div_end();
     ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .inline_style = "width: 100%; flex-shrink: 0; gap: 8px; flex-wrap: wrap; align-items: center;"});
     fl_button(&(Fl_ButtonDesc){.text = "Previous", .on_click = previous_cues, .click_data = p, .disabled = !p->cue_page});
@@ -428,19 +675,6 @@ static void build_cues(Fl_ManuscriptPanel *p, const Fl_Scene *scene, const Fl_Ph
     ca_text(&(Ca_TextDesc){.text = page, .style = FL_CLASS_MUTED});
     fl_button(&(Fl_ButtonDesc){.text = "Next", .on_click = next_cues, .click_data = p, .disabled = (p->cue_page + 1) * 40 >= count});
     ca_div_end();
-    const Fl_Phase *owner = NULL; const Fl_SpeechCue *cue = fl_scene_speech_cue(scene,p->selected_cue,&owner);
-    if (cue && owner == phase && !cue->retired) {
-        ca_text(&(Ca_TextDesc){.text = "Timing in seconds into this phase's audio. Regeneration measures it again.", .wrap = true, .style = FL_CLASS_MUTED});
-        ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .inline_style = "width: 100%; flex-shrink: 0; gap: 8px; flex-wrap: wrap; align-items: center;"});
-        ca_text(&(Ca_TextDesc){.text = "Start"});
-        ca_input(&(Ca_InputDesc){.text = p->cue_start, .id = "manuscript-cue-start", .input_mode = CA_INPUT_FLOAT, .max_length = 47, .width = 80,
-            .style = FL_CLASS_PROPERTY_INPUT, .inline_style = "flex-grow: 0;", .on_change = cue_start_changed, .change_data = p, .disabled = running});
-        ca_text(&(Ca_TextDesc){.text = "End"});
-        ca_input(&(Ca_InputDesc){.text = p->cue_end, .id = "manuscript-cue-end", .input_mode = CA_INPUT_FLOAT, .max_length = 47, .width = 80,
-            .style = FL_CLASS_PROPERTY_INPUT, .inline_style = "flex-grow: 0;", .on_change = cue_end_changed, .change_data = p, .disabled = running});
-        fl_button(&(Fl_ButtonDesc){.text = "Set timing", .on_click = repair_cue, .click_data = p, .disabled = running});
-        ca_div_end();
-    }
 }
 
 /* Observe document/selection/playback changes without overwriting unaccepted writing. */
@@ -516,21 +750,12 @@ static Fl_ManuscriptDraft *scene_draft(Fl_ManuscriptPanel *p, const Fl_Scene *sc
     d->next = p->drafts; p->drafts = d; return d;
 }
 
-/* Build the choose → write → generate → preview → accept manuscript workspace. */
-void fl_manuscript_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
+/* Build the writing workspace with a flexible editor and persistent acceptance controls. */
+static void build_writing(Fl_ManuscriptPanel *p, bool running)
 {
-    Fl_ManuscriptPanel *p = data; p->building = true; p->dock = dock; p->window = window;
-    p->well = NULL; p->progress_label = NULL; p->estimate = NULL;
-    p->accept_button = p->generate_button = p->play_button = NULL;
-    free(p->rows); p->rows = NULL; p->row_count = 0;
-    const Fl_Scene *scene = active_scene(p);
-    p->draft = scene ? scene_draft(p, scene) : NULL;
-    Fl_ManuscriptDraft *d = p->draft; bool running = fl_speech_running(p->speech);
-    ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .id = "manuscript-body", .style = FL_CLASS_SCRIPTS, .inline_style = "padding: 16px; gap: 12px;"});
-    if (!d) {
-        ca_text(&(Ca_TextDesc){.text = scene ? "Could not open manuscript." : "Open a scene to write narration.", .style = FL_CLASS_EMPTY});
-        ca_div_end(); p->building = false; return;
-    }
+    Fl_ManuscriptDraft *d = p->draft;
+    ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .id = "manuscript-write",
+        .inline_style = "width: 100%; flex-grow: 1; flex-shrink: 1; min-height: 0px; overflow-y: auto; gap: 10px;"});
     ca_text(&(Ca_TextDesc){.text = "Voice", .style = FL_CLASS_HEADING});
     const char *sources[] = {"Built-in voice", "Voice cloning"};
     ca_tabs(&(Ca_TabBarDesc){.labels = sources, .count = 2, .active = d->reference_mode ? 1 : 0,
@@ -567,44 +792,103 @@ void fl_manuscript_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
         .on_change = title_changed, .change_data = p, .disabled = running});
     ca_input(&(Ca_InputDesc){.id = "manuscript-narration", .text = d->text, .placeholder = "Write or paste your narration here…",
         .multiline = true, .max_length = FL_PHASE_TEXT_MAX, .style = FL_CLASS_PROPERTY_INPUT,
-        .inline_style = "width: 100%; height: 200px; flex-grow: 0; flex-shrink: 0; padding: 10px;",
+        .inline_style = "width: 100%; flex-grow: 1; flex-shrink: 1; min-height: 80px; padding: 10px;",
         .on_change = text_changed, .change_data = p, .disabled = running});
     p->estimate = ca_text(&(Ca_TextDesc){.text = " ", .style = FL_CLASS_MUTED});
+    ca_div_end();
     ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .inline_style = "width: 100%; flex-shrink: 0; gap: 8px; flex-wrap: wrap; align-items: center;"});
     p->generate_button = fl_button(&(Fl_ButtonDesc){.text = ready_audio(p) ? "Regenerate" : "Generate", .on_click = generate, .click_data = p});
     p->play_button = fl_button(&(Fl_ButtonDesc){.text = p->playing && fl_audio_player_current(p->player) == p->playing && ready_audio(p) && !strcmp(p->playing_path, ready_audio(p)) ? CA_ICON_NF_FA_STOP : CA_ICON_NF_FA_PLAY,
         .kind = FL_BUTTON_ICON, .tooltip = "Play generated narration", .on_click = play_generated, .click_data = p});
     p->accept_button = fl_button(&(Fl_ButtonDesc){.text = d->phase ? "Save phase" : "Add as a phase", .on_click = accept_phase, .click_data = p});
+    if (ready_audio(p)) fl_button(&(Fl_ButtonDesc){.text = "Save & review timing", .on_click = save_and_review, .click_data = p, .disabled = running || !d->title[0]});
+    if (ready_audio(p)) fl_button(&(Fl_ButtonDesc){.text = "Discard take", .on_click = discard_take, .click_data = p, .disabled = running});
     if (d->phase) fl_button(&(Fl_ButtonDesc){.text = "New draft", .on_click = new_phase, .click_data = p, .disabled = running});
-    if (running) fl_button(&(Fl_ButtonDesc){.text = "Cancel", .on_click = cancel_generation, .click_data = p});
     ca_div_end();
+}
+
+/* Build saved narration cards in one viewport without nested cue expansion. */
+static void build_phases(Fl_ManuscriptPanel *p, const Fl_Scene *scene, bool running)
+{
+    ca_text(&(Ca_TextDesc){.text = p->tab == 2 ? "Choose narration to review its timing" : "Saved narration", .style = FL_CLASS_HEADING});
+    ca_input(&(Ca_InputDesc){.id = "manuscript-phase-search", .text = p->phase_search, .placeholder = "Find narration…", .max_length = 127,
+        .style = FL_CLASS_PROPERTY_INPUT, .inline_style = "width: 100%; height: 30px; flex-grow: 0; flex-shrink: 0;", .on_change = phase_search_changed, .change_data = p});
+    ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .id = "manuscript-phases",
+        .inline_style = "width: 100%; flex-grow: 1; flex-shrink: 1; min-height: 0px; overflow-y: auto; gap: 10px;"});
+    if (!scene->phase_count) ca_text(&(Ca_TextDesc){.text = "No saved narration. Write and generate a phase to get started.", .wrap = true, .style = FL_CLASS_EMPTY});
+    p->rows = calloc(scene->phase_count, sizeof(*p->rows));
+    if (p->rows) for (size_t i = 0; i < scene->phase_count; ++i) {
+        const Fl_Phase *phase = &scene->phases[i];
+        if (!contains_text(phase->title,p->phase_search) && !contains_text(phase->text,p->phase_search)) continue;
+        Fl_ManuscriptRow *row = &p->rows[p->row_count++];
+        *row = (Fl_ManuscriptRow){p, phase->id};
+        ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .inline_style = "width: 100%; flex-shrink: 0; padding: 12px; gap: 8px; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: 8px;"});
+        ca_text(&(Ca_TextDesc){.text = phase->title, .wrap = true, .style = FL_CLASS_HEADING});
+        const Fl_Asset *asset = fl_project_asset(fl_scene_edit_project(p->edit),phase_asset(scene,phase));
+        char summary[128];
+        if (asset) snprintf(summary,sizeof(summary),"%zu words · %.2f s audio",fl_manuscript_words(phase->text),(double)asset->duration / FL_TICKS_PER_SECOND);
+        else snprintf(summary,sizeof(summary),"%zu words · no timeline audio",fl_manuscript_words(phase->text));
+        ca_text(&(Ca_TextDesc){.text = summary, .wrap = true, .style = FL_CLASS_MUTED});
+        ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .inline_style = "width: 100%; flex-shrink: 0; gap: 8px; flex-wrap: wrap; align-items: center;"});
+        fl_button(&(Fl_ButtonDesc){.text = CA_ICON_NF_FA_PLAY, .kind = FL_BUTTON_ICON, .tooltip = "Play phase narration",
+            .on_click = play_phase, .click_data = row, .disabled = !phase_asset(scene, phase)});
+        fl_button(&(Fl_ButtonDesc){.text = "Edit", .on_click = edit_phase, .click_data = row, .disabled = running});
+        fl_button(&(Fl_ButtonDesc){.text = "Review timing", .on_click = toggle_cues, .click_data = row, .active = p->expanded_phase == phase->id});
+        fl_button(&(Fl_ButtonDesc){.text = "Remove phase", .destructive = true, .on_click = remove_phase,
+            .click_data = row, .disabled = running, .tooltip = "Remove script and timeline narration; keep the audio asset and beat. Undo restores both."});
+        if (!phase->clip) ca_text(&(Ca_TextDesc){.text = "No timeline audio", .style = FL_CLASS_MUTED});
+        size_t pending = 0, unavailable = 0;
+        for (size_t j = 0; j < phase->cue_count; ++j) {
+            const Fl_SpeechCue *cue = &phase->cues[j]; Fl_Tick tick;
+            if (cue->retired || (cue->resolved && (!fl_phase_speech_cue_sample(scene,phase,cue,false,&tick) || !fl_phase_speech_cue_sample(scene,phase,cue,true,&tick)))) ++unavailable;
+            else if (!cue->resolved) ++pending;
+        }
+        if (pending || unavailable) {
+            char warning[96]; snprintf(warning,sizeof(warning),"%zu need timing · %zu unavailable",pending,unavailable);
+            ca_text(&(Ca_TextDesc){.text = warning, .wrap = true, .style = FL_CLASS_WARNING});
+        }
+        ca_div_end();
+        ca_div_end();
+    }
+    if (scene->phase_count && !p->row_count) ca_text(&(Ca_TextDesc){.text = "No matching narration.", .wrap = true, .style = FL_CLASS_MUTED});
+    ca_div_end();
+}
+
+/* Build the choose → write → generate → preview → accept manuscript workspace. */
+void fl_manuscript_panel_build(Ca_Dock *dock, Ca_Window *window, void *data)
+{
+    Fl_ManuscriptPanel *p = data; p->building = true; p->dock = dock; p->window = window;
+    p->well = NULL; p->progress_label = NULL; p->estimate = NULL;
+    p->accept_button = p->generate_button = p->play_button = NULL;
+    free(p->rows); p->rows = NULL; p->row_count = 0;
+    const Fl_Scene *scene = active_scene(p);
+    p->draft = scene ? scene_draft(p, scene) : NULL;
+    Fl_ManuscriptDraft *d = p->draft; bool running = fl_speech_running(p->speech);
+    ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .id = "manuscript-body", .style = FL_CLASS_SCRIPTS, .inline_style = "padding: 12px; gap: 10px; overflow: hidden; min-height: 0px;"});
+    if (!d) {
+        ca_text(&(Ca_TextDesc){.text = scene ? "Could not open manuscript." : "Open a scene to write narration.", .style = FL_CLASS_EMPTY});
+        ca_div_end(); p->building = false; return;
+    }
+    if (p->review_scene != scene->id) {
+        p->review_scene = scene->id; p->expanded_phase = p->selected_cue = 0; p->cue_page = 0;
+    }
+    const char *workspaces[] = {"Write & Generate", "Narration", "Timing Review"};
+    ca_tabs(&(Ca_TabBarDesc){.id = "manuscript-tabs", .labels = workspaces, .count = 3, .active = p->tab,
+        .on_change = workspace_changed, .change_data = p});
+    if (p->tab == 0) {
+        build_writing(p,running);
+    } else if (p->tab == 1 || !p->expanded_phase || !fl_scene_phase(scene,p->expanded_phase)) {
+        build_phases(p,scene,running);
+    } else {
+        const Fl_Phase *phase = fl_scene_phase(scene,p->expanded_phase);
+        ca_text(&(Ca_TextDesc){.text = phase->title, .wrap = true, .style = FL_CLASS_HEADING});
+        fl_button(&(Fl_ButtonDesc){.text = "Choose narration", .on_click = choose_review_phase, .click_data = p});
+        fl_button(&(Fl_ButtonDesc){.text = "Reanalyze current audio", .on_click = reanalyze_phase, .click_data = p, .disabled = running || !phase_asset(scene,phase)});
+        build_cues(p,scene,phase,running);
+    }
+    if (running) fl_button(&(Fl_ButtonDesc){.text = "Cancel generation", .on_click = cancel_generation, .click_data = p});
     p->progress_label = ca_text(&(Ca_TextDesc){.text = fl_speech_message(p->speech), .wrap = true, .style = FL_CLASS_MUTED});
     if (p->message[0]) ca_text(&(Ca_TextDesc){.text = p->message, .wrap = true, .style = FL_CLASS_WARNING});
-    if (scene->phase_count) {
-        ca_text(&(Ca_TextDesc){.text = "Phases", .style = FL_CLASS_HEADING});
-        ca_text(&(Ca_TextDesc){.text = "Saved narration · removing a phase also removes its audio from the timeline. Beats stay in place.", .wrap = true, .style = FL_CLASS_MUTED});
-        p->rows = calloc(scene->phase_count, sizeof(*p->rows));
-        if (p->rows) for (size_t i = 0; i < scene->phase_count; ++i) {
-            const Fl_Phase *phase = &scene->phases[i]; Fl_ManuscriptRow *row = &p->rows[p->row_count++];
-            *row = (Fl_ManuscriptRow){p, phase->id};
-            ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .inline_style = "width: 100%; flex-shrink: 0; padding: 12px; gap: 8px; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: 8px;"});
-            ca_text(&(Ca_TextDesc){.text = phase->title, .wrap = true, .style = FL_CLASS_HEADING});
-            ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .inline_style = "width: 100%; flex-shrink: 0; gap: 8px; flex-wrap: wrap; align-items: center;"});
-            fl_button(&(Fl_ButtonDesc){.text = CA_ICON_NF_FA_PLAY, .kind = FL_BUTTON_ICON, .tooltip = "Play phase narration",
-                .on_click = play_phase, .click_data = row, .disabled = !phase_asset(scene, phase)});
-            fl_button(&(Fl_ButtonDesc){.text = "Edit", .on_click = edit_phase, .click_data = row, .disabled = running});
-            fl_button(&(Fl_ButtonDesc){.text = "Speech cues", .on_click = toggle_cues, .click_data = row, .active = p->expanded_phase == phase->id});
-            fl_button(&(Fl_ButtonDesc){.text = "Remove phase", .destructive = true, .on_click = remove_phase,
-                .click_data = row, .disabled = running, .tooltip = "Remove script and timeline narration; keep the audio asset and beat. Undo restores both."});
-            if (!phase->clip) ca_text(&(Ca_TextDesc){.text = "No timeline audio", .style = FL_CLASS_MUTED});
-            size_t unresolved = 0;
-            for (size_t j = 0; j < phase->cue_count; ++j) {Fl_Tick tick; if (!fl_phase_speech_cue_sample(scene,phase,&phase->cues[j],false,&tick)) ++unresolved;}
-            if (unresolved) {char warning[96]; snprintf(warning,sizeof(warning),"%zu cues need review",unresolved); ca_text(&(Ca_TextDesc){.text = warning, .style = FL_CLASS_WARNING});}
-            ca_div_end();
-            if (p->expanded_phase == phase->id) build_cues(p,scene,phase,running);
-            ca_div_end();
-        }
-    }
     ca_div_end(); p->building = false;
     if (!p->effect) p->effect = ca_frame_effect(ca_window_instance(window), tick, p);
     refresh(p); ca_instance_request_frame_after(ca_window_instance(window), 0.2);
@@ -633,7 +917,7 @@ Fl_ManuscriptPanel *fl_manuscript_panel_create(Fl_SceneEdit *edit, Fl_Speech *sp
     if (!edit || !speech || !player || !importer || !bus) return NULL;
     Fl_ManuscriptPanel *p = calloc(1, sizeof(*p));
     if (!p) return NULL;
-    p->edit = edit; p->speech = speech; p->player = player; p->importer = importer; p->bus = bus;
+    p->edit = edit; p->speech = speech; p->player = player; p->importer = importer; p->bus = bus; p->cue_filter = 1;
     const char *events[] = {FL_EVENT_PROJECT_CHANGED, FL_EVENT_SELECTION_CHANGED, FL_EVENT_AUDIO_PLAYBACK};
     for (size_t i = 0; i < sizeof(events) / sizeof(*events); ++i) {
         Fl_EventType type = fl_event_type_find(bus, events[i]);

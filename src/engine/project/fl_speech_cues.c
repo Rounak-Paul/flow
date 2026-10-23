@@ -68,7 +68,7 @@ bool fl_speech_cues_apply(const Fl_Project *project, Fl_Scene *scene, const Fl_O
         cues[i].text = cues[i].text ? copy_text(cues[i].text) : NULL;
         if (!cues[i].text || !cues[i].text[0] || strlen(cues[i].text) > 16384 ||
             !fl_json_utf8_valid(cues[i].text, strlen(cues[i].text)) || cues[i].start < 0 || cues[i].end < cues[i].start ||
-            (cues[i].resolved && (cues[i].end <= cues[i].start || (uint64_t)cues[i].end > asset->duration)) ||
+            ((uint64_t)cues[i].end > asset->duration || (cues[i].resolved && cues[i].end <= cues[i].start)) ||
             (cues[i].kind != FL_CUE_WORD && cues[i].kind != FL_CUE_SENTENCE)) {ok = false; break;}
     }
     /* Match each cue kind independently; exact prefix/suffix retain repeated words during ordinary insertions. */

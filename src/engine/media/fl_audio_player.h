@@ -24,6 +24,8 @@ Fl_AudioPlayer *fl_audio_player_create(const Fl_AudioPlayerDesc *desc);
 void fl_audio_player_destroy(Fl_AudioPlayer *player);
 /* Replace any current clip with path from the start; returns a non-zero token, or zero on failure. */
 uint64_t fl_audio_player_play(Fl_AudioPlayer *player, const char *path);
+/* Play source seconds [start, end); rejects invalid or out-of-source ranges. Zero on failure. */
+uint64_t fl_audio_player_play_range(Fl_AudioPlayer *player, const char *path, double start, double end);
 /* Stop the current clip (no event is posted for an explicit stop). */
 void fl_audio_player_stop(Fl_AudioPlayer *player);
 /* Token of the clip currently playing, zero when idle. */

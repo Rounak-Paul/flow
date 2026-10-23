@@ -2,6 +2,8 @@
 #include "project/fl_speech_cues.h"
 #include "project/fl_manuscript.h"
 #include "project/fl_history.h"
+#include "platform/fl_fs.h"
+#include "platform/fl_paths.h"
 #include "media/fl_speech_align.h"
 #include "schema/fl_widgets.h"
 #include "time/fl_scene_state.h"
@@ -54,6 +56,17 @@ static void check_parser(void)
     fl_speech_alignment_free(&alignment);
     CHECK(fl_speech_alignment_parse("{\"transcription\":[{\"text\":\"go go\",\"offsets\":{\"from\":0,\"to\":500}}]}","go go go",SECOND,&alignment,error,sizeof(error)));
     CHECK(alignment.count == 4 && !alignment.cues[0].resolved && !alignment.cues[1].resolved && !alignment.cues[2].resolved);
+    CHECK(alignment.cues[0].end == 0 && alignment.cues[1].end == 0);
+    fl_speech_alignment_free(&alignment);
+    CHECK(fl_speech_alignment_parse("{\"transcription\":[{\"text\":\"Alpha\",\"offsets\":{\"from\":0,\"to\":500},\"tokens\":[{\"text\":\"Alpha\",\"p\":0.1}]}]}","Alpha",SECOND,&alignment,error,sizeof(error)));
+    CHECK(alignment.count == 2 && !alignment.cues[0].resolved && alignment.cues[0].start == 0 && alignment.cues[0].end == SECOND / 2);
+    CHECK(!alignment.cues[1].resolved && alignment.cues[1].end == SECOND / 2);
+    fl_speech_alignment_free(&alignment);
+    CHECK(fl_speech_alignment_parse("{\"transcription\":[{\"text\":\"Alpha\",\"offsets\":{\"from\":700,\"to\":900}},{\"text\":\"beta\",\"offsets\":{\"from\":100,\"to\":300}}]}","Alpha beta",SECOND,&alignment,error,sizeof(error)));
+    CHECK(alignment.count == 3 && !alignment.cues[2].resolved && alignment.cues[2].start == 0 && alignment.cues[2].end == 0);
+    fl_speech_alignment_free(&alignment);
+    CHECK(fl_speech_alignment_parse("{\"transcription\":[{\"text\":\"Alpha\",\"offsets\":{\"from\":0,\"to\":1500}}]}","Alpha",SECOND,&alignment,error,sizeof(error)));
+    CHECK(alignment.count == 2 && !alignment.cues[0].resolved && alignment.cues[0].end == 0);
     fl_speech_alignment_free(&alignment);
     CHECK(!fl_speech_alignment_parse("{}","Alpha",SECOND,&alignment,error,sizeof(error)));
     CHECK(fl_speech_alignment_parse("{\"transcription\":[{\"text\":\"日本語。\",\"offsets\":{\"from\":0,\"to\":500}}]}",
@@ -170,6 +183,34 @@ int main(int argc, char **argv)
     CHECK(current->cues[0].id != repeated_a && current->cues[0].id != repeated_b);
     repeated[0].end = 13 * SECOND;
     CHECK(!fl_project_apply(project,&(Fl_Op){.kind = FL_OP_PHASE_CUES, .scene = scene, .phase = phase, .asset = asset, .cues = repeated, .cue_count = 1},NULL));
+    Fl_Id pending = fl_scene_phase(fl_project_scene(project,scene),phase)->cues[0].id;
+    CHECK(fl_project_save(project)); fl_project_destroy(project);
+    char path[FL_PATH_MAX], file[96]; snprintf(file,sizeof(file),"scenes/%016llx.scene.json",(unsigned long long)scene);
+    CHECK(fl_fs_join(path,sizeof(path),argv[1],file));
+    char *document_text = fl_fs_read_file(path,16 * 1024 * 1024,NULL); CHECK(document_text);
+    cJSON *document = document_text ? cJSON_Parse(document_text) : NULL; free(document_text); CHECK(document);
+    cJSON *stored_phase = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(document,"phases"),0);
+    cJSON *stored_cue = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(stored_phase,"cues"),0);
+    char beyond[32]; snprintf(beyond,sizeof(beyond),"%lld",(long long)(12 * SECOND + 19200));
+    CHECK(cJSON_ReplaceItemInObjectCaseSensitive(stored_cue,"end",cJSON_CreateString(beyond)));
+    CHECK(cJSON_ReplaceItemInObjectCaseSensitive(stored_cue,"resolved",cJSON_CreateFalse()));
+    document_text = cJSON_PrintUnformatted(document); cJSON_Delete(document);
+    CHECK(document_text && fl_fs_write_atomic(path,document_text,strlen(document_text))); free(document_text);
+    project = fl_project_open(argv[1],NULL); CHECK(project);
+    if (!project) return FLOW_TEST_RESULT("fl_speech_cues_tests");
+    const Fl_SpeechCue *evidence = fl_scene_speech_cue(fl_project_scene(project,scene),pending,NULL);
+    CHECK(evidence && !evidence->resolved && evidence->end == 12 * SECOND + 19200);
+    CHECK(!fl_speech_cue_sample(fl_project_scene(project,scene),pending,false,&tick));
+    CHECK(!fl_project_apply(project,&(Fl_Op){.kind = FL_OP_CUE_UPDATE, .scene = scene, .cue = pending,
+        .cue_start = SECOND, .cue_end = 12 * SECOND + 19200},NULL));
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind = FL_OP_CUE_UPDATE, .scene = scene, .cue = pending,
+        .cue_start = SECOND, .cue_end = 2 * SECOND},NULL));
+    CHECK(fl_speech_cue_sample(fl_project_scene(project,scene),pending,false,&tick) && tick == SECOND);
+    CHECK(fl_history_undo(fl_project_history(project),project,NULL,NULL));
+    CHECK(!fl_speech_cue_sample(fl_project_scene(project,scene),pending,false,&tick));
+    CHECK(fl_project_save(project)); fl_project_destroy(project);
+    project = fl_project_open(argv[1],NULL); CHECK(project);
+    if (project) CHECK(!fl_speech_cue_sample(fl_project_scene(project,scene),pending,false,&tick));
     fl_project_destroy(project);
     return FLOW_TEST_RESULT("fl_speech_cues_tests");
 }

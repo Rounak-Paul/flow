@@ -174,7 +174,10 @@ static bool phase_update(Fl_Scene *s, const Fl_Op *op)
     char *title = copy_text(op->name), *body = copy_text(text);
     if (!title || !body) { free(title); free(body); return false; }
     Fl_Phase *phase = (Fl_Phase *)&s->phases[i];
-    if (strcmp(phase->text, body)) for (size_t k = 0; k < phase->cue_count; ++k) ((Fl_SpeechCue *)phase->cues)[k].resolved = false;
+    if (strcmp(phase->text, body)) for (size_t k = 0; k < phase->cue_count; ++k) {
+        Fl_SpeechCue *cue = &((Fl_SpeechCue *)phase->cues)[k];
+        cue->resolved = false; cue->start = cue->end = 0;
+    }
     free((void *)phase->title); free((void *)phase->text);
     phase->title = title; phase->text = body; phase->beat = op->beat; phase->clip = op->clip;
     return true;

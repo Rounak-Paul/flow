@@ -31,6 +31,8 @@ static int runner(int argc, char **argv)
         if (!strcmp(argv[i], "-p")) text = argv[i + 1];
     }
     if (alignment) {
+        const char *fail = getenv("FLOW_TEST_ALIGN_FAIL");
+        if (fail && fail[0]) return 9;
         char path[FL_PATH_MAX]; snprintf(path,sizeof(path),"%s.json",alignment);
         const char *json = "{\"transcription\":[{\"text\":\"First paragraph. A second café paragraph.\",\"offsets\":{\"from\":0,\"to\":90},\"tokens\":[]}]}";
         return fl_fs_write_atomic(path,json,strlen(json)) ? 0 : 5;
@@ -186,6 +188,25 @@ int main(int argc, char **argv)
     CHECK(undo(project));
     current = fl_project_scene(project, scene);
     CHECK(current->clips[0].asset == previous && !strcmp(current->phases[0].text, text));
+    size_t saved_assets = fl_project_asset_count(project);
+    CHECK(fl_speech_reanalyze(speech,scene,phase)); finish(speech);
+    CHECK(!strcmp(fl_speech_state(speech),"done"));
+    current = fl_project_scene(project,scene);
+    CHECK(current->phases[0].clip == clip && current->clips[0].asset == previous && fl_project_asset_count(project) == saved_assets);
+    CHECK(current->phases[0].cue_count > 0);
+    CHECK(undo(project));
+    CHECK(fl_speech_reanalyze(speech,scene,phase));
+    current = fl_project_scene(project,scene);
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind = FL_OP_PHASE_UPDATE, .scene = scene, .phase = phase,
+        .name = "Changed during analysis", .source = text, .beat = current->phases[0].beat, .clip = current->phases[0].clip},NULL));
+    finish(speech); CHECK(!strcmp(fl_speech_state(speech),"failed"));
+    CHECK(undo(project));
+    environment("FLOW_TEST_ALIGN_FAIL","1");
+    CHECK(fl_speech_preview(speech,scene,text,"Ryan","English",0,"")); finish(speech);
+    CHECK(!strcmp(fl_speech_state(speech),"ready") && fl_speech_preview_path(speech));
+    CHECK(strstr(fl_speech_message(speech),"timing analysis failed"));
+    CHECK(!fl_speech_reanalyze(speech,scene,phase) && fl_speech_preview_path(speech));
+    fl_speech_discard(speech); environment("FLOW_TEST_ALIGN_FAIL","");
     CHECK(fl_speech_preview(speech, scene, "fail", "Ryan", "English", 0, "")); finish(speech);
     CHECK(!strcmp(fl_speech_state(speech), "failed") && !fl_speech_preview_path(speech));
     CHECK(fl_speech_preview(speech, scene, "slow", "Ryan", "English", 0, ""));

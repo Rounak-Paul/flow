@@ -1,5 +1,6 @@
 #include "flow_test.h"
 #include "media/fl_png.h"
+#include <math.h>
 #include "project/fl_history.h"
 #include "platform/fl_fs.h"
 typedef struct GLFWwindow GLFWwindow;
@@ -23,6 +24,45 @@ static Ca_TextInput *input_by_id(Ca_Window *window, const char *id)
         if (input->in_use && !strcmp(input->node->id, id)) return input;
     }
     return NULL;
+}
+
+/* Verify workspace navigation fits and the panel root never becomes a scroll owner. */
+static void check_navigation(Ca_Window *window)
+{
+    bool found = false;
+    for (uint32_t i = 0; i < ca_pool_slot_count(&window->tabbar_pool); ++i) {
+        Ca_TabBar *tabs = CA_POOL_AT(window->tabbar_pool,Ca_TabBar,i);
+        if (!tabs->in_use || strcmp(tabs->node->id,"manuscript-tabs")) continue;
+        found = true;
+        for (int j = 0; j < tabs->count; ++j) {
+            Ca_Node *node = tabs->tab_nodes[j];
+            CHECK(node && node->x >= tabs->node->x && node->x + node->w <= tabs->node->x + tabs->node->w + 1);
+        }
+    }
+    CHECK(found);
+    for (uint32_t i = 0; i < ca_pool_slot_count(&window->node_pool); ++i) {
+        Ca_Node *node = CA_POOL_AT(window->node_pool,Ca_Node,i);
+        if (!strcmp(node->id,"manuscript-body")) CHECK(!node->scrollbar_y_visible && !node->scroll_y);
+    }
+}
+
+/* Keep fixed input geometry stable through hover and focus style reapplication. */
+static void check_input_states(Ca_Instance *instance, Ca_Window *window, const char *id)
+{
+    Ca_TextInput *input = input_by_id(window,id); CHECK(input);
+    if (!input) return;
+    float height = input->node->h;
+    CHECK(input->node->desc.flex_grow == 0);
+    for (int i = 0; i < 4; ++i) {
+        window->hovered_node = i % 2 ? NULL : input->node;
+        window->focused_node = i < 2 ? NULL : input->node;
+        ca_widget_reapply_css(input->node);
+        CHECK(input->node->desc.flex_grow == 0 && input->node->desc.flex_shrink == 0);
+        CHECK(ca_instance_tick(instance));
+        CHECK(fabsf(input->node->h - height) < 1);
+    }
+    window->hovered_node = window->focused_node = NULL;
+    ca_widget_reapply_css(input->node);
 }
 
 /* Route one shortcut through the real widget keyboard path without OS timing dependencies. */
@@ -75,7 +115,9 @@ int main(int argc, char **argv)
     Ca_TextInput *input = input_by_id(window, "manuscript-narration");
     CHECK(input && input->multiline && panel->draft);
     if (!input || !panel->draft) return 1;
-    CHECK(input->node->w > 800 && input->node->h >= 190 && input->node->h <= 210);
+    check_navigation(window);
+    check_input_states(instance,window,"manuscript-title");
+    CHECK(input->node->w > 800 && input->node->h >= 190);
     const char *previous_clipboard = ca_clipboard_get_text(window);
     char *clipboard = strdup(previous_clipboard ? previous_clipboard : "");
     window->focused_node = input->node;
@@ -125,6 +167,7 @@ int main(int argc, char **argv)
     for (int i = 0; i < 4; ++i) CHECK(ca_instance_tick(instance));
     input = input_by_id(narrow, "manuscript-narration");
     CHECK(input && input->node->w > 300 && input->node->w < 420 && input->node->h >= 190);
+    check_navigation(narrow);
     CHECK(!strcmp(panel->draft->text, narration));
     CHECK(fl_fs_join(path, sizeof(path), argv[1], "narrow.png"));
     CHECK(ca_window_capture(narrow, captured, path));
@@ -136,27 +179,54 @@ int main(int argc, char **argv)
     CHECK(fl_project_apply(project,&(Fl_Op){.kind = FL_OP_CLIP_ADD, .scene = scene, .clip_record = &audio},&clip));
     CHECK(fl_project_apply(project,&(Fl_Op){.kind = FL_OP_PHASE_UPDATE, .scene = scene, .phase = phase,
         .name = "Greeting", .source = "Hello.", .beat = beat, .clip = clip},NULL));
-    Fl_SpeechCue cue = {.text = "Hello", .start = 12000, .end = 60000, .resolved = true};
+    Fl_SpeechCue cue = {.text = "Hello", .start = 12000, .end = 60000, .resolved = false};
     CHECK(fl_project_apply(project,&(Fl_Op){.kind = FL_OP_PHASE_CUES, .scene = scene, .phase = phase, .asset = asset, .cues = &cue, .cue_count = 1},NULL));
-    panel->expanded_phase = phase; invalidate(panel);
+    panel->expanded_phase = phase; panel->tab = 2; panel->cue_filter = 0; invalidate(panel);
     for (int i = 0; i < 4; ++i) CHECK(ca_instance_tick(instance));
     Ca_Node *cue_list = NULL;
     for (uint32_t i = 0; i < ca_pool_slot_count(&narrow->node_pool); ++i) {
         Ca_Node *node = CA_POOL_AT(narrow->node_pool,Ca_Node,i);
         if (!strcmp(node->id,"manuscript-cue-list")) cue_list = node;
     }
-    CHECK(cue_list && cue_list->h >= 320);
+    CHECK(cue_list && cue_list->h > 150 && cue_list->y + cue_list->h <= 720);
     CHECK(panel->cue_rows[0].cue == fl_scene_phase(fl_project_scene(project,scene),phase)->cues[0].id);
     select_cue(NULL,&panel->cue_rows[0]);
+    CHECK(!strcmp(panel->cue_start,"0.100") && !strcmp(panel->cue_end,"0.500"));
+    const Fl_Scene *review = fl_project_scene(project,scene); Fl_Tick timed;
+    CHECK(!fl_speech_cue_sample(review,panel->selected_cue,false,&timed));
+    repair_cue(NULL,panel);
+    CHECK(fl_speech_cue_sample(fl_project_scene(project,scene),panel->selected_cue,false,&timed) && timed == 12000);
+    CHECK(fl_history_undo(fl_project_history(project),project,NULL,NULL));
+    CHECK(!fl_speech_cue_sample(fl_project_scene(project,scene),panel->selected_cue,false,&timed));
+    repair_cue(NULL,panel); CHECK(strstr(panel->message,"changed"));
+    Fl_ManuscriptCueRow selected = {panel,panel->selected_cue}; select_cue(NULL,&selected);
+    snprintf(panel->cue_start,sizeof(panel->cue_start),"nan"); repair_cue(NULL,panel);
+    CHECK(!fl_scene_phase(fl_project_scene(project,scene),phase)->cues[0].resolved);
     snprintf(panel->cue_start,sizeof(panel->cue_start),"0.2"); snprintf(panel->cue_end,sizeof(panel->cue_end),"0.6"); repair_cue(NULL,panel);
     CHECK(fl_scene_phase(fl_project_scene(project,scene),phase)->cues[0].start == 24000);
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind = FL_OP_BEAT_UPDATE, .scene = scene, .beat = beat, .name = "Greeting", .beat_duration = 360000},NULL));
+    review = fl_project_scene(project,scene);
+    Fl_AudioClip trimmed = review->clips[0]; trimmed.source_offset = 12000; trimmed.duration = 120000;
+    CHECK(fl_project_apply(project,&(Fl_Op){.kind = FL_OP_CLIP_UPDATE, .scene = scene, .clip = clip, .clip_record = &trimmed},NULL));
+    fl_scene_edit_set_time(edit,24000); capture_start(NULL,panel);
+    CHECK(!strcmp(panel->cue_start,"0.300"));
+    fl_scene_edit_set_time(edit,240000); capture_start(NULL,panel);
+    CHECK(strstr(panel->message,"inside") && !strcmp(panel->cue_start,"0.300"));
+    CHECK(fl_history_undo(fl_project_history(project),project,NULL,NULL));
     for (int i = 0; i < 4; ++i) CHECK(ca_instance_tick(instance));
-    ca_scroll_to_bottom(narrow,"manuscript-body");
+    CHECK(!input_by_id(narrow,"manuscript-narration"));
     for (int i = 0; i < 4; ++i) CHECK(ca_instance_tick(instance));
     CHECK(input_by_id(narrow,"manuscript-cue-start"));
     CHECK(fl_fs_join(path,sizeof(path),argv[1],"cues.png")); CHECK(ca_window_capture(narrow,captured,path));
     for (int i = 0; i < 4; ++i) CHECK(ca_instance_tick(instance));
-    edit_phase(NULL,&panel->rows[0]);
+    close_cue(NULL,panel); panel->tab = 1; invalidate(panel);
+    for (int i = 0; i < 4; ++i) CHECK(ca_instance_tick(instance));
+    CHECK(panel->row_count == 1 && !input_by_id(narrow,"manuscript-cue-start"));
+    CHECK(!strcmp(panel->draft->text,narration));
+    CHECK(fl_fs_join(path,sizeof(path),argv[1],"phases.png")); CHECK(ca_window_capture(narrow,captured,path));
+    for (int i = 0; i < 4; ++i) CHECK(ca_instance_tick(instance));
+    Fl_ManuscriptRow editing = {panel,phase};
+    edit_phase(NULL,&editing);
     CHECK(panel->draft->phase == phase);
     Fl_ManuscriptRow removal = {panel,phase};
     remove_phase(NULL,&removal);

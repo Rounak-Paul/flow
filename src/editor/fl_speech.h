@@ -16,6 +16,8 @@ void fl_speech_destroy(Fl_Speech *speech);
 
 /* phase 0 speaks every non-empty phase. False leaves a reason in fl_speech_message. */
 bool fl_speech_start(Fl_Speech *speech, Fl_Id scene, Fl_Id phase);
+/* Reanalyze the phase's current audio without regenerating or replacing it. Refuses an unsaved ready take. */
+bool fl_speech_reanalyze(Fl_Speech *speech, Fl_Id scene, Fl_Id phase);
 void fl_speech_cancel(Fl_Speech *speech);
 /* Owner thread. Imports finished audio and publishes speech.changed when progress moves. */
 void fl_speech_pump(Fl_Speech *speech);

@@ -3,23 +3,42 @@
 Generate narration, preview it, then add or save the phase. Flow measures speech
 against the finished audio and saves word and sentence cues with that phase.
 
-1. In Manuscript, open **Speech cues** beside a saved phase. Choose Words or
-   Sentences. Select a cue to seek to it and inspect its audio-relative times.
+1. Manuscript separates **Write & Generate**, **Narration**, and **Timing Review**.
+   Generate and preview audio, then **Add as a phase** or **Save & review timing**.
+   Saved narration appears in its own searchable tab. Open **Review timing** on a
+   phase, choose Words or Sentences, and filter/search its cues. Selecting a cue
+   opens a dedicated inspector; **Back to cues** returns to the list.
 2. Create/select an animation keyframe in Timeline. Its **Speech cue** controls
    let you select a phase, find a word or sentence, choose Start/End, and enter
    an offset in seconds. Values, easing and key identity are preserved.
 3. Regenerate narration normally. Identifiable cues retain their IDs, so bound
    animation keys follow the new measured timing automatically.
 
-Uncertain recognition and changed/repeated words are flagged rather than given
-estimated timing. Removed or ambiguous cues remain available for inspection.
+Uncertain recognition is flagged. Where recognition produced a unique measured
+interval, it appears as **Suggested** and remains inactive until accepted.
+Missing or ambiguous matches have no proposed timestamp. No proportional timing
+is invented. Removed or ambiguous cues remain available for inspection.
 Timeline's **Repair unresolved key** selector makes their keys accessible even
 when they have no drawable time. Rebind to a current cue, or Detach: this keeps
 its resolved time, or uses the playhead when its old cue cannot resolve.
 
-For an active cue needing timing correction, select it in Manuscript, enter its
-Start/End in seconds into that phase's audio, then **Set timing**. Corrections
-are saved and undoable. Regeneration measures timestamps again.
+For a live cue, enter Start/End in **audio time**, measured in seconds from the
+start of the source audio. The inspector separately shows resolved **scene time**.
+**Play interval / Stop** auditions the interval with a short context; the playhead
+buttons convert the scene playhead through the clip's placement and trim.
+**Accept timing** approves a suggestion or manually entered interval; **Save timing**
+corrects an already timed cue. **Accept & next** saves and selects the next pending
+cue of the same kind. Changes are undoable. Regeneration measures timestamps again.
+Word and sentence intervals are reviewed independently.
+
+Missing/replaced audio and trimmed-out cues have separate diagnostics. Retired
+cues cannot be approved; repair their animation bindings in Timeline. To measure
+saved audio again without generating a replacement, choose **Reanalyze current
+audio**. Save or discard an unsaved generated take first. If narration changes
+while analysis runs, the result is rejected rather than overwriting newer edits.
+
+If timing analysis fails after successful generation, the audio remains playable
+and saveable. Save it and retry analysis from Timing Review.
 
 Speech anchors share Flow's ordinary time resolver. Native keys, component
 clock/event anchors, scene playback and export use the same timing. Clip trims

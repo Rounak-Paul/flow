@@ -36,7 +36,9 @@ struct Fl_Speech {
     atomic_bool cancel;
     uint32_t total, seen;
     int result;
-    bool running, preview, ready;
+    bool running, preview, ready, analysis_only;
+    Fl_Id analysis_asset, analysis_clip;
+    uint64_t analysis_revision;
     char *draft_text;
     Fl_Id target_phase, preview_reference;
     char *reference_transcript;
@@ -69,7 +71,7 @@ static void clear_job(Fl_Speech *s)
     s->work[0] = 0;
     free(s->draft_text); s->draft_text = NULL;
     free(s->reference_transcript); s->reference_transcript = NULL;
-    s->ready = false;
+    s->ready = false; s->analysis_only = false;
 }
 
 static void clip_title(const char *title, char *out, size_t cap)
@@ -190,6 +192,19 @@ static void finish_job(Fl_Speech *s)
 {
     s->running = false;
     bool cancelled = atomic_load_explicit(&s->cancel, memory_order_relaxed) || s->result == FL_VOICE_CANCELLED;
+    if (!cancelled && s->result == FL_VOICE_OK && s->analysis_only) {
+        const Fl_Scene *scene = fl_project_scene(s->project,s->scene);
+        const Fl_Phase *phase = scene ? fl_scene_phase(scene,s->items[0].phase) : NULL;
+        const Fl_AudioClip *clip = phase ? find_clip(scene,phase->clip) : NULL;
+        bool current = scene && scene->revision == s->analysis_revision && phase && clip && phase->clip == s->analysis_clip &&
+            clip->asset == s->analysis_asset && !strcmp(phase->text,s->draft_text);
+        bool ok = current && fl_project_apply(s->project,&(Fl_Op){.kind = FL_OP_PHASE_CUES, .scene = s->scene,
+            .phase = phase->id, .asset = s->analysis_asset, .cues = s->items[0].alignment.cues, .cue_count = s->items[0].alignment.count},NULL);
+        clear_job(s);
+        set_state(s,ok ? "done" : "failed",ok ? "Speech timing reanalyzed. Review uncertain cues before accepting them." :
+            current ? "Could not save analyzed timing." : "Narration changed during analysis. Run timing analysis again.");
+        return;
+    }
     if (!cancelled && s->result == FL_VOICE_OK && s->preview) {
         s->ready = true;
         size_t measured = 0, unresolved = 0;
@@ -197,6 +212,7 @@ static void finish_job(Fl_Speech *s)
             if (s->items[0].alignment.cues[i].resolved) ++measured; else ++unresolved;
         }
         snprintf(s->message,sizeof(s->message),"Audio ready · %zu words timed · %zu need review. Play it before adding the phase.",measured,unresolved);
+        if (s->error[0]) snprintf(s->message,sizeof(s->message),"Audio ready; timing analysis failed. Save the audio, then retry in Timing Review. %.300s",s->error);
         set_state(s, "ready", NULL);
         return;
     }
@@ -216,7 +232,7 @@ static void finish_job(Fl_Speech *s)
 static void speak_job(void *data)
 {
     Fl_Speech *s = data;
-    s->result = fl_voice_run(s->voices, s->count, &s->cancel, &s->done, &s->progress, s->error, sizeof(s->error));
+    s->result = s->analysis_only ? FL_VOICE_OK : fl_voice_run(s->voices, s->count, &s->cancel, &s->done, &s->progress, s->error, sizeof(s->error));
     if (s->result != FL_VOICE_OK) return;
     fl_atomic_store_u32(&s->aligning, 1);
     for (size_t i = 0; i < s->count; ++i) {
@@ -225,7 +241,12 @@ static void speak_job(void *data)
         bool ok = script && fl_fs_join(work,sizeof(work),s->work,name) && fl_fs_mkdir_exclusive(work) &&
             fl_speech_align(s->voices[i].out_path,script,s->voices[i].language,work,&s->cancel,&s->items[i].alignment,s->error,sizeof(s->error));
         free(script);
-        if (!ok) {s->result = atomic_load_explicit(&s->cancel,memory_order_relaxed) ? FL_VOICE_CANCELLED : FL_VOICE_FAILED; return;}
+        if (!ok) {
+            bool cancelled = atomic_load_explicit(&s->cancel,memory_order_relaxed);
+            if (!cancelled && !s->error[0]) snprintf(s->error,sizeof(s->error),"Could not prepare speech timing analysis.");
+            s->result = cancelled ? FL_VOICE_CANCELLED : s->preview ? FL_VOICE_OK : FL_VOICE_FAILED;
+            return;
+        }
         fl_atomic_store_u32(&s->aligned,(uint32_t)(i + 1));
     }
 }
@@ -327,6 +348,44 @@ bool fl_speech_start(Fl_Speech *s, Fl_Id scene_id, Fl_Id phase_id)
     snprintf(s->message, sizeof(s->message), "Speaking with Qwen3-TTS · 0/%u", s->total);
     set_state(s, "running", NULL);
     return true;
+}
+
+bool fl_speech_reanalyze(Fl_Speech *s, Fl_Id scene_id, Fl_Id phase_id)
+{
+    if (!s || s->running) return false;
+    if (s->ready) {set_state(s,"ready","Save or discard the generated take before reanalyzing saved audio."); return false;}
+    const Fl_Scene *scene = fl_project_scene(s->project,scene_id);
+    const Fl_Phase *phase = scene ? fl_scene_phase(scene,phase_id) : NULL;
+    const Fl_AudioClip *clip = phase ? find_clip(scene,phase->clip) : NULL;
+    const Fl_Asset *asset = clip ? fl_project_asset(s->project,clip->asset) : NULL;
+    if (!phase || !fl_manuscript_words(phase->text) || !clip || clip->start.kind == FL_ANCHOR_SPEECH || !asset || asset->kind != FL_ASSET_AUDIO) {
+        set_state(s,"failed","A saved script and current narration audio are required for timing analysis."); return false;
+    }
+    clear_job(s); s->preview = false; s->analysis_only = true; s->scene = scene_id;
+    s->analysis_asset = asset->id; s->analysis_clip = clip->id; s->analysis_revision = scene->revision;
+    char cache[FL_PATH_MAX], folder[96];
+    snprintf(folder,sizeof(folder),"timing-%llu-%llu",(unsigned long long)fl_clock_monotonic_ns(),(unsigned long long)++s->serial);
+    if (!fl_paths_user_dir(FL_PATH_CACHE,cache,sizeof(cache)) || !fl_fs_mkdir_p(cache) ||
+        !fl_fs_join(s->work,sizeof(s->work),cache,folder) || !fl_fs_mkdir_exclusive(s->work)) {s->work[0] = 0; goto failed;}
+    s->voices = calloc(1,sizeof(*s->voices)); s->items = calloc(1,sizeof(*s->items)); s->count = 1;
+    s->draft_text = strdup(phase->text);
+    if (!s->voices || !s->items || !s->draft_text) goto failed;
+    s->items[0].phase = phase_id;
+    Fl_VoiceItem *voice = s->voices;
+    if (!fl_project_asset_path(s->project,asset,voice->out_path,sizeof(voice->out_path)) ||
+        !fl_fs_join(voice->text_path,sizeof(voice->text_path),s->work,"text.txt") ||
+        !fl_fs_write_atomic(voice->text_path,s->draft_text,strlen(s->draft_text))) goto failed;
+    snprintf(voice->language,sizeof(voice->language),"%s",scene->language ? scene->language : "English");
+    s->error[0] = 0; s->result = FL_VOICE_FAILED; s->total = 1; s->seen = 0;
+    s->seen_parts = s->seen_total_parts = s->seen_aligning = s->seen_aligned = 0;
+    atomic_store_explicit(&s->cancel,false,memory_order_relaxed);
+    fl_atomic_store_u32(&s->done,0); fl_atomic_store_u32(&s->aligning,0); fl_atomic_store_u32(&s->aligned,0);
+    fl_atomic_store_u32(&s->progress.done,0); fl_atomic_store_u32(&s->progress.total,0);
+    s->job = fl_job_submit(s->jobs,&(Fl_JobDesc){.fn = speak_job, .data = s, .priority = FL_JOB_PRIORITY_LOW});
+    if (!s->job.index && !s->job.generation) goto failed;
+    s->running = true; set_state(s,"running","Measuring speech timing from saved audio…"); return true;
+failed:
+    clear_job(s); set_state(s,"failed","Could not prepare timing analysis."); return false;
 }
 
 void fl_speech_cancel(Fl_Speech *s)

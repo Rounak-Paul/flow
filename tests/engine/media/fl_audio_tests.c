@@ -194,6 +194,17 @@ static void test_player(const char *wav)
     for (uint64_t deadline = fl_clock_monotonic_ns() + UINT64_C(5000000000); !result.count && fl_clock_monotonic_ns() < deadline; )
         fl_event_bus_dispatch(bus);
     CHECK(result.count == 1 && result.token == second && !fl_audio_player_current(player));
+    CHECK(!fl_audio_player_play_range(player,wav,-0.1,0.1));
+    CHECK(!fl_audio_player_play_range(player,wav,0.1,0.1));
+    CHECK(!fl_audio_player_play_range(player,wav,0,1000000));
+    Fl_AudioInfo info; Fl_AudioReader *source = fl_audio_open(wav,&info); CHECK(source); fl_audio_close(source);
+    double duration = (double)info.frames / info.sample_rate;
+    result.count = 0;
+    uint64_t range = fl_audio_player_play_range(player,wav,duration * 0.25,duration * 0.75);
+    CHECK(range);
+    for (uint64_t deadline = fl_clock_monotonic_ns() + UINT64_C(5000000000); !result.count && fl_clock_monotonic_ns() < deadline; )
+        fl_event_bus_dispatch(bus);
+    CHECK(result.count == 1 && result.token == range && !fl_audio_player_current(player));
     uint64_t third = fl_audio_player_play(player, wav);
     CHECK(third != 0);
     fl_audio_player_destroy(player);

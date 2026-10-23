@@ -48,7 +48,7 @@ typedef enum Fl_SpeechCueKind { FL_CUE_WORD, FL_CUE_SENTENCE } Fl_SpeechCueKind;
 typedef struct Fl_SpeechCue {
     Fl_Id id;
     const char *text;
-    Fl_Tick start, end;         /* offsets into the aligned audio asset */
+    Fl_Tick start, end;         /* Audio offsets: resolved timing, or an unapproved measured suggestion; 0/0 means absent. */
     Fl_SpeechCueKind kind;
     bool resolved, retired;
 } Fl_SpeechCue;

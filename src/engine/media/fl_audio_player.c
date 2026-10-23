@@ -4,6 +4,7 @@
 #include "core/fl_log.h"
 #include "core/fl_thread.h"
 #include <stdlib.h>
+#include <math.h>
 #include <string.h>
 
 #define LOG_TAG "audio"
@@ -21,7 +22,7 @@ struct Fl_AudioPlayer {
     ma_data_converter converter;
     bool converter_ready, finished;
     float *input;                   /* decoded, not yet converted frames */
-    uint64_t input_frames, input_offset, input_capacity;
+    uint64_t input_frames, input_offset, input_capacity, remaining;
     uint32_t input_channels;
     uint64_t token, next_token;
 };
@@ -48,7 +49,9 @@ static void render(ma_device *device, void *output, const void *input, ma_uint32
     while (p->reader && !p->finished && written < frames) {
         if (p->input_offset == p->input_frames) {
             p->input_offset = 0;
-            p->input_frames = fl_audio_read(p->reader, p->input, CHUNK_FRAMES);
+            uint64_t requested = p->remaining < CHUNK_FRAMES ? p->remaining : CHUNK_FRAMES;
+            p->input_frames = requested ? fl_audio_read(p->reader, p->input, requested) : 0;
+            p->remaining -= p->input_frames;
             if (!p->input_frames) {
                 p->finished = true;
                 Fl_AudioPlayback ended = {p, p->token, false};
@@ -131,12 +134,18 @@ void fl_audio_player_destroy(Fl_AudioPlayer *p)
     free(p);
 }
 
-uint64_t fl_audio_player_play(Fl_AudioPlayer *p, const char *path)
+/* Open path and atomically replace playback with a whole source or bounded source interval. */
+static uint64_t play_source(Fl_AudioPlayer *p, const char *path, double start, double end, bool bounded)
 {
-    if (!p || !path || !open_device(p)) return 0;
+    if (!p || !path || !isfinite(start) || start < 0 || (bounded && (!isfinite(end) || end <= start)) || !open_device(p)) return 0;
     Fl_AudioInfo info;
     Fl_AudioReader *reader = fl_audio_open(path, &info);
     if (!reader) return 0;
+    double first = start * info.sample_rate, last = end * info.sample_rate;
+    if (bounded && (!info.frames || !isfinite(first) || !isfinite(last) || first >= (double)info.frames ||
+        last > (double)info.frames || last >= (double)UINT64_MAX || (uint64_t)last <= (uint64_t)first || !fl_audio_seek(reader,(uint64_t)first))) {
+        fl_audio_close(reader); return 0;
+    }
     ma_data_converter_config config = ma_data_converter_config_init(ma_format_f32, ma_format_f32, info.channels,
         p->device.playback.channels, info.sample_rate, p->device.sampleRate);
     config.resampling.algorithm = ma_resample_algorithm_linear;
@@ -149,6 +158,7 @@ uint64_t fl_audio_player_play(Fl_AudioPlayer *p, const char *path)
     if (!input || ma_data_converter_init(&config, NULL, &p->converter) != MA_SUCCESS) {
         fl_mutex_unlock(&p->lock); fl_audio_close(reader); return 0;
     }
+    p->remaining = bounded ? (uint64_t)last - (uint64_t)first : UINT64_MAX;
     p->reader = reader; p->converter_ready = true; p->input_channels = info.channels;
     p->token = p->next_token++;
     uint64_t token = p->token;
@@ -158,6 +168,16 @@ uint64_t fl_audio_player_play(Fl_AudioPlayer *p, const char *path)
         FL_LOG_WARN(LOG_TAG, "audio output could not start"); return 0;
     }
     return token;
+}
+
+uint64_t fl_audio_player_play(Fl_AudioPlayer *p, const char *path)
+{
+    return play_source(p,path,0,0,false);
+}
+
+uint64_t fl_audio_player_play_range(Fl_AudioPlayer *p, const char *path, double start, double end)
+{
+    return play_source(p,path,start,end,true);
 }
 
 void fl_audio_player_stop(Fl_AudioPlayer *p)

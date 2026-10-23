@@ -102,6 +102,7 @@ bool fl_speech_alignment_parse(const char *json, const char *script, Fl_Tick dur
         if (!tokens) {ok = false; break;}
         size_t n = words(text->valuestring,tokens); Fl_Tick start = 0, end = 0;
         bool resolved = interval(segment,duration,&start,&end);
+        if (!resolved) start = end = 0;
         const cJSON *probabilities = cJSON_GetObjectItemCaseSensitive(segment,"tokens");
         for (const cJSON *token = probabilities ? probabilities->child : NULL; token; token = token->next) {
             const cJSON *p = cJSON_GetObjectItemCaseSensitive(token,"p");
@@ -137,11 +138,13 @@ bool fl_speech_alignment_parse(const char *json, const char *script, Fl_Tick dur
             }
         }
     }
-    for (size_t i = 0; ok && i < count; ++i) if (cues[i].resolved) {
+    for (size_t i = 0; ok && i < count; ++i) if (cues[i].end > cues[i].start) {
         size_t source_count = 0, audio_count = 0;
         for (size_t j = 0; j < count; ++j) source_count += fl_speech_cue_equal(&cues[i],&cues[j]);
         for (size_t j = 0; j < heard_count; ++j) audio_count += fl_speech_cue_equal(&cues[i],&heard[j]);
-        if (source_count != audio_count && (source_count > 1 || audio_count > 1)) cues[i].resolved = false;
+        if (source_count != audio_count && (source_count > 1 || audio_count > 1)) {
+            cues[i].resolved = false; cues[i].start = cues[i].end = 0;
+        }
     }
     size_t cue_count = count;
     for (size_t begin = 0, i = 0; ok && i < count; ++i) {
@@ -156,7 +159,10 @@ bool fl_speech_alignment_parse(const char *json, const char *script, Fl_Tick dur
         sentence->text = span_text(script,spans[begin].begin,spans[i].end);
         sentence->start = cues[begin].start; sentence->end = cues[i].end; sentence->resolved = true;
         for (size_t k = begin; k <= i; ++k) if (!cues[k].resolved) sentence->resolved = false;
-        if (!sentence->resolved) sentence->start = sentence->end = 0;
+        bool measured = true;
+        for (size_t k = begin; k <= i; ++k) if (cues[k].end <= cues[k].start ||
+            (k > begin && cues[k].start < cues[k - 1].start)) measured = false;
+        if (!measured) {sentence->start = sentence->end = 0; sentence->resolved = false;}
         if (!sentence->text) ok = false;
         begin = i + 1;
     }

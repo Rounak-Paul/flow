@@ -117,7 +117,7 @@ const char *const FL_AGENT_REFERENCE[] = {
 "Without a reference, voices/<speaker>.wav beside Flow is used when that file exists; a missing built-in reference is an explicit error. "
 "generate_speech {scene, phase?} is an editor tool. It runs the Qwen3-TTS runner shipped beside Flow (llama-tts, Apache-2.0 weights) in the background and places each clip on its phase beat. The first run downloads weights into Flow's cache, or FLOW_QWEN_TTS_MODEL names a local GGUF folder. Poll get_speech_status. cancel_speech skips the import.\n"
 "\n",
-"Speech timing is measured locally after generation. get_manuscript phase.cues contains stable IDs, kind (word/sentence), text, asset-relative start/end, resolved/retired flags and resolved scene time. "
+"Speech timing is measured locally after generation. get_manuscript phase.cues contains stable IDs, kind (word/sentence), text, asset-relative start/end, resolved/retired flags and resolved scene time. An unresolved positive-length interval is a measured suggestion, not active timing; 0/0 means no proposal. "
 "Use {\"cue\": id, \"edge\": \"start\"|\"end\", \"offset\": seconds} wherever an anchor is accepted. Cue IDs survive unambiguous regeneration; removed/ambiguous cues remain unresolved and must be rebound explicitly. "
 "Key values/easing/offsets are preserved. Never estimate missing speech times. cue.set {scene, cue, start, end} explicitly repairs an active cue's interval in seconds into its aligned audio.\n"
 "## Assets\n"
