@@ -264,12 +264,14 @@ static bool snap_insertion(Fl_SceneEdit *edit, Fl_Id parent, double *x, double *
 
 static bool axis_gesture(Fl_EditGesture mode) { return mode >= FL_GESTURE_AXIS_X && mode <= FL_GESTURE_AXIS_Z; }
 static bool ring_gesture(Fl_EditGesture mode) { return mode >= FL_GESTURE_RING_X && mode <= FL_GESTURE_RING_Z; }
+static bool scale_gesture(Fl_EditGesture mode) { return mode >= FL_GESTURE_SCALE_X && mode <= FL_GESTURE_SCALE_Z; }
+static bool slide_gesture(Fl_EditGesture mode) { return mode == FL_GESTURE_MOVE || mode == FL_GESTURE_PLANE; }
 
 bool fl_scene_edit_begin(Fl_SceneEdit *edit, Fl_EditGesture mode, double x, double y)
 {
-    bool axis = axis_gesture(mode), ring = ring_gesture(mode);
-    if (!edit || !edit->count || mode < FL_GESTURE_MOVE || mode > FL_GESTURE_RING_Z || (ring && edit->count != 1) ||
-        (!axis && !ring && mode != FL_GESTURE_MOVE && edit->count != 1) || !isfinite(x) || !isfinite(y)) return false;
+    bool axis = axis_gesture(mode), ring = ring_gesture(mode), scale = scale_gesture(mode);
+    if (!edit || !edit->count || mode < FL_GESTURE_MOVE || mode > FL_GESTURE_PLANE || (ring && edit->count != 1) ||
+        (!axis && !ring && !scale && !slide_gesture(mode) && edit->count != 1) || !isfinite(x) || !isfinite(y)) return false;
     clear_gesture(edit);
     fl_scene_edit_state(edit);
     if (edit->evaluation && !fl_evaluation_wait(edit->evaluation,edit->time)) return false;
@@ -295,8 +297,11 @@ bool fl_scene_edit_begin(Fl_SceneEdit *edit, Fl_EditGesture mode, double x, doub
         else if (mode==FL_GESTURE_RING_X) { properties[0]=FL_PROP_RX; property_count=1; }
         else if (mode==FL_GESTURE_RING_Y) { properties[0]=FL_PROP_RY; property_count=1; }
         else if (mode==FL_GESTURE_RING_Z) { properties[0]=FL_PROP_RZ; property_count=1; }
+        else if (mode==FL_GESTURE_SCALE_X) { properties[0]=FL_PROP_SCALE_X; property_count=1; }
+        else if (mode==FL_GESTURE_SCALE_Y) { properties[0]=FL_PROP_SCALE_Y; property_count=1; }
+        else if (mode==FL_GESTURE_SCALE_Z) { properties[0]=FL_PROP_SCALE_Z; property_count=1; }
         else if (axis) { properties[0]=FL_PROP_X; properties[1]=FL_PROP_Y; properties[2]=FL_PROP_Z; property_count=3; }
-        else if (mode==FL_GESTURE_MOVE) property_count=2;
+        else if (slide_gesture(mode)) property_count=2;
         for (size_t p=0;p<property_count;++p) if (fl_entity_component(entity,FL_COMPONENT_SAMPLED) || fl_scene_state_writer(state,index,properties[p],NULL,NULL)) {clear_gesture(edit); return false;}
         const Fl_ResolvedEntity *v = &geometry->entities[entity-scene->entities];
         Fl_GestureTarget *target = &edit->targets[edit->target_count];
@@ -353,7 +358,7 @@ bool fl_scene_edit_update(Fl_SceneEdit *edit, double x, double y)
 {
     if (!edit || !edit->target_count || !isfinite(x) || !isfinite(y)) return false;
     if (edit->gesture_snap && (x != edit->start_x || y != edit->start_y) && edit->gesture != FL_GESTURE_ROTATE) {
-        if (edit->gesture == FL_GESTURE_MOVE) {
+        if (slide_gesture(edit->gesture)) {
             x = edit->start_x + round((edit->snap_x + x - edit->start_x) / FL_SCENE_GRID_SPACING) * FL_SCENE_GRID_SPACING - edit->snap_x;
             y = edit->start_y + round((edit->snap_y + y - edit->start_y) / FL_SCENE_GRID_SPACING) * FL_SCENE_GRID_SPACING - edit->snap_y;
         } else {
@@ -367,7 +372,7 @@ bool fl_scene_edit_update(Fl_SceneEdit *edit, double x, double y)
         if (x==edit->start_x&&y==edit->start_y) {
             edit->updates[i]=target->initial;continue;
         }
-        if (edit->gesture == FL_GESTURE_MOVE) {
+        if (slide_gesture(edit->gesture)) {
             double dx = x-edit->start_x, dy = y-edit->start_y;
             t.x += target->parent_inverse.v[0]*dx+target->parent_inverse.v[1]*dy;
             t.y += target->parent_inverse.v[3]*dx+target->parent_inverse.v[4]*dy;
@@ -437,9 +442,11 @@ static void hold_center(const Fl_Pose *initial, Fl_Pose *pose, const Fl_Bounds *
 bool fl_scene_edit_update_spatial(Fl_SceneEdit *edit, Fl_Vec3 world_delta, Fl_Vec3 world_axis, double radians)
 {
     if (!edit || !edit->target_count || !isfinite(world_delta.x) || !isfinite(world_delta.y) || !isfinite(world_delta.z) || !isfinite(radians)) return false;
-    bool axis = axis_gesture(edit->gesture), ring = ring_gesture(edit->gesture);
-    if (!axis && !ring) return false;
-    if (axis && edit->gesture_snap) {
+    bool axis = axis_gesture(edit->gesture), ring = ring_gesture(edit->gesture), scale = scale_gesture(edit->gesture);
+    if (!axis && !ring && !scale) return false;
+    if (scale) {
+        if (!isfinite(radians) || fabs(radians) > 1e6) return false;
+    } else if (axis && edit->gesture_snap) {
         world_delta.x = round(world_delta.x / FL_SCENE_GRID_SPACING) * FL_SCENE_GRID_SPACING;
         world_delta.y = round(world_delta.y / FL_SCENE_GRID_SPACING) * FL_SCENE_GRID_SPACING;
         world_delta.z = round(world_delta.z / FL_SCENE_GRID_SPACING) * FL_SCENE_GRID_SPACING;
@@ -450,6 +457,10 @@ bool fl_scene_edit_update_spatial(Fl_SceneEdit *edit, Fl_Vec3 world_delta, Fl_Ve
         if (axis) {
             Fl_Vec3 local = fl_mat4_vector(target->parent_inverse_model, world_delta);
             t.x += local.x; t.y += local.y; t.z += local.z;
+        } else if (scale) {
+            if (edit->gesture == FL_GESTURE_SCALE_X) t.sx = target->initial.pose.sx * radians;
+            else if (edit->gesture == FL_GESTURE_SCALE_Y) t.sy = target->initial.pose.sy * radians;
+            else t.sz = target->initial.pose.sz * radians;
         } else {
             Fl_Mat4 spun = fl_mat4_mul(rotation_about(world_axis, radians), euler_matrix(&t));
             euler_from_matrix(spun, &t.rx, &t.ry, &t.rz);

@@ -42,6 +42,7 @@ struct Fl_ScenePanel {
     Fl_Id *collapsed;
     size_t collapsed_count, collapsed_capacity;
     Fl_Id view_camera;          /* 0 is the editor camera */
+    unsigned tool_keys;         /* W E R T levels from the previous poll, for rising-edge tool changes */
     Fl_Id *camera_ids;
     size_t camera_count;
 };
@@ -154,6 +155,10 @@ static void retain_view_camera(Fl_ScenePanel *p, const Fl_Scene *scene)
 
 static void choose_flat(Ca_Button *button, void *data);
 static void choose_spatial(Ca_Button *button, void *data);
+static void choose_move(Ca_Button *button, void *data);
+static void choose_rotate(Ca_Button *button, void *data);
+static void choose_scale(Ca_Button *button, void *data);
+static void choose_rect(Ca_Button *button, void *data);
 
 /* Right-align the view camera and the editor-camera controls. */
 static void build_view_tools(Fl_ScenePanel *p)
@@ -180,6 +185,15 @@ static void build_view_tools(Fl_ScenePanel *p)
         count = n;
     }
     free(p->camera_ids); p->camera_ids = ids; p->camera_count = count;
+    Fl_EditTool tool = fl_scene_preview_tool(p->preview);
+    fl_button(&(Fl_ButtonDesc){.text = "Move", .id = "scene-tool-move", .on_click = choose_move, .click_data = p,
+        .active = tool == FL_TOOL_MOVE, .tooltip = "Move along an axis (W). The center slides on the canvas plane."});
+    fl_button(&(Fl_ButtonDesc){.text = "Rotate", .id = "scene-tool-rotate", .on_click = choose_rotate, .click_data = p,
+        .active = tool == FL_TOOL_ROTATE, .tooltip = "Rotate around an axis (E). 2D keeps the ring that faces you."});
+    fl_button(&(Fl_ButtonDesc){.text = "Scale", .id = "scene-tool-scale", .on_click = choose_scale, .click_data = p,
+        .active = tool == FL_TOOL_SCALE, .tooltip = "Scale along an axis (R). Drag through the pivot to flip."});
+    fl_button(&(Fl_ButtonDesc){.text = "Rect", .id = "scene-tool-rect", .on_click = choose_rect, .click_data = p,
+        .active = tool == FL_TOOL_RECT, .tooltip = "Corner handles resize. Drag the shape to move it. The top handle spins it (T)."});
     ca_div_begin(&(Ca_DivDesc){.style = FL_CLASS_TOOLBAR_SPACER}); ca_div_end();
     if (options) ca_select(&(Ca_SelectDesc){.options = options, .option_count = (int)count + 1, .selected = selected,
         .id = "scene-camera", .style = FL_CLASS_CAMERA_SELECT, .on_change = camera_chosen, .change_data = p});
@@ -188,11 +202,11 @@ static void build_view_tools(Fl_ScenePanel *p)
     ca_btn_begin(&(Ca_BtnDesc){.text = "2D", .id = "scene-mode-2d", .style = flat ? FL_CLASS_MODE_ACTIVE : FL_CLASS_MODE,
         .on_click = choose_flat, .click_data = p});
     ca_btn_end();
-    ca_tooltip(&(Ca_TooltipDesc){.text = "Canvas mode. Corner handles resize. Right-drag or middle-drag pans. Scroll zooms."});
+    ca_tooltip(&(Ca_TooltipDesc){.text = "Front view of the canvas. Gizmos stay on the plane. Right-drag or middle-drag pans. Scroll zooms."});
     ca_btn_begin(&(Ca_BtnDesc){.text = "3D", .id = "scene-mode-3d", .style = flat ? FL_CLASS_MODE : FL_CLASS_MODE_ACTIVE,
         .on_click = choose_spatial, .click_data = p});
     ca_btn_end();
-    ca_tooltip(&(Ca_TooltipDesc){.text = "Axis gizmo moves and rotates. Right-drag looks. Hold right-click and use WASD, Q and E to fly."});
+    ca_tooltip(&(Ca_TooltipDesc){.text = "Perspective view. The active tool uses every axis. Right-drag looks. Hold right-click and use WASD, Q and E to fly."});
     bool editor = p->view_camera == 0;
     fl_button(&(Fl_ButtonDesc){.text=CA_ICON_NF_MD_FIT_TO_PAGE_OUTLINE,.id="scene-fit-canvas",
         .on_click=reset_canvas,.click_data=p, .kind = FL_BUTTON_ICON, .disabled = !editor,
@@ -204,6 +218,18 @@ static void build_view_tools(Fl_ScenePanel *p)
         ca_tooltip(&(Ca_TooltipDesc){.text = "Playback previews use up to 960 pixels. Pause to inspect full resolution. Exports use the selected output resolution."});
     }
 }
+
+static void set_tool(Fl_ScenePanel *p, Fl_EditTool tool)
+{
+    if (!p || fl_scene_preview_tool(p->preview) == tool) return;
+    fl_scene_preview_set_tool(p->preview, tool);
+    if (p->dock) ca_dock_invalidate_panel(p->dock, "scene");
+}
+
+static void choose_move(Ca_Button *button, void *data) { (void)button; set_tool(data, FL_TOOL_MOVE); }
+static void choose_rotate(Ca_Button *button, void *data) { (void)button; set_tool(data, FL_TOOL_ROTATE); }
+static void choose_scale(Ca_Button *button, void *data) { (void)button; set_tool(data, FL_TOOL_SCALE); }
+static void choose_rect(Ca_Button *button, void *data) { (void)button; set_tool(data, FL_TOOL_RECT); }
 
 static void choose_flat(Ca_Button *button, void *data)
 {
@@ -350,7 +376,7 @@ static void stage_start(const Ca_DragEvent *event,void *data)
         p->drag_scale_x=unit_x-zero_x;p->drag_scale_y=unit_y-zero_y;
     }
     Fl_EditGesture mode=fl_scene_preview_handle(p->preview,p->viewport,event->start_x,event->start_y);
-    p->drag_spatial = mode >= FL_GESTURE_AXIS_X && mode <= FL_GESTURE_RING_Z;
+    p->drag_spatial = mode >= FL_GESTURE_AXIS_X && mode <= FL_GESTURE_SCALE_Z;
     if (p->drag_spatial) {
         if (!fl_scene_preview_gizmo_arm(p->preview, p->viewport, mode, event->start_x, event->start_y)) { p->drag_spatial = false; return; }
         p->gesturing = fl_scene_edit_begin(p->edit, mode, 0, 0);
@@ -362,7 +388,7 @@ static void stage_start(const Ca_DragEvent *event,void *data)
         Fl_Id hit=fl_scene_preview_pick(p->preview,p->viewport,event->start_x,event->start_y);
         bool additive=(ca_window_mouse_mods(event->window)&CA_MOD_SHIFT)!=0;
         if (additive||!fl_scene_edit_contains(p->edit,hit)) fl_scene_edit_select(p->edit,s->id,hit,additive);
-        if (!hit||!fl_scene_edit_contains(p->edit,hit)) return;
+        if (fl_scene_preview_tool(p->preview) != FL_TOOL_RECT || !hit || !fl_scene_edit_contains(p->edit,hit)) return;
     }
     if (!placed) return;
     p->gesturing=fl_scene_edit_begin(p->edit,mode,x,y);
@@ -406,16 +432,37 @@ static void stage_scroll(double dx, double dy, void *data)
     if (dy) fl_scene_preview_zoom(p->preview,p->viewport,dy*32);
 }
 
+/* W, E, R and T select the gizmo. A key held for flying does not also switch tools when the button lifts. */
+static void tool_hotkeys(Fl_ScenePanel *p)
+{
+    if (!p->window || !ca_window_focused(p->window)) { p->tool_keys = 0; return; }
+    static const int keys[4] = {CA_KEY_W, CA_KEY_E, CA_KEY_R, CA_KEY_T};
+    static const Fl_EditTool tools[4] = {FL_TOOL_MOVE, FL_TOOL_ROTATE, FL_TOOL_SCALE, FL_TOOL_RECT};
+    unsigned down = 0;
+    for (int i = 0; i < 4; ++i) if (ca_window_key_down(p->window, keys[i])) down |= 1u << i;
+    bool pointer = false, keyboard = false;
+    ca_window_input_capture(p->window, &pointer, &keyboard);
+    (void)pointer;
+    bool blocked = p->gesturing || p->navigating || ca_window_mouse_button_down(p->window, 1) || keyboard;
+    if (!blocked) {
+        unsigned pressed = down & ~p->tool_keys;
+        for (int i = 0; i < 4; ++i) if (pressed & (1u << i)) { set_tool(p, tools[i]); break; }
+    }
+    p->tool_keys = down;
+}
+
 /* Escape rolls back only the active viewport gesture. */
 static void check_keys(void *data)
 {
     Fl_ScenePanel *p=data;
+    tool_hotkeys(p);
     if (p->navigating&&p->window&&ca_window_focused(p->window)&&ca_window_key_down(p->window,CA_KEY_ESCAPE)) {
         if (p->viewport && p->navigating==1) fl_scene_preview_look(p->preview,p->viewport,-p->pan_dx,-p->pan_dy);
         else if (p->viewport) fl_scene_preview_pan(p->preview,p->viewport,-p->pan_dx,-p->pan_dy);
         p->navigating=0;
     }
-    if (!fl_scene_preview_shot(p->preview) && !fl_scene_preview_flat(p->preview) && !p->gesturing && !p->navigating && p->viewport && p->window && ca_window_focused(p->window) && ca_window_mouse_button_down(p->window,1)) {
+    /* Look drags set navigating to 1. Flight continues through that drag; pan (2) does not fly. */
+    if (!fl_scene_preview_shot(p->preview) && !fl_scene_preview_flat(p->preview) && !p->gesturing && p->navigating != 2 && p->viewport && p->window && ca_window_focused(p->window) && ca_window_mouse_button_down(p->window,1)) {
         double forward=0, right=0, up=0;
         if (ca_window_key_down(p->window,CA_KEY_W)) forward+=1;
         if (ca_window_key_down(p->window,CA_KEY_S)) forward-=1;

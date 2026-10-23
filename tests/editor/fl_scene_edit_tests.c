@@ -236,6 +236,17 @@ int main(int argc,char **argv)
     Fl_Vec3 held=fl_mat4_point(fl_pose_model(&before.pose),(Fl_Vec3){before.bounds.width*.5,before.bounds.height*.5,0});
     CHECK(near(center.x,held.x)&&near(center.y,held.y)&&near(center.z,held.z));
     fl_scene_edit_end(edit,true);
+    before=read_transform(p,scene,box);
+    CHECK(fl_scene_edit_begin(edit,FL_GESTURE_SCALE_X,0,0));
+    CHECK(fl_scene_edit_update_spatial(edit,(Fl_Vec3){0,0,0},(Fl_Vec3){1,0,0},2));
+    t=read_transform(p,scene,box);
+    CHECK(near(t.pose.sx,before.pose.sx*2)&&near(t.pose.sy,before.pose.sy)&&near(t.pose.x,before.pose.x)&&near(t.pose.z,before.pose.z));
+    fl_scene_edit_end(edit,true);
+    CHECK(fl_scene_edit_begin(edit,FL_GESTURE_PLANE,0,0));
+    CHECK(fl_scene_edit_update(edit,12,-8));
+    t=read_transform(p,scene,box);
+    CHECK(near(t.pose.x,before.pose.x+12)&&near(t.pose.y,before.pose.y-8)&&near(t.pose.z,before.pose.z));
+    fl_scene_edit_end(edit,true);
     check_async_preview(p,bus,scene);
     check_scoped_editing(p,edit,scene);
     CHECK(fl_project_save(p));fl_scene_edit_destroy(edit);fl_project_destroy(p);CHECK(fl_event_bus_destroy(bus));fl_fs_remove(path);

@@ -30,9 +30,12 @@ void fl_scene_preview_fly(Fl_ScenePreview *preview, Ca_Viewport *viewport, doubl
 void fl_scene_preview_set_camera(Fl_ScenePreview *preview, Fl_Id camera);
 /* True while the viewport is looking through a hierarchy camera. */
 bool fl_scene_preview_shot(const Fl_ScenePreview *preview);
-/* 2D works on the canvas with box handles. 3D flies and uses the axis gizmo. */
+/* 2D locks the camera to the canvas. 3D flies. The active tool draws in both. */
 void fl_scene_preview_set_flat(Fl_ScenePreview *preview, bool flat);
 bool fl_scene_preview_flat(const Fl_ScenePreview *preview);
+/* Move, rotate, scale, or rect. 2D hides gizmo axes that point at the camera. */
+void fl_scene_preview_set_tool(Fl_ScenePreview *preview, Fl_EditTool tool);
+Fl_EditTool fl_scene_preview_tool(const Fl_ScenePreview *preview);
 /* Remember the gizmo axis under the press. False when the pointer misses its drag plane. */
 bool fl_scene_preview_gizmo_arm(Fl_ScenePreview *preview, Ca_Viewport *viewport, Fl_EditGesture gesture, double window_x, double window_y);
 /* World translation, frozen axis and radians from the armed press to this window point. */
