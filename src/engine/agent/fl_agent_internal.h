@@ -68,6 +68,7 @@ bool agent_ease_from_name(const char *name, Fl_Ease *ease);
 const Fl_Scene *agent_scene_of_entity(const Fl_Project *project, Fl_Id entity);
 const Fl_Scene *agent_scene_of_beat(const Fl_Project *project, Fl_Id beat);
 const Fl_Scene *agent_scene_of_clip(const Fl_Project *project, Fl_Id clip);
+const Fl_Scene *agent_scene_of_phase(const Fl_Project *project, Fl_Id phase);
 /* One project Lua asset: id, name, bytes, the entities running it and, with source, its text. NULL on allocation failure. */
 cJSON *agent_script_json(const Fl_Project *project, const Fl_Asset *script, bool with_source);
 const Fl_Scene *agent_scene_of_key(const Fl_Project *project, Fl_Id key, const Fl_Track **track);
@@ -75,6 +76,7 @@ const Fl_Scene *agent_scene_of_key(const Fl_Project *project, Fl_Id key, const F
 /* JSON views of the document. */
 cJSON *agent_scene_summary(const Fl_Scene *scene);
 cJSON *agent_scene_json(const Fl_Project *project, const Fl_Scene *scene, bool with_sources);
+cJSON *agent_manuscript_json(const Fl_Scene *scene);
 cJSON *agent_asset_json(const Fl_Asset *asset, size_t uses);
 cJSON *agent_anchor_json(const Fl_Scene *scene, const Fl_TimeAnchor *anchor);
 void agent_color_json(cJSON *object, const char *key, const unsigned char rgba[4]);

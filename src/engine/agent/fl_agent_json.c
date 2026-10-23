@@ -1,5 +1,6 @@
 #include "doc/fl_json.h"
 #include "fl_agent_internal.h"
+#include "project/fl_manuscript.h"
 #include "doc/fl_document.h"
 #include "components/fl_script.h"
 #include "components/fl_style.h"
@@ -226,6 +227,14 @@ const Fl_Scene *agent_scene_of_beat(const Fl_Project *p, Fl_Id id)
     }
     return NULL;
 }
+const Fl_Scene *agent_scene_of_phase(const Fl_Project *p, Fl_Id id)
+{
+    for (size_t i = 0; i < fl_project_scene_count(p); ++i) {
+        const Fl_Scene *s = fl_project_scene_at(p, i);
+        if (fl_scene_phase(s, id)) return s;
+    }
+    return NULL;
+}
 const Fl_Scene *agent_scene_of_clip(const Fl_Project *p, Fl_Id id)
 {
     for (size_t i = 0; i < fl_project_scene_count(p); ++i) {
@@ -420,6 +429,38 @@ static cJSON *entity_json(const Fl_Scene *s, const Fl_Entity *e)
     return o;
 }
 
+cJSON *agent_manuscript_json(const Fl_Scene *s)
+{
+    cJSON *o = cJSON_CreateObject();
+    if (!o) return NULL;
+    size_t words = 0;
+    for (size_t i = 0; i < s->phase_count; ++i) words += fl_manuscript_words(s->phases[i].text);
+    cJSON_AddItemToObject(o, "scene", agent_id_json(s->id));
+    cJSON_AddStringToObject(o, "voice", s->voice ? s->voice : "Ryan");
+    cJSON_AddStringToObject(o, "language", s->language ? s->language : "English");
+    cJSON_AddItemToObject(o, "reference", agent_id_json(s->voice_reference));
+    cJSON_AddStringToObject(o, "transcript", s->voice_transcript ? s->voice_transcript : "");
+    cJSON_AddNumberToObject(o, "words", (double)words);
+    cJSON_AddNumberToObject(o, "minutes", (double)words / (double)FL_NARRATION_WPM);
+    cJSON *phases = cJSON_AddArrayToObject(o, "phases");
+    for (size_t i = 0; phases && i < s->phase_count; ++i) {
+        const Fl_Phase *phase = &s->phases[i];
+        size_t count = fl_manuscript_words(phase->text);
+        cJSON *item = cJSON_CreateObject();
+        if (!item) break;
+        cJSON_AddItemToObject(item, "id", agent_id_json(phase->id));
+        cJSON_AddStringToObject(item, "title", phase->title);
+        cJSON_AddStringToObject(item, "text", phase->text);
+        cJSON_AddItemToObject(item, "beat", agent_id_json(phase->beat));
+        cJSON_AddItemToObject(item, "clip", agent_id_json(phase->clip));
+        cJSON_AddNumberToObject(item, "words", (double)count);
+        cJSON_AddNumberToObject(item, "seconds", fl_manuscript_seconds(phase->text));
+        cJSON_AddNumberToObject(item, "minutes", (double)count / (double)FL_NARRATION_WPM);
+        cJSON_AddItemToArray(phases, item);
+    }
+    return o;
+}
+
 cJSON *agent_scene_json(const Fl_Project *p, const Fl_Scene *s, bool with_sources)
 {
     (void)p;
@@ -468,5 +509,6 @@ cJSON *agent_scene_json(const Fl_Project *p, const Fl_Scene *s, bool with_source
     }
     cJSON *entities = cJSON_AddArrayToObject(o, "entity_list");
     for (size_t i = 0; entities && i < s->entity_count; ++i) cJSON_AddItemToArray(entities, entity_json(s, &s->entities[i]));
+    cJSON_AddItemToObject(o, "manuscript", agent_manuscript_json(s));
     return o;
 }

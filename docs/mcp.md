@@ -31,7 +31,8 @@ Tools need an open project. With the project launcher showing they return `no_pr
 |---|---|
 | `get_reference` | The manual: units, every operation and its fields, the animation model, Lua scripting. Agents should read it first. |
 | `get_project` | Scenes (id, revision, size, length), assets, undo history |
-| `get_scene` | One scene in full: beats, audio clips, entities in draw order with properties, keyframe tracks and script info |
+| `get_scene` | One scene in full: beats, audio clips, the manuscript, entities in draw order with properties, keyframe tracks and script info |
+| `get_manuscript` | Spoken script: voice, language, clone reference, transcript, words, minutes, and each phase |
 | `get_asset` | Read asset metadata and accepted source bytes, including unsaved Lua or Flow prototype edits |
 | `get_script` / `set_script` | Read, create or edit a project Lua asset by ID or exact name; optional attachment to entity IDs |
 | `evaluate_scene` | Resolved values of every entity at a time, after keyframes and Lua, plus script errors |
@@ -41,12 +42,15 @@ Tools need an open project. With the project launcher showing they return `no_pr
 | `export_video` | Renders the project's scenes in order to an H.264 MP4 (BT.709, yuv420p) through ffmpeg: `path` (a file name goes to the project's `exports` folder), `width` (default 1920, height follows the aspect, both even), `fps` (default 60), `crf` (default 16), optional `scenes`, optional `crossfade` seconds (scenes overlap and dissolve into each other in linear light). Audio clips of the exported scenes are mixed (gain, fades, trimmed to their scene) into AAC. Runs in the background on the same renderer as `render_frame` |
 | `get_export_status` / `cancel_export` | Progress of the latest export: state, frames done/total, elapsed, preparation/render seconds, summed GPU fence wait seconds, average frames per second after startup, and output path; stop it |
 | `get_editor_state` / `set_editor_state` | Read or set the shown scene, playhead and selection |
+| `generate_speech` / `get_speech_status` / `cancel_speech` | Speak the manuscript with the Qwen3-TTS runner shipped beside Flow (`llama-tts`, Apache-2.0). The first run downloads weights into Flow's cache; `FLOW_QWEN_TTS_MODEL` can name a local GGUF folder. Place each clip on its phase beat. Generation runs in the background; poll status, which also imports finished audio |
 | `import_asset` | Copy a local image, audio, video, font or Lua file (absolute path) into the project through shared undo history |
 | `save_project` | Write now; Flow also autosaves after changes |
 
 Look properties beyond fill and stroke: `radius`, a two-colour gradient (`fill2`, `gradient_angle`), a soft drop shadow (`shadow_blur`, `shadow_x`, `shadow_y`, `shadow_color`), text `align`, a `crop` window and animatable `crop_x/y/w/h` for images and videos (zoom and pan inside a fixed frame), and scene `background`. Video entities (`kind: "video"`, asset from `import_asset`) play from `start` at source `offset` and `rate`; the decoder uses a bounded timestamp-based ffmpeg frame cache. Lua scripts can replace a text entity's content through `ctx.entity.text`, for example to count up a number.
 
-Units: times in seconds, rotation in degrees, colours `#RRGGBB[AA]`, positions in scene pixels. Operations: `scene.add/remove/rename/move/set`, `entity.create/set/remove/reparent/reorder`, `key.set/remove`, `track.remove`, `beat.add/update/remove/move/split`, `clip.add/update/remove`, `script.create/update/remove/attach/detach`, `component.set/remove`.
+Units: times in seconds, rotation in degrees, colours `#RRGGBB[AA]`, positions in scene pixels. Operations: `scene.add/remove/rename/move/set`, `entity.create/set/remove/reparent/reorder`, `key.set/remove`, `track.remove`, `beat.add/update/remove/move/split`, `clip.add/update/remove`, `phase.add/update/remove/move`, `voice.set`, `script.create/update/remove/attach/detach`, `component.set/remove`.
+
+`phase.add` writes one spoken section and adopts the scene's only beat, or creates a beat timed to the reading (about 150 words a minute). `phase.remove` leaves that beat and its clip in place. `voice.set` chooses a speaker name and language. `reference` is an audio asset used to clone a voice. Without one, `voices/<speaker>.wav` beside Flow is used when that file exists. A transcript of the recording is stored with the scene.
 
 ```json
 {"label": "Intro", "ops": [

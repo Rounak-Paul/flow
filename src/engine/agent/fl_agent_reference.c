@@ -108,6 +108,15 @@ const char *const FL_AGENT_REFERENCE[] = {
 "Limits: 1M instructions per sample and 16 MiB per evaluator. Errors keep keyframed values and appear as script_error.\n"
 "Example: return {sample=function(ctx) ctx.entity.pose.y=ctx.entity.pose.y+math.sin(ctx.time.seconds*4)*20 end}\n"
 "\n",
+"## Manuscript\n"
+"The manuscript is the spoken script of a scene, about 150 words a minute. get_manuscript {scene} returns voice, language, reference, transcript, words, minutes and phases. "
+"phase.add {scene, title?, text?, position?, beat?} appends a phase. With no beat it adopts the scene's only beat, or creates one named from the title and timed to the reading. "
+"phase.update {phase, title?, text?, beat?, clip?} keeps omitted fields; beat or clip 0 detaches that link. phase.remove {phase} drops the phase and leaves its beat and clip. phase.move {phase, position}. "
+"voice.set {scene, voice?, language?, reference?, transcript?} chooses a speaker name: Ryan, Aiden, Vivian, Serena, Uncle_Fu, Dylan, Eric, Ono_Anna, Sohee. "
+"Languages: Auto, Chinese, English, Japanese, Korean, German, French, Russian, Portuguese, Spanish, Italian. reference is an audio asset used to clone a voice, and 0 clears it. A transcript of that recording is stored with the scene. "
+"Without a reference, voices/<speaker>.wav beside Flow is used when that file exists; otherwise the model default voice is used. "
+"generate_speech {scene, phase?} is an editor tool. It runs the Qwen3-TTS runner shipped beside Flow (llama-tts, Apache-2.0 weights) in the background and places each clip on its phase beat. The first run downloads weights into Flow's cache, or FLOW_QWEN_TTS_MODEL names a local GGUF folder. Poll get_speech_status. cancel_speech skips the import.\n"
+"\n",
 "## Assets\n"
 "`import_asset {path}` copies a local image, audio, video, font or Lua file into the project and returns its id. Asset\n"
 "imports use the shared undo history. Images are placed with entity.create kind=image.\n"

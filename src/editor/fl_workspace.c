@@ -6,6 +6,8 @@
 #include "fl_widget_library.h"
 #include "fl_inspector.h"
 #include "fl_script_panel.h"
+#include "fl_manuscript_panel.h"
+#include "fl_speech.h"
 #include "fl_playback.h"
 #include "fl_timeline_panel.h"
 #include "fl_export_window.h"
@@ -40,6 +42,8 @@ struct Fl_Workspace {
     Fl_AssetImporter *importer;
     Fl_AssetPanel *assets;
     Fl_ScriptPanel *scripts;
+    Fl_ManuscriptPanel *manuscript;
+    Fl_Speech *speech;
     Fl_AudioPlayer *player;
     Fl_Playback *playback;
     Fl_TimelinePanel *timeline;
@@ -78,6 +82,12 @@ static void seed_default_layout(Ca_DockLayout *layout, void *user_data)
     if (export_panel != CA_DOCK_NONE) {
         const int active = ca_dock_layout_tab_index(layout, ca_dock_layout_active_panel(layout, console));
         ca_dock_layout_add_tab(layout, console, export_panel, -1);
+        if (active >= 0) ca_dock_layout_set_active(layout, console, active);
+    }
+    const int manuscript = ca_dock_layout_find(layout, FL_MANUSCRIPT_PANEL_ID);
+    if (manuscript != CA_DOCK_NONE) {
+        const int active = ca_dock_layout_tab_index(layout, ca_dock_layout_active_panel(layout, console));
+        ca_dock_layout_add_tab(layout, console, manuscript, -1);
         if (active >= 0) ca_dock_layout_set_active(layout, console, active);
     }
     const int root = ca_dock_layout_new_split(layout, false, 0.75f, scene, console);
@@ -152,6 +162,7 @@ static void flush_pending_save(void *user_data)
         Fl_Project *project=fl_scene_edit_project(workspace->edit);
         Fl_ReloadResult result=fl_project_reload(project);
         const char *error=fl_project_diagnostic(project);
+        if (workspace->speech) fl_speech_pump(workspace->speech);
         if ((result==FL_RELOAD_INVALID || result==FL_RELOAD_CONFLICT) && strcmp(error,workspace->document_error)) {
             FL_LOG_WARN(LOG_TAG,"%s",error); snprintf(workspace->document_error,sizeof(workspace->document_error),"%s",error);
         } else if (result==FL_RELOAD_APPLIED) workspace->document_error[0]=0;
@@ -182,8 +193,12 @@ static void migrate_authoring_layout(Fl_Workspace *workspace)
 {
     if (!workspace->saved_layout) return;
     Ca_DockLayout *layout=ca_dock_layout_create();if (!layout) return;
-    const char *ids[]={"scene","console","widgets","inspector",ASSETS_PANEL_ID,TIMELINE_PANEL_ID,SCRIPTS_PANEL_ID,FL_EXPORT_PANEL_ID};
-    const size_t id_count=workspace->export_panel ? 8 : 7;
+    const char *ids[9];
+    size_t id_count = 0;
+    ids[id_count++] = "scene"; ids[id_count++] = "console"; ids[id_count++] = "widgets"; ids[id_count++] = "inspector";
+    ids[id_count++] = ASSETS_PANEL_ID; ids[id_count++] = TIMELINE_PANEL_ID; ids[id_count++] = SCRIPTS_PANEL_ID;
+    if (workspace->export_panel) ids[id_count++] = FL_EXPORT_PANEL_ID;
+    ids[id_count++] = FL_MANUSCRIPT_PANEL_ID;
     bool valid=true;
     for (size_t i=0;i<id_count;++i) valid &= ca_dock_layout_register(layout,ids[i])!=CA_DOCK_NONE;
     bool changed=false;
@@ -216,6 +231,15 @@ static void migrate_authoring_layout(Fl_Workspace *workspace)
             if (ca_dock_layout_add_tab(layout,bottom,export_panel,-1)) {
                 if (active>=0) ca_dock_layout_set_active(layout,bottom,active);
                 changed=true;
+            }
+        }
+        const int manuscript = ca_dock_layout_find(layout, FL_MANUSCRIPT_PANEL_ID);
+        if (manuscript != CA_DOCK_NONE && ca_dock_layout_group_of(layout, manuscript) == CA_DOCK_NONE &&
+            ca_dock_layout_home_of(layout, manuscript) == CA_DOCK_NONE && bottom != CA_DOCK_NONE) {
+            const int active = ca_dock_layout_tab_index(layout, ca_dock_layout_active_panel(layout, bottom));
+            if (ca_dock_layout_add_tab(layout, bottom, manuscript, -1)) {
+                if (active >= 0) ca_dock_layout_set_active(layout, bottom, active);
+                changed = true;
             }
         }
         if (changed) {
@@ -267,8 +291,13 @@ static bool create_dock(Fl_Workspace *workspace, Ca_Window *window)
         .build = fl_export_panel_build, .teardown = fl_export_panel_teardown,
         .user_data = workspace->export_panel,
     }));
-    if (!export_panel) FL_LOG_ERROR(LOG_TAG, "failed to register workspace panels");
-    return export_panel;
+    const bool manuscript = export_panel && ca_dock_register_panel(workspace->dock, &(Ca_DockPanelDesc){
+        .id = FL_MANUSCRIPT_PANEL_ID, .title = "Manuscript", .dock_beside = TIMELINE_PANEL_ID,
+        .build = fl_manuscript_panel_build, .teardown = fl_manuscript_panel_teardown,
+        .user_data = workspace->manuscript,
+    });
+    if (!manuscript) FL_LOG_ERROR(LOG_TAG, "failed to register workspace panels");
+    return manuscript;
 }
 
 /*
@@ -279,6 +308,7 @@ static void on_files_dropped(Ca_Window *window, const char *const *paths, int co
 {
     (void)window;
     Fl_Workspace *workspace = user_data;
+    if (fl_manuscript_panel_drop(workspace->manuscript, paths, count, x, y)) return;
     fl_asset_panel_drop_files(workspace->assets, paths, count, x, y);
 }
 
@@ -324,6 +354,8 @@ Fl_Workspace *fl_workspace_create(const Fl_WorkspaceDesc *desc)
     workspace->assets=workspace->player&&workspace->timeline ? fl_asset_panel_create(workspace->edit,workspace->scene,workspace->importer,desc->jobs,
                                                                 workspace->player,workspace->timeline,desc->bus) : NULL;
     workspace->scripts=workspace->edit ? fl_script_panel_create(workspace->edit,desc->bus) : NULL;
+    workspace->speech=fl_speech_create(desc->project, desc->jobs, desc->bus);
+    workspace->manuscript=workspace->speech && workspace->edit ? fl_manuscript_panel_create(workspace->edit, workspace->speech, desc->bus) : NULL;
     workspace->inspector=workspace->playback ? fl_inspector_create(workspace->edit,desc->fonts,workspace->playback,desc->bus) : NULL;
     if (desc->exporter) {
         workspace->export_panel = fl_export_window_create(workspace->instance, desc->project, desc->exporter);
@@ -334,7 +366,7 @@ Fl_Workspace *fl_workspace_create(const Fl_WorkspaceDesc *desc)
         }
     }
     if (!workspace->edit||!workspace->importer||!workspace->scene||!workspace->widgets||!workspace->assets||!workspace->scripts||
-        !workspace->inspector||!create_dock(workspace, desc->window)) {
+        !workspace->manuscript||!workspace->speech||!workspace->inspector||!create_dock(workspace, desc->window)) {
         FL_LOG_ERROR(LOG_TAG, "failed to create the dock");
         fl_workspace_destroy(workspace);
         return NULL;
@@ -387,6 +419,8 @@ void fl_workspace_destroy(Fl_Workspace *workspace)
     if (workspace->instance) ca_instance_set_file_drop_handler(workspace->instance, NULL, NULL);
     ca_effect_destroy(workspace->saver);
     ca_dock_destroy(workspace->dock);
+    fl_manuscript_panel_destroy(workspace->manuscript);
+    fl_speech_destroy(workspace->speech);
     fl_export_window_destroy(workspace->export_panel);
     fl_widget_library_destroy(workspace->widgets);
     fl_asset_panel_destroy(workspace->assets);
@@ -440,3 +474,4 @@ bool fl_workspace_show_panel(Fl_Workspace *workspace, const char *id)
 
 Fl_SceneEdit *fl_workspace_edit(const Fl_Workspace *workspace) { return workspace ? workspace->edit : NULL; }
 Fl_Playback *fl_workspace_playback(const Fl_Workspace *workspace) { return workspace ? workspace->playback : NULL; }
+Fl_Speech *fl_workspace_speech(const Fl_Workspace *workspace) { return workspace ? workspace->speech : NULL; }

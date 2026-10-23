@@ -77,7 +77,7 @@ static bool project_changed(const Fl_Event *event, void *data)
     const Fl_ProjectChange *change = event->payload; Fl_Playback *p = data;
     if (!p->playing || change->project != fl_scene_edit_project(p->edit)) return false;
     switch (change->kind) {
-    case FL_OP_BEAT_ADD: case FL_OP_BEAT_REMOVE: case FL_OP_BEAT_UPDATE: case FL_OP_BEAT_MOVE: case FL_OP_BEAT_SPLIT:
+    case FL_OP_BEAT_ADD: case FL_OP_BEAT_REMOVE: case FL_OP_BEAT_UPDATE: case FL_OP_BEAT_MOVE: case FL_OP_BEAT_SPLIT: case FL_OP_PHASE_ADD:
     case FL_OP_ASSET_SOURCE_SET: case FL_OP_COMPONENT_SET: case FL_OP_COMPONENT_REMOVE: case FL_OP_ENTITY_REMOVE: case FL_OP_ENTITY_CONFIGURE:
     case FL_OP_CLIP_ADD: case FL_OP_CLIP_UPDATE: case FL_OP_CLIP_REMOVE: case FL_OP_SCENE_REMOVE: case FL_OP_SCENE_SETTINGS: case FL_OP_RESTORE:
         start_clock(p); break;

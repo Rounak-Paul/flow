@@ -29,7 +29,8 @@ const char *fl_agent_instructions(void)
            "in it, and the user sees your changes live. Call get_reference first for units, the operation vocabulary and the "
            "Lua scripting API. Build with apply_ops (atomic, undoable batches), then verify with review_scene. "
            "render_frame returns one small contact sheet and is for a procedural background, not every edit. "
-           "evaluate_scene sparse:true reads numbers. Times are in seconds, rotations in degrees.";
+           "evaluate_scene sparse:true reads numbers. Times are in seconds, rotations in degrees. "
+           "The manuscript is the spoken script: read it with get_manuscript and edit it with phase.add/update/remove/move and voice.set.";
 }
 
 Fl_Agent *fl_agent_create(const Fl_AgentHost *host)
@@ -135,6 +136,15 @@ static cJSON *tool_get_scene(Fl_Agent *a, const cJSON *args, cJSON **error)
     if (!agent_only_keys(args, &fail, "get_scene", keys) || !agent_get_bool(args, "include_scripts", &sources, NULL, &fail, "get_scene")) {*error = fl_fail_json(&fail); return NULL;}
     const Fl_Scene *s = scene_arg(a, args, &p, &fail, error);
     return s ? agent_scene_json(p, s, sources) : NULL;
+}
+
+static cJSON *tool_get_manuscript(Fl_Agent *a, const cJSON *args, cJSON **error)
+{
+    static const char *const keys[] = {"scene", NULL};
+    Fl_Fail fail; Fl_Project *p;
+    if (!agent_only_keys(args, &fail, "get_manuscript", keys)) {*error = fl_fail_json(&fail); return NULL;}
+    const Fl_Scene *s = scene_arg(a, args, &p, &fail, error);
+    return s ? agent_manuscript_json(s) : NULL;
 }
 
 /* Resolve a `script` argument given as an id or an exact name; NULL when it names nothing. */
@@ -646,10 +656,13 @@ static const ToolDef TOOLS[] = {
     {"get_reference", "Manual for authoring in Flow: units, operation vocabulary, animation model and the Lua scripting API. Read this first.",
      NO_ARGS, true, tool_get_reference},
     {"get_project", "List the project's scenes (id, revision, size, length), assets and undo history.", NO_ARGS, true, tool_get_project},
-    {"get_scene", "Full contents of one scene: canvas, beats, audio clips, every entity with its properties, keyframe tracks and script info. "
+    {"get_scene", "Full contents of one scene: canvas, beats, audio clips, the manuscript (spoken phases, voice and clone reference), every entity with its properties, keyframe tracks and script info. "
      "Entities are listed in draw order (later draws on top).",
      "{\"type\":\"object\",\"properties\":{\"scene\":{\"type\":[\"integer\",\"string\"]},\"include_scripts\":{\"type\":\"boolean\",\"description\":\"Include Lua source text\"}},\"required\":[\"scene\"],\"additionalProperties\":false}",
      true, tool_get_scene},
+    {"get_manuscript", "The spoken script of one scene: voice, language, clone reference, transcript, total words and minutes, and each phase with its text, beat, clip and reading time. About 150 words is one minute.",
+     "{\"type\":\"object\",\"properties\":{\"scene\":{\"type\":[\"integer\",\"string\"]}},\"required\":[\"scene\"],\"additionalProperties\":false}",
+     true, tool_get_manuscript},
     {"get_asset", "Read an asset's metadata and current accepted source bytes, including unsaved Lua or Flow prototype edits.",
      "{\"type\":\"object\",\"properties\":{\"asset\":{\"type\":[\"integer\",\"string\"]}},\"required\":[\"asset\"],\"additionalProperties\":false}", true, tool_get_asset},
     {"get_script", "Read the project's Lua assets. Without script it lists every script (id, name, size, entities running it); "
@@ -671,7 +684,7 @@ static const ToolDef TOOLS[] = {
      true, tool_evaluate_scene},
     {"apply_ops", "Apply a batch of document operations atomically (all succeed or none do) as one undoable changeset. "
      "Operations: scene.add/remove/rename/move/set, entity.create/set/remove/reparent/reorder, key.set/remove, track.remove, beat.add/update/remove/move/split, "
-     "clip.add/update/remove, prototype.capture/instantiate/overrides/detach, scope.edit, asset.source/rename/remove, script.create/update/remove/attach/detach. Name created objects with \"as\":\"$name\" and reuse \"$name\" as an id later in the batch. "
+     "clip.add/update/remove, phase.add/update/remove/move, voice.set, prototype.capture/instantiate/overrides/detach, scope.edit, asset.source/rename/remove, script.create/update/remove/attach/detach. Name created objects with \"as\":\"$name\" and reuse \"$name\" as an id later in the batch. "
      "Pass expect:{\"<scene id>\": revision} to refuse the batch if a scene changed since you read it. Full field lists are in get_reference.",
      "{\"type\":\"object\",\"properties\":{\"ops\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"object\",\"properties\":{\"op\":{\"type\":\"string\"},\"as\":{\"type\":\"string\"}},\"required\":[\"op\"]}},"
      "\"label\":{\"type\":\"string\",\"description\":\"Short name shown for undo\"},\"expect\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"integer\"}},\"dry_run\":{\"type\":\"boolean\"}},\"required\":[\"ops\"],\"additionalProperties\":false}",

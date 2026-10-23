@@ -13,12 +13,13 @@
 #include <stdbool.h>
 
 typedef struct Fl_Exporter Fl_Exporter;
+typedef struct Fl_Speech Fl_Speech;
 
 /*
  * Editor workspace — the dockable panel layout of the main window.
  *
  * Owns the causality dock and Flow's panels (Scene, the central group,
- * Widgets, Assets, Scripts, Inspector, Timeline, Console and Export), the project's asset importer and
+ * Widgets, Assets, Scripts, Inspector, Timeline, Manuscript, Console and Export), the project's asset importer and
  * the OS file-drop handler; seeds the default arrangement and persists the
  * user's layout. Dock changes are published on
  * the application bus (FL_EVENT_DOCK_*), and persistence itself observes
@@ -107,3 +108,5 @@ bool fl_workspace_show_panel(Fl_Workspace *workspace, const char *id);
 Fl_SceneEdit *fl_workspace_edit(const Fl_Workspace *workspace);
 /* Borrow the playback controller. */
 Fl_Playback *fl_workspace_playback(const Fl_Workspace *workspace);
+/* Borrow the local Qwen3-TTS speech job, or NULL. */
+Fl_Speech *fl_workspace_speech(const Fl_Workspace *workspace);

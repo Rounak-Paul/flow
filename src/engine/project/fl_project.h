@@ -43,6 +43,12 @@ typedef struct Fl_Beat {
     uint64_t duration;          /* ticks, > 0 */
     bool auto_advance;          /* presenter: continue without a click */
 } Fl_Beat;
+/* One spoken section of a scene's manuscript. beat 0 is unbound; clip 0 has not been generated. */
+typedef struct Fl_Phase {
+    Fl_Id id, beat, clip;
+    const char *title;
+    const char *text;
+} Fl_Phase;
 /* Audio asset placed on the scene timeline. */
 typedef struct Fl_AudioClip {
     Fl_Id id, asset;
@@ -74,6 +80,12 @@ typedef struct Fl_Scene {
     size_t beat_count;
     const Fl_AudioClip *clips;
     size_t clip_count;
+    const Fl_Phase *phases;             /* spoken script, in narrative order */
+    size_t phase_count;
+    const char *voice;                  /* Qwen3-TTS speaker; NULL only on scopes that have no manuscript */
+    const char *language;               /* Qwen3-TTS language, or "Auto" */
+    Fl_Id voice_reference;              /* audio asset used to clone a voice; 0 uses voice */
+    const char *voice_transcript;       /* words spoken in the reference; optional */
 } Fl_Scene;
 
 typedef enum Fl_OpKind {
@@ -86,6 +98,7 @@ typedef enum Fl_OpKind {
     FL_OP_KEY_SET, FL_OP_KEY_REMOVE, FL_OP_TRACK_REMOVE,
     FL_OP_CLIP_ADD, FL_OP_CLIP_UPDATE, FL_OP_CLIP_REMOVE, FL_OP_BEAT_SPLIT, FL_OP_SCENE_ASPECT, FL_OP_SCENE_CAMERA, FL_OP_SCENE_BACKGROUND,
     FL_OP_ASSET_SOURCE_SET,
+    FL_OP_PHASE_ADD, FL_OP_PHASE_REMOVE, FL_OP_PHASE_UPDATE, FL_OP_PHASE_MOVE, FL_OP_VOICE_SET,
     FL_OP_RESTORE /* notification kind only: scenes were replaced by fl_project_restore; never a valid operation */
 } Fl_OpKind;
 /* One local transform replacement in an atomic selection gesture. */
@@ -121,8 +134,11 @@ typedef struct Fl_Op {
        Keys: set (entity, property, key: 0 upserts at anchor time; anchor, value, ease).
        Absolute anchors remain absolute; beat anchors retain their declared position policy.
        remove (key); track remove (track).
-       Clips: add/update (clip_record; update targets clip), remove (clip). */
-    Fl_Id beat, key, track, clip;
+       Clips: add/update (clip_record; update targets clip), remove (clip).
+       Manuscript: phase add (scene, position, name, source text, beat 0 adopts or creates a beat),
+       update (phase, name, source, beat, clip), remove (phase), move (phase, position).
+       voice set (scene, name speaker, language, asset reference or 0, source transcript or NULL). */
+    Fl_Id beat, key, track, clip, phase;
     uint64_t beat_duration;
     bool auto_advance;
     Fl_AnimProperty property;
@@ -135,6 +151,7 @@ typedef struct Fl_Op {
        instead of changing their base values. */
     bool keyed;
     Fl_Tick tick;
+    const char *language;               /* FL_OP_VOICE_SET */
 } Fl_Op;
 #define FL_EVENT_PROJECT_CHANGED "project.changed"
 typedef struct Fl_ProjectChange { Fl_Project *project; Fl_OpKind kind; Fl_Id scene, entity, asset; } Fl_ProjectChange;

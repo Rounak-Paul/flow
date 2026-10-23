@@ -8,6 +8,7 @@
 #include "fl_prototype.h"
 #include "project/fl_history.h"
 #include "fl_timeline_internal.h"
+#include "fl_manuscript.h"
 #include "components/fl_component.h"
 #include "components/fl_animation.h"
 #include "components/fl_script.h"
@@ -225,7 +226,8 @@ static bool asset_reference_valid(Fl_Id id, Fl_AssetKind kind, void *data)
 size_t fl_project_asset_uses(const Fl_Project *p, Fl_Id asset)
 {
     size_t uses = 0;
-    for (size_t i = 0; p && asset && i < p->count; ++i) uses += fl_timeline_asset_uses(&p->scenes[i], asset);
+    for (size_t i = 0; p && asset && i < p->count; ++i)
+        uses += fl_timeline_asset_uses(&p->scenes[i], asset) + fl_manuscript_asset_uses(&p->scenes[i], asset);
     for (size_t i = 0; p && asset && i < p->count; ++i)
         for (size_t j = 0; j < p->scenes[i].entity_count; ++j) {
             const Fl_Entity *e = &p->scenes[i].entities[j];
@@ -376,15 +378,18 @@ static bool apply_operation(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
     case FL_OP_SCENE_ADD: {
         if (!op->name || !op->name[0] || p->next_id >= UINT64_MAX - 1 || p->count >= SIZE_MAX / sizeof(*s) - 1) return false;
         char *name = copy_string(op->name), *beat_name = copy_string("Beat 1");
+        char *voice = copy_string("Ryan"), *language = copy_string("English");
         Fl_Beat *beat = malloc(sizeof(*beat));
         Fl_Scene *scenes = malloc((p->count + 1) * sizeof(*scenes));
         uint64_t *saved = malloc((p->count + 1) * sizeof(*saved));
-        if (!name || !beat_name || !beat || !scenes || !saved) { free(name); free(beat_name); free(beat); free(scenes); free(saved); return false; }
+        if (!name || !beat_name || !voice || !language || !beat || !scenes || !saved) {
+            free(name); free(beat_name); free(voice); free(language); free(beat); free(scenes); free(saved); return false;
+        }
         if (p->count) { memcpy(scenes, p->scenes, p->count * sizeof(*scenes)); memcpy(saved, p->saved, p->count * sizeof(*saved)); }
         created = p->next_id++;
         *beat = (Fl_Beat){p->next_id++, beat_name, 600000, false};
         scenes[p->count] = (Fl_Scene){.project=p, .id = created, .name = name, .revision = 1, .duration = 600000, .width = 1920, .height = 1080,
-                                      .beats = beat, .beat_count = 1, .background = FL_SCENE_BACKGROUND_DEFAULT};
+                                      .beats = beat, .beat_count = 1, .voice = voice, .language = language, .background = FL_SCENE_BACKGROUND_DEFAULT};
         saved[p->count++] = 0;
         free(p->scenes); free(p->saved); p->scenes = scenes; p->saved = saved;
         s = NULL; break;
@@ -637,6 +642,11 @@ static bool apply_operation(Fl_Project *p, const Fl_Op *op, Fl_Id *out_id)
     case FL_OP_KEY_SET: case FL_OP_KEY_REMOVE: case FL_OP_TRACK_REMOVE:
     case FL_OP_CLIP_ADD: case FL_OP_CLIP_UPDATE: case FL_OP_CLIP_REMOVE:
         if (!fl_timeline_apply(p, s, op, &p->next_id, &created)) return false;
+        if (op->kind == FL_OP_BEAT_REMOVE) fl_manuscript_detach_beat(s, op->beat);
+        if (op->kind == FL_OP_CLIP_REMOVE) fl_manuscript_detach_clip(s, op->clip);
+        break;
+    case FL_OP_PHASE_ADD: case FL_OP_PHASE_REMOVE: case FL_OP_PHASE_UPDATE: case FL_OP_PHASE_MOVE: case FL_OP_VOICE_SET:
+        if (!s || !fl_manuscript_apply(p, s, op, &p->next_id, &created)) return false;
         break;
     case FL_OP_ASSET_SOURCE_SET:
         if (!apply_source_asset(p,op,&created)) return false;
@@ -921,6 +931,7 @@ static void encode_scene(const Fl_Scene *s, Fl_Binary *b)
     const double camera[2] = {s->camera_x, s->camera_y};
     for (size_t i = 0; i < 2; ++i) { uint64_t bits; memcpy(&bits, &camera[i], sizeof(bits)); fl_binary_u64(b, bits); }
     for (size_t i = 0; i < 4; ++i) fl_binary_u64(b, s->background[i]);
+    fl_manuscript_save(s, b);
 }
 
 /* Return the tracked disk revision for a project-relative document path. */
@@ -1305,6 +1316,7 @@ static bool decode_scene(Fl_Project *p, Fl_Scene *s, const Fl_Binary *input)
         s->background[i] = (unsigned char)channel;
     }
     if (s->background[3] != 255) b.failed = true;
+    if (!b.failed && !fl_manuscript_load(s, &b)) b.failed = true;
     bool ok = !b.failed && b.cursor == b.size && id == s->id && revision == s->revision &&
               s->name && s->name[0] && s->width && s->width <= 65536 && s->height && s->height <= 65536 &&
               s->duration && s->duration <= INT64_MAX;
@@ -1472,9 +1484,11 @@ static bool validate_project(const Fl_Project *p)
     size_t count = p->count + p->asset_count;
     for (size_t i = 0; i < p->count; ++i) {
         size_t timeline = fl_timeline_id_count(&p->scenes[i]);
-        if (p->scenes[i].entity_count > SIZE_MAX - count || timeline > SIZE_MAX - count - p->scenes[i].entity_count) return false;
-        count += p->scenes[i].entity_count + timeline;
-        if (!fl_timeline_valid(p, &p->scenes[i], p->next_id)) return false;
+        size_t phases = fl_manuscript_id_count(&p->scenes[i]);
+        if (p->scenes[i].entity_count > SIZE_MAX - count || timeline > SIZE_MAX - count - p->scenes[i].entity_count ||
+            phases > SIZE_MAX - count - p->scenes[i].entity_count - timeline) return false;
+        count += p->scenes[i].entity_count + timeline + phases;
+        if (!fl_timeline_valid(p, &p->scenes[i], p->next_id) || !fl_manuscript_valid(p, &p->scenes[i], p->next_id)) return false;
     }
     if (count > SIZE_MAX / sizeof(Fl_Id)) return false;
     Fl_Id *ids = count ? malloc(count * sizeof(*ids)) : NULL;
@@ -1484,6 +1498,7 @@ static bool validate_project(const Fl_Project *p)
     for (size_t i = 0; i < p->count; ++i) {
         const Fl_Scene *s = &p->scenes[i]; ids[n++] = s->id;
         fl_timeline_ids(s, ids + n); n += fl_timeline_id_count(s);
+        fl_manuscript_ids(s, ids + n); n += fl_manuscript_id_count(s);
         unsigned char *state = s->entity_count ? calloc(s->entity_count, 1) : NULL;
         if (s->entity_count && !state) { free(ids); return false; }
         for (size_t j = 0; j < s->entity_count; ++j) {

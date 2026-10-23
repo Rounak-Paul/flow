@@ -1,5 +1,6 @@
 #include "fl_scene_storage.h"
 #include "fl_timeline_internal.h"
+#include "fl_manuscript.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -19,6 +20,7 @@ void fl_scene_storage_clear(Fl_Scene *scene)
     for (size_t i = 0; i < scene->entity_count; ++i) fl_entity_storage_clear((Fl_Entity *)&scene->entities[i]);
     free((void *)scene->entities); free((void *)scene->identity_index); free((void *)scene->name);
     fl_timeline_free(scene);
+    fl_manuscript_free(scene);
     *scene=(Fl_Scene){0};
 }
 

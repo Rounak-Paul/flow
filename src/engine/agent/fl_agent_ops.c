@@ -1,6 +1,7 @@
 #include "project/fl_prototype_authoring.h"
 #include "project/fl_scope_authoring.h"
 #include "fl_agent_internal.h"
+#include "project/fl_manuscript.h"
 #include "doc/fl_document.h"
 #include "components/fl_script.h"
 #include "scripting/fl_script_runtime.h"
@@ -978,6 +979,97 @@ static bool component_remove(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
     return apply(x,&(Fl_Op){.kind=FL_OP_COMPONENT_REMOVE,.scene=scene->id,.entity=entity->id,.component.id=id},NULL) || rejected(f,"component.remove","component instance");
 }
 
+/* Zero is a real value here: it clears a beat, clip or voice reference. */
+static bool optional_link(const cJSON *op, const char *key, const Fl_AgentRefs *refs, Fl_Id current, Fl_Id *out, Fl_Fail *f, const char *ctx)
+{
+    const cJSON *value = cJSON_GetObjectItemCaseSensitive(op, key);
+    *out = current;
+    if (!value || cJSON_IsNull(value)) return true;
+    if ((cJSON_IsNumber(value) && value->valuedouble == 0.0) || (cJSON_IsString(value) && value->valuestring[0] == '0' && !value->valuestring[1])) {
+        *out = 0; return true;
+    }
+    return agent_id_value(value, refs, out, f, ctx);
+}
+
+static bool phase_add(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    static const char *const keys[] = {"op", "as", "scene", "title", "text", "position", "beat", NULL};
+    const Fl_Scene *s; const char *title = NULL, *text = NULL; double position; bool has_position; Fl_Id beat = 0;
+    if (!agent_only_keys(op, f, "phase.add", keys) || !(s = need_scene(x, op, "scene", f, "phase.add")) ||
+        !agent_get_string(op, "title", false, &title, f, "phase.add") || !agent_get_string(op, "text", false, &text, f, "phase.add") ||
+        !agent_get_number(op, "position", false, &position, &has_position, f, "phase.add") ||
+        !optional_link(op, "beat", &x->refs, 0, &beat, f, "phase.add")) return false;
+    char generated[32];
+    if (!title || !title[0]) {snprintf(generated, sizeof(generated), "Phase %zu", s->phase_count + 1); title = generated;}
+    if (!text) text = "";
+    if (!has_position) position = (double)s->phase_count;
+    Fl_Id id = 0;
+    if (position < 0 || position > (double)s->phase_count ||
+        !apply(x, &(Fl_Op){.kind = FL_OP_PHASE_ADD, .scene = s->id, .name = title, .source = text, .position = (size_t)position, .beat = beat}, &id))
+        return rejected(f, "phase.add", "title must be non-empty, text at most 16KB, position within 0..phase count, and beat must belong to the scene");
+    report_id(result, id); return true;
+}
+
+static bool phase_update(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    (void)result;
+    static const char *const keys[] = {"op", "as", "phase", "title", "text", "beat", "clip", NULL};
+    Fl_Id id;
+    if (!agent_only_keys(op, f, "phase.update", keys) || !agent_get_id(op, "phase", &x->refs, true, &id, f, "phase.update")) return false;
+    const Fl_Scene *s = agent_scene_of_phase(x->project, id);
+    const Fl_Phase *phase = s ? fl_scene_phase(s, id) : NULL;
+    if (!phase) return fl_fail(f, "not_found", "phase.update: no phase with that id");
+    const char *title = NULL, *text = NULL; Fl_Id beat, clip;
+    if (!agent_get_string(op, "title", false, &title, f, "phase.update") || !agent_get_string(op, "text", false, &text, f, "phase.update") ||
+        !optional_link(op, "beat", &x->refs, phase->beat, &beat, f, "phase.update") ||
+        !optional_link(op, "clip", &x->refs, phase->clip, &clip, f, "phase.update")) return false;
+    if (!title) title = phase->title;
+    if (!text) text = phase->text;
+    return apply(x, &(Fl_Op){.kind = FL_OP_PHASE_UPDATE, .scene = s->id, .phase = id, .name = title, .source = text, .beat = beat, .clip = clip}, NULL) ||
+           rejected(f, "phase.update", "title must be non-empty, text at most 16KB, and beat or clip must belong to the scene");
+}
+
+static bool phase_remove(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    (void)result;
+    static const char *const keys[] = {"op", "as", "phase", NULL};
+    Fl_Id id;
+    if (!agent_only_keys(op, f, "phase.remove", keys) || !agent_get_id(op, "phase", &x->refs, true, &id, f, "phase.remove")) return false;
+    const Fl_Scene *s = agent_scene_of_phase(x->project, id);
+    if (!s) return fl_fail(f, "not_found", "phase.remove: no phase with that id");
+    return apply(x, &(Fl_Op){.kind = FL_OP_PHASE_REMOVE, .scene = s->id, .phase = id}, NULL) || rejected(f, "phase.remove", "phase");
+}
+
+static bool phase_move(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    (void)result;
+    static const char *const keys[] = {"op", "as", "phase", "position", NULL};
+    Fl_Id id; double position;
+    if (!agent_only_keys(op, f, "phase.move", keys) || !agent_get_id(op, "phase", &x->refs, true, &id, f, "phase.move") ||
+        !agent_get_number(op, "position", true, &position, NULL, f, "phase.move")) return false;
+    const Fl_Scene *s = agent_scene_of_phase(x->project, id);
+    if (!s) return fl_fail(f, "not_found", "phase.move: no phase with that id");
+    return (position >= 0 && position < (double)s->phase_count &&
+            apply(x, &(Fl_Op){.kind = FL_OP_PHASE_MOVE, .scene = s->id, .phase = id, .position = (size_t)position}, NULL)) ||
+           rejected(f, "phase.move", "position must be within 0..phase count - 1");
+}
+
+static bool voice_set(Ctx *x, const cJSON *op, cJSON *result, Fl_Fail *f)
+{
+    (void)result;
+    static const char *const keys[] = {"op", "as", "scene", "voice", "language", "reference", "transcript", NULL};
+    const Fl_Scene *s; const char *voice = NULL, *language = NULL, *transcript = NULL; Fl_Id reference;
+    if (!agent_only_keys(op, f, "voice.set", keys) || !(s = need_scene(x, op, "scene", f, "voice.set")) ||
+        !agent_get_string(op, "voice", false, &voice, f, "voice.set") || !agent_get_string(op, "language", false, &language, f, "voice.set") ||
+        !agent_get_string(op, "transcript", false, &transcript, f, "voice.set") ||
+        !optional_link(op, "reference", &x->refs, s->voice_reference, &reference, f, "voice.set")) return false;
+    if (!voice) voice = s->voice ? s->voice : "Ryan";
+    if (!language) language = s->language ? s->language : "English";
+    if (!cJSON_GetObjectItemCaseSensitive(op, "transcript")) transcript = s->voice_transcript;
+    return apply(x, &(Fl_Op){.kind = FL_OP_VOICE_SET, .scene = s->id, .name = voice, .language = language, .asset = reference, .source = transcript}, NULL) ||
+           rejected(f, "voice.set", "voice must be a speaker id, language one of the Qwen3-TTS languages, and reference an audio asset or 0");
+}
+
 static const struct {const char *name; OpFn run;} OPERATIONS[] = {
     {"scene.add", scene_add}, {"scene.remove", scene_remove}, {"scene.rename", scene_rename}, {"scene.move", scene_move}, {"scene.set", scene_set},
     {"entity.create", entity_create}, {"entity.set", entity_set}, {"entity.remove", entity_remove}, {"entity.reparent", entity_reparent},
@@ -985,6 +1077,7 @@ static const struct {const char *name; OpFn run;} OPERATIONS[] = {
     {"key.set", key_set}, {"key.remove", key_remove}, {"track.remove", track_remove},
     {"beat.add", beat_add}, {"beat.update", beat_update}, {"beat.remove", beat_remove}, {"beat.move", beat_move}, {"beat.split", beat_split},
     {"clip.add", clip_add}, {"clip.update", clip_update}, {"clip.remove", clip_remove},
+    {"phase.add", phase_add}, {"phase.update", phase_update}, {"phase.remove", phase_remove}, {"phase.move", phase_move}, {"voice.set", voice_set},
     {"prototype.capture",prototype_capture}, {"prototype.instantiate",prototype_instantiate}, {"prototype.overrides",prototype_overrides}, {"prototype.detach",prototype_detach}, {"scope.edit",scope_edit},
     {"asset.source", asset_source}, {"asset.rename", asset_edit}, {"asset.remove", asset_edit},
     {"script.create", script_create}, {"script.update", script_update}, {"script.remove", script_remove},

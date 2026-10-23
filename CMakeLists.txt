@@ -18,6 +18,7 @@ if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
 endif()
 
 option(FLOW_BUILD_TESTS "Build Flow's unit tests" ON)
+option(FLOW_BUILD_LLAMA_TTS "Build the llama-tts voice runner beside the flow executable" ON)
 
 # Matches causality: the Vulkan SDK's shaderc_combined only ships against the
 # release DLL CRT, so every configuration must use it to link.
@@ -130,6 +131,10 @@ foreach(config IN ITEMS Debug Release RelWithDebInfo MinSizeRel)
     set_target_properties(flow PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY_${config_upper} "${FLOW_BIN_DIR}")
 endforeach()
+
+if(FLOW_BUILD_LLAMA_TTS)
+    include("${PROJECT_SOURCE_DIR}/cmake/llama_tts.cmake")
+endif()
 
 if(FLOW_BUILD_TESTS)
     enable_testing()

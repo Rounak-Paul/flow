@@ -1,5 +1,6 @@
 #include "fl_render_host.h"
 #include "fl_mcp_service.h"
+#include "fl_speech.h"
 #include "doc/fl_json.h"
 #include "time/fl_composition.h"
 #include "render/gpu/fl_exporter.h"
@@ -210,7 +211,73 @@ static bool only_keys(Fl_McpCall *call, const cJSON *args, const char *const *al
     return true;
 }
 
+static bool require_editor(Fl_McpService *s, Fl_McpCall *call);
 static Fl_SceneEdit *edit_of(const Fl_McpService *s) { return s->workspace ? fl_workspace_edit(s->workspace) : NULL; }
+static Fl_Speech *speech_of(const Fl_McpService *s) { return s->workspace ? fl_workspace_speech(s->workspace) : NULL; }
+
+static bool id_arg(Fl_McpCall *call, const cJSON *args, const char *key, bool required, Fl_Id *out, bool *present)
+{
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(args, key);
+    if (present) *present = item && !cJSON_IsNull(item);
+    *out = 0;
+    if (!item || cJSON_IsNull(item)) {
+        if (required) fl_mcp_return_error(call, "missing_field", "\"%s\" is required", key);
+        return !required;
+    }
+    Fl_Json json = {0};
+    uint64_t id = 0;
+    if (!fl_json_uint(&json, item, &id)) {fl_mcp_return_error(call, "invalid_argument", "\"%s\" must be an id", key); return false;}
+    *out = id;
+    return true;
+}
+
+static cJSON *speech_json(const Fl_Speech *speech)
+{
+    cJSON *o = cJSON_CreateObject();
+    if (!o) return NULL;
+    cJSON_AddStringToObject(o, "state", fl_speech_state(speech));
+    cJSON_AddStringToObject(o, "message", fl_speech_message(speech));
+    cJSON_AddNumberToObject(o, "done", fl_speech_done(speech));
+    cJSON_AddNumberToObject(o, "total", fl_speech_total(speech));
+    return o;
+}
+
+static void tool_generate_speech(Fl_McpCall *call, const cJSON *args, void *user)
+{
+    Fl_McpService *s = user;
+    static const char *const keys[] = {"scene", "phase", NULL};
+    Fl_Id scene = 0, phase = 0;
+    if (!only_keys(call, args, keys) || !require_editor(s, call) || !id_arg(call, args, "scene", true, &scene, NULL) ||
+        !id_arg(call, args, "phase", false, &phase, NULL)) return;
+    Fl_Speech *speech = speech_of(s);
+    if (!speech) {fl_mcp_return_error(call, "no_project", "No project is open in Flow"); return;}
+    if (!scene) {fl_mcp_return_error(call, "invalid_argument", "\"scene\" is required"); return;}
+    if (!fl_speech_start(speech, scene, phase)) {fl_mcp_return_error(call, "rejected", "%s", fl_speech_message(speech)); return;}
+    fl_mcp_return_json(call, speech_json(speech));
+}
+
+static void tool_get_speech_status(Fl_McpCall *call, const cJSON *args, void *user)
+{
+    Fl_McpService *s = user;
+    static const char *const keys[] = {NULL};
+    if (!only_keys(call, args, keys) || !require_editor(s, call)) return;
+    Fl_Speech *speech = speech_of(s);
+    if (!speech) {fl_mcp_return_error(call, "no_project", "No project is open in Flow"); return;}
+    fl_speech_pump(speech);
+    fl_mcp_return_json(call, speech_json(speech));
+}
+
+static void tool_cancel_speech(Fl_McpCall *call, const cJSON *args, void *user)
+{
+    Fl_McpService *s = user;
+    static const char *const keys[] = {NULL};
+    if (!only_keys(call, args, keys) || !require_editor(s, call)) return;
+    Fl_Speech *speech = speech_of(s);
+    if (!speech) {fl_mcp_return_error(call, "no_project", "No project is open in Flow"); return;}
+    fl_speech_cancel(speech);
+    fl_speech_pump(speech);
+    fl_mcp_return_json(call, speech_json(speech));
+}
 
 /* Report that the editor UI is not available, e.g. while the project launcher is showing. */
 static bool require_editor(Fl_McpService *s, Fl_McpCall *call)
@@ -404,6 +471,13 @@ static bool register_editor_tools(Fl_McpService *s)
          false, tool_export_video, s},
         {"get_export_status", "Progress of the latest video export: state, frames done and total, elapsed/preparation/rendering time, GPU fence waits, average throughput, output path, size, fps, crf, crossfade and scene count.", empty, true, tool_get_export_status, s},
         {"cancel_export", "Stop the running video export.", empty, false, tool_cancel_export, s},
+        {"generate_speech", "Speak a scene's manuscript with the Qwen3-TTS runner shipped beside Flow (llama-tts, Apache-2.0). "
+         "No Python. The first run downloads weights into Flow's cache, or FLOW_QWEN_TTS_MODEL names a local GGUF folder. "
+         "phase is optional; without it every non-empty phase is spoken. Audio is placed on each phase beat. The call returns immediately; poll get_speech_status.",
+         "{\"type\":\"object\",\"properties\":{\"scene\":{\"type\":[\"integer\",\"string\"]},\"phase\":{\"type\":[\"integer\",\"string\"]}},\"required\":[\"scene\"],\"additionalProperties\":false}",
+         false, tool_generate_speech, s},
+        {"get_speech_status", "Progress of manuscript speech: state, phases done and total, and a short message. Also imports finished audio onto the timeline.", empty, true, tool_get_speech_status, s},
+        {"cancel_speech", "Stop manuscript speech before its audio is imported.", empty, false, tool_cancel_speech, s},
         {"get_editor_state", "The scene, time and selection currently shown in the editor.", empty, true, tool_get_editor_state, s},
         {"set_editor_state", "Show a scene, move the playhead (seconds), select entities or start/pause timeline playback.",
          "{\"type\":\"object\",\"properties\":{\"scene\":{\"type\":[\"integer\",\"string\"]},\"time\":{\"type\":\"number\"},\"playing\":{\"type\":\"boolean\"},\"select\":{\"type\":\"array\",\"items\":{\"type\":[\"integer\",\"string\"]}}},\"additionalProperties\":false}",
