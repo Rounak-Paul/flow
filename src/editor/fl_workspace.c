@@ -355,7 +355,7 @@ Fl_Workspace *fl_workspace_create(const Fl_WorkspaceDesc *desc)
                                                                 workspace->player,workspace->timeline,desc->bus) : NULL;
     workspace->scripts=workspace->edit ? fl_script_panel_create(workspace->edit,desc->bus) : NULL;
     workspace->speech=fl_speech_create(desc->project, desc->jobs, desc->bus);
-    workspace->manuscript=workspace->speech && workspace->edit ? fl_manuscript_panel_create(workspace->edit, workspace->speech, desc->bus) : NULL;
+    workspace->manuscript=workspace->speech && workspace->edit ? fl_manuscript_panel_create(workspace->edit, workspace->speech, workspace->player, workspace->importer, desc->bus) : NULL;
     workspace->inspector=workspace->playback ? fl_inspector_create(workspace->edit,desc->fonts,workspace->playback,desc->bus) : NULL;
     if (desc->exporter) {
         workspace->export_panel = fl_export_window_create(workspace->instance, desc->project, desc->exporter);

@@ -99,3 +99,23 @@ target_include_directories(flow_render_benchmark PRIVATE "${PROJECT_SOURCE_DIR}/
 target_link_libraries(flow_render_benchmark PRIVATE flow_editor causality)
 target_compile_definitions(flow_render_benchmark PRIVATE $<$<PLATFORM_ID:Windows>:CA_API=>)
 flow_target_warnings(flow_render_benchmark)
+
+add_executable(fl_speech_tests editor/fl_speech_tests.c)
+target_include_directories(fl_speech_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(fl_speech_tests PRIVATE flow_editor)
+flow_target_warnings(fl_speech_tests)
+add_custom_command(TARGET fl_speech_tests POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${PROJECT_SOURCE_DIR}/resources/voices" "$<TARGET_FILE_DIR:fl_speech_tests>/voices")
+flow_register_test(fl_speech_tests)
+set_tests_properties(fl_speech_tests PROPERTIES TIMEOUT 45)
+
+add_executable(fl_manuscript_panel_tests editor/fl_manuscript_panel_tests.c)
+target_include_directories(fl_manuscript_panel_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${PROJECT_SOURCE_DIR}/vendors/causality/causality/src/core"
+    "${PROJECT_SOURCE_DIR}/vendors/causality/causality/src/ui")
+target_link_libraries(fl_manuscript_panel_tests PRIVATE flow_editor causality)
+flow_target_warnings(fl_manuscript_panel_tests)
+add_custom_command(TARGET fl_manuscript_panel_tests POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${PROJECT_SOURCE_DIR}/resources/voices" "$<TARGET_FILE_DIR:fl_manuscript_panel_tests>/voices")
+flow_register_test(fl_manuscript_panel_tests)
+set_tests_properties(fl_manuscript_panel_tests PROPERTIES TIMEOUT 30 RESOURCE_LOCK flow_gpu)

@@ -7,8 +7,10 @@
 #define FL_MANUSCRIPT_PANEL_ID "manuscript"
 
 typedef struct Fl_ManuscriptPanel Fl_ManuscriptPanel;
+typedef struct Fl_AudioPlayer Fl_AudioPlayer;
+typedef struct Fl_AssetImporter Fl_AssetImporter;
 
-Fl_ManuscriptPanel *fl_manuscript_panel_create(Fl_SceneEdit *edit, Fl_Speech *speech, Fl_EventBus *bus);
+Fl_ManuscriptPanel *fl_manuscript_panel_create(Fl_SceneEdit *edit, Fl_Speech *speech, Fl_AudioPlayer *player, Fl_AssetImporter *importer, Fl_EventBus *bus);
 void fl_manuscript_panel_destroy(Fl_ManuscriptPanel *panel);
 void fl_manuscript_panel_build(Ca_Dock *dock, Ca_Window *window, void *panel);
 void fl_manuscript_panel_teardown(void *panel);

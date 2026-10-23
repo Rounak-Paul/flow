@@ -6,7 +6,7 @@
 #include <string.h>
 
 static const char *const SPEAKERS[] = {
-    "Ryan", "Aiden", "Vivian", "Serena", "Uncle_Fu", "Dylan", "Eric", "Ono_Anna", "Sohee"
+    "Ryan", "Aiden", "Vivian", "Serena", "Eric"
 };
 static const char *const LANGUAGES[] = {
     "Auto", "Chinese", "English", "Japanese", "Korean", "German", "French", "Russian", "Portuguese", "Spanish", "Italian"

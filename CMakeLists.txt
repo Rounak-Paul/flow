@@ -132,6 +132,10 @@ foreach(config IN ITEMS Debug Release RelWithDebInfo MinSizeRel)
         RUNTIME_OUTPUT_DIRECTORY_${config_upper} "${FLOW_BIN_DIR}")
 endforeach()
 
+add_custom_command(TARGET flow POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${PROJECT_SOURCE_DIR}/resources/voices" "$<TARGET_FILE_DIR:flow>/voices"
+    COMMENT "Bundling narration voices")
+
 if(FLOW_BUILD_LLAMA_TTS)
     include("${PROJECT_SOURCE_DIR}/cmake/llama_tts.cmake")
 endif()

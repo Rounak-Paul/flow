@@ -1,15 +1,16 @@
 #include "fl_voice.h"
+#include "fl_audio.h"
+#include "doc/fl_json.h"
 #include "platform/fl_fs.h"
 #include "platform/fl_paths.h"
 #include "platform/fl_process.h"
+#include "platform/fl_process_writer.h"
 #include "core/fl_atomic.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #if defined(_WIN32)
-#define popen _popen
-#define pclose _pclose
 #define VOICE_EXE ".exe"
 #else
 #define VOICE_EXE ""
@@ -194,9 +195,9 @@ static const char *language_code(const char *language)
     return NULL;
 }
 
-static bool preset_speaker(char *out, size_t cap, const char *speaker)
+bool fl_voice_preset_path(const char *speaker, char *out, size_t cap)
 {
-    if (!speaker || !speaker[0]) return false;
+    if (!fl_manuscript_speaker_ok(speaker) || !out || !cap) return false;
     char exe[FL_PATH_MAX], voices[FL_PATH_MAX];
     if (!fl_paths_executable_dir(exe, sizeof(exe))) return false;
     if (!fl_fs_join(voices, sizeof(voices), exe, "voices")) return false;
@@ -218,9 +219,10 @@ static bool append_weights(char *command, size_t cap, const VoiceWeights *weight
            fl_command_append(command, cap, "-mm") && fl_command_append(command, cap, weights->mmproj);
 }
 
-static Fl_VoiceStatus speak_one(const char *runner, const VoiceWeights *weights, const Fl_VoiceItem *item,
-                                char *error, size_t error_cap)
+static Fl_VoiceStatus speak_chunk(const char *runner, const VoiceWeights *weights, const Fl_VoiceItem *item,
+                                const atomic_bool *cancel, bool *limited, char *error, size_t error_cap)
 {
+    *limited = false;
     size_t bytes = 0;
     char *text = fl_fs_read_file(item->text_path, FL_PHASE_TEXT_MAX + 1, &bytes);
     if (!text) {note(error, error_cap, "Could not read the narration."); return FL_VOICE_FAILED;}
@@ -238,7 +240,8 @@ static Fl_VoiceStatus speak_one(const char *runner, const VoiceWeights *weights,
             return FL_VOICE_FAILED;
         }
         speaker_file = item->reference;
-    } else if (preset_speaker(preset, sizeof(preset), item->speaker)) speaker_file = preset;
+    } else if (fl_voice_preset_path(item->speaker, preset, sizeof(preset))) speaker_file = preset;
+    else {free(text); note(error, error_cap, "The built-in voice reference is missing. Rebuild Flow's voice resources."); return FL_VOICE_FAILED;}
 
     size_t cap = strlen(text) * 4 + FL_PATH_MAX * 8 + 512;
     char *command = calloc(1, cap);
@@ -246,7 +249,8 @@ static Fl_VoiceStatus speak_one(const char *runner, const VoiceWeights *weights,
     if (!ngl || !ngl[0]) ngl = "99";
     const char *lang = language_code(item->language);
     bool built = command && fl_command_append(command, cap, runner) && append_weights(command, cap, weights) &&
-                 fl_command_append(command, cap, "-ngl") && fl_command_append(command, cap, ngl);
+                 fl_command_append(command, cap, "-ngl") && fl_command_append(command, cap, ngl) &&
+                 fl_command_append(command, cap, "-n") && fl_command_append(command, cap, "2048");
     if (built && lang) built = fl_command_append(command, cap, "--tts-lang") && fl_command_append(command, cap, lang);
     if (built && speaker_file)
         built = fl_command_append(command, cap, "--tts-speaker-file") && fl_command_append(command, cap, speaker_file);
@@ -259,20 +263,46 @@ static Fl_VoiceStatus speak_one(const char *runner, const VoiceWeights *weights,
         note(error, error_cap, "Could not start Qwen3-TTS.");
         return FL_VOICE_FAILED;
     }
+    char log[FL_PATH_MAX];
+    int written = snprintf(log, sizeof(log), "%s.log", item->out_path);
+    bool redirected = written > 0 && (size_t)written < sizeof(log) && strlen(command) + 3 < cap;
+    if (redirected) {strcat(command, " >"); redirected = fl_command_append(command, cap, log) && strlen(command) + 6 < cap;}
+    if (!redirected) {free(command); note(error, error_cap, "Could not prepare voice output."); return FL_VOICE_FAILED;}
     strcat(command, " 2>&1");
-    FILE *pipe = popen(command, "r");
+    Fl_ProcessWriter *process = fl_process_writer_open(command);
     free(command);
-    if (!pipe) {note(error, error_cap, "Could not start Qwen3-TTS."); return FL_VOICE_FAILED;}
-    char line[1024], last[512];
-    last[0] = 0;
-    while (fgets(line, sizeof(line), pipe)) {
-        size_t n = strlen(line);
-        while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = 0;
-        if (line[0]) snprintf(last, sizeof(last), "%s", line);
-    }
-    int status = pclose(pipe);
-    if (status != 0) {
+    if (!process) {note(error, error_cap, "Could not start Qwen3-TTS."); return FL_VOICE_FAILED;}
+    bool success = fl_process_writer_wait(process, cancel);
+    fl_process_writer_destroy(process);
+    if (cancel && atomic_load_explicit(cancel, memory_order_relaxed)) return FL_VOICE_CANCELLED;
+    if (!success) {
+        char last[512] = {0};
+        FILE *output = fl_fs_fopen(log, "rb");
+        if (output) {
+            if (fseek(output, 0, SEEK_END) == 0) {
+                long length = ftell(output);
+                if (length > 0 && fseek(output, length > 511 ? length - 511 : 0, SEEK_SET) == 0)
+                    last[fread(last, 1, sizeof(last) - 1, output)] = 0;
+            }
+            fclose(output);
+        }
         note(error, error_cap, last[0] ? last : "Qwen3-TTS failed.");
+        return FL_VOICE_FAILED;
+    }
+    FILE *report = fl_fs_fopen(log, "rb");
+    bool completed = false;
+    if (report) {
+        char line[2048];
+        while (fgets(line, sizeof(line), report)) {
+            const char *marker = strstr(line, "generated "); unsigned frames;
+            if (marker && sscanf(marker, "generated %u frames,", &frames) == 1) {
+                completed = true; *limited = frames >= 2048;
+            }
+        }
+        fclose(report);
+    }
+    if (!completed || *limited) {
+        note(error, error_cap, *limited ? "The voice part reached its generation limit." : "The voice runner did not confirm complete audio.");
         return FL_VOICE_FAILED;
     }
     if (!fl_fs_exists(item->out_path)) {
@@ -282,13 +312,159 @@ static Fl_VoiceStatus speak_one(const char *runner, const VoiceWeights *weights,
     return FL_VOICE_OK;
 }
 
-Fl_VoiceStatus fl_voice_run(const Fl_VoiceItem *items, size_t count, volatile uint32_t *cancel, volatile uint32_t *done,
+/* Choose a bounded UTF-8 slice, preferring sentence and then word boundaries; consume every byte. */
+static size_t chunk_bytes(const char *text, size_t available, size_t maximum)
+{
+    size_t end = 0, characters = 0, sentence = 0, space = 0;
+    while (end < available && characters < maximum) {
+        size_t start = end++;
+        while (end < available && ((unsigned char)text[end] & 0xc0) == 0x80) ++end;
+        ++characters;
+        if (text[start] == ' ' || text[start] == '\t' || text[start] == '\r') space = end;
+        if (((text[start] == '.' || text[start] == '!' || text[start] == '?') &&
+             (end == available || text[end] == ' ' || text[end] == '\n' || text[end] == '\r' || text[end] == '\t')) || text[start] == '\n' ||
+            (end - start == 3 && (!memcmp(text + start, "。", 3) || !memcmp(text + start, "！", 3) || !memcmp(text + start, "？", 3)))) sentence = end;
+    }
+    if (end == available) return end;
+    return sentence ? sentence : space ? space : end;
+}
+
+/* Encode a bounded unsigned integer into a WAV little-endian field. */
+static void wav_integer(unsigned char *out, uint64_t value, size_t bytes)
+{
+    for (size_t i = 0; i < bytes; ++i) out[i] = (unsigned char)(value >> (i * 8));
+}
+
+/* One worker-owned staging stream; no partial audio is published to the caller. */
+typedef struct VoiceRender {
+    const char *runner;
+    const VoiceWeights *weights;
+    const atomic_bool *cancel;
+    Fl_VoiceProgress *progress;
+    Fl_VoiceItem part;
+    FILE *output;
+    Fl_AudioInfo format;
+    uint64_t frames;
+    char *error;
+    size_t error_cap;
+} VoiceRender;
+
+/* Decode and append one complete part without resampling, trimming or discarding samples. */
+static bool append_part(VoiceRender *render)
+{
+    Fl_AudioInfo info;
+    Fl_AudioReader *reader = fl_audio_open(render->part.out_path, &info);
+    if (!reader) return false;
+    bool ok = info.frames && info.channels <= 2;
+    if (!render->format.sample_rate) render->format = info;
+    ok = ok && info.sample_rate == render->format.sample_rate && info.channels == render->format.channels;
+    float samples[2048]; unsigned char encoded[sizeof(samples)]; uint64_t frames = 0;
+    while (ok) {
+        if (render->cancel && atomic_load_explicit(render->cancel, memory_order_relaxed)) {ok = false; break;}
+        uint64_t count = fl_audio_read(reader, samples, 2048 / info.channels);
+        if (!count) break;
+        size_t values = (size_t)count * info.channels;
+        if (render->frames + count > (UINT32_MAX - 36u) / (info.channels * 4u)) {ok = false; break;}
+        for (size_t i = 0; i < values; ++i) {
+            uint32_t bits; memcpy(&bits, samples + i, sizeof(bits)); wav_integer(encoded + i * 4, bits, 4);
+        }
+        ok = fwrite(encoded, 4, values, render->output) == values;
+        frames += count; render->frames += count;
+    }
+    fl_audio_close(reader);
+    return ok && frames == info.frames;
+}
+
+/* Generate a range; split and retry a capped part instead of accepting truncated narration. */
+static Fl_VoiceStatus render_range(VoiceRender *render, const char *text, size_t bytes)
+{
+    if (render->cancel && atomic_load_explicit(render->cancel, memory_order_relaxed)) return FL_VOICE_CANCELLED;
+    char *part = malloc(bytes + 1);
+    if (!part) {note(render->error, render->error_cap, "Out of memory preparing narration."); return FL_VOICE_FAILED;}
+    memcpy(part, text, bytes); part[bytes] = 0;
+    bool words = fl_manuscript_words(part) != 0;
+    bool saved = !words || fl_fs_write_atomic(render->part.text_path, part, bytes);
+    free(part);
+    if (!saved) {note(render->error, render->error_cap, "Could not write a narration part."); return FL_VOICE_FAILED;}
+    if (!words) {if (render->progress) fl_atomic_fetch_add_u32(&render->progress->done, 1); return FL_VOICE_OK;}
+    fl_fs_remove(render->part.out_path);
+    bool limited = false;
+    Fl_VoiceStatus status = speak_chunk(render->runner, render->weights, &render->part, render->cancel, &limited, render->error, render->error_cap);
+    if (limited) {
+        size_t characters = 0;
+        for (size_t i = 0; i < bytes; ++i) if (((unsigned char)text[i] & 0xc0) != 0x80) ++characters;
+        if (characters < 2) return FL_VOICE_FAILED;
+        size_t split = chunk_bytes(text, bytes, characters / 2);
+        if (!split || split >= bytes) return FL_VOICE_FAILED;
+        if (render->progress) fl_atomic_fetch_add_u32(&render->progress->total, 1);
+        status = render_range(render, text, split);
+        if (status == FL_VOICE_OK) status = render_range(render, text + split, bytes - split);
+        return status;
+    }
+    if (status != FL_VOICE_OK) return status;
+    if (render->error && render->error_cap) render->error[0] = 0;
+    if (!append_part(render)) {
+        if (render->cancel && atomic_load_explicit(render->cancel, memory_order_relaxed)) return FL_VOICE_CANCELLED;
+        note(render->error, render->error_cap, "Could not stitch complete narration audio."); return FL_VOICE_FAILED;
+    }
+    if (render->progress) fl_atomic_fetch_add_u32(&render->progress->done, 1);
+    return FL_VOICE_OK;
+}
+
+/* Render bounded parts to a private WAV and atomically publish only a fully stitched narration. */
+static Fl_VoiceStatus speak_item(const char *runner, const VoiceWeights *weights, const Fl_VoiceItem *item,
+                                 const char *text, const atomic_bool *cancel, Fl_VoiceProgress *progress, char *error, size_t error_cap)
+{
+    char directory[FL_PATH_MAX], staged[FL_PATH_MAX];
+    int length = snprintf(directory, sizeof(directory), "%s.parts", item->out_path);
+    if (length < 0 || (size_t)length >= sizeof(directory) || !fl_fs_mkdir_exclusive(directory)) {
+        note(error, error_cap, "Could not prepare narration staging."); return FL_VOICE_FAILED;
+    }
+    VoiceRender render = {.runner = runner, .weights = weights, .cancel = cancel, .progress = progress,
+        .part = *item, .error = error, .error_cap = error_cap};
+    bool prepared = fl_fs_join(render.part.text_path, sizeof(render.part.text_path), directory, "text.txt") &&
+        fl_fs_join(render.part.out_path, sizeof(render.part.out_path), directory, "part.wav") &&
+        fl_fs_join(staged, sizeof(staged), directory, "stitched.wav");
+    if (prepared) render.output = fl_fs_fopen(staged, "wbx");
+    unsigned char header[44] = {0};
+    Fl_VoiceStatus status = FL_VOICE_FAILED;
+    if (!render.output || fwrite(header, 1, sizeof(header), render.output) != sizeof(header)) goto finish;
+    size_t bytes = strlen(text);
+    for (size_t offset = 0; offset < bytes;) {
+        size_t length = chunk_bytes(text + offset, bytes - offset, 320);
+        status = render_range(&render, text + offset, length);
+        if (status != FL_VOICE_OK) goto finish;
+        offset += length;
+    }
+    status = FL_VOICE_FAILED;
+    if (!render.frames) goto finish;
+    uint64_t data_size = render.frames * render.format.channels * 4;
+    memcpy(header, "RIFF", 4); wav_integer(header + 4, data_size + 36, 4); memcpy(header + 8, "WAVEfmt ", 8);
+    wav_integer(header + 16, 16, 4); wav_integer(header + 20, 3, 2); wav_integer(header + 22, render.format.channels, 2);
+    wav_integer(header + 24, render.format.sample_rate, 4); wav_integer(header + 28, render.format.sample_rate * render.format.channels * 4u, 4);
+    wav_integer(header + 32, render.format.channels * 4u, 2); wav_integer(header + 34, 32, 2);
+    memcpy(header + 36, "data", 4); wav_integer(header + 40, data_size, 4);
+    if (cancel && atomic_load_explicit(cancel, memory_order_relaxed)) {status = FL_VOICE_CANCELLED; goto finish;}
+    if (fseek(render.output, 0, SEEK_SET) || fwrite(header, 1, sizeof(header), render.output) != sizeof(header) || !fl_fs_flush(render.output)) goto finish;
+    if (fclose(render.output)) {render.output = NULL; goto finish;}
+    render.output = NULL;
+    if (!fl_fs_commit(staged, item->out_path)) goto finish;
+    status = FL_VOICE_OK;
+finish:
+    if (render.output) fclose(render.output);
+    fl_fs_remove_tree(directory);
+    if (status == FL_VOICE_FAILED && (!error || !error_cap || !error[0])) note(error, error_cap, "Could not finish complete narration audio.");
+    return status;
+}
+
+Fl_VoiceStatus fl_voice_run(const Fl_VoiceItem *items, size_t count, const atomic_bool *cancel, volatile uint32_t *done, Fl_VoiceProgress *progress,
                             char *error, size_t error_capacity)
 {
     if (done) fl_atomic_store_u32(done, 0);
+    if (progress) {fl_atomic_store_u32(&progress->done, 0); fl_atomic_store_u32(&progress->total, 0);}
     if (error && error_capacity) error[0] = 0;
     if (!items || !count) {note(error, error_capacity, "Nothing to speak."); return FL_VOICE_FAILED;}
-    if (cancel && fl_atomic_load_u32(cancel)) return FL_VOICE_CANCELLED;
+    if (cancel && atomic_load_explicit(cancel, memory_order_relaxed)) return FL_VOICE_CANCELLED;
     char cache[FL_PATH_MAX], runner[FL_PATH_MAX];
     if (!fl_paths_user_dir(FL_PATH_CACHE, cache, sizeof(cache)) || !fl_fs_mkdir_p(cache)) {
         note(error, error_capacity, "Could not open the voice cache.");
@@ -301,12 +477,25 @@ Fl_VoiceStatus fl_voice_run(const Fl_VoiceItem *items, size_t count, volatile ui
     }
     VoiceWeights weights;
     if (!resolve_weights(&weights, error, error_capacity)) return FL_VOICE_FAILED;
+    char **texts = calloc(count, sizeof(*texts));
+    if (!texts) {note(error, error_capacity, "Out of memory preparing narration."); return FL_VOICE_FAILED;}
+    Fl_VoiceStatus result = FL_VOICE_FAILED;
+    uint32_t parts = 0;
     for (size_t i = 0; i < count; ++i) {
-        if (cancel && fl_atomic_load_u32(cancel)) return FL_VOICE_CANCELLED;
-        Fl_VoiceStatus status = speak_one(runner, &weights, &items[i], error, error_capacity);
-        if (status != FL_VOICE_OK) return status;
-        if (done) fl_atomic_store_u32(done, (uint32_t)(i + 1));
-        if (cancel && fl_atomic_load_u32(cancel)) return FL_VOICE_CANCELLED;
+        size_t bytes;
+        texts[i] = fl_fs_read_file(items[i].text_path, FL_PHASE_TEXT_MAX, &bytes);
+        if (!texts[i] || !fl_json_utf8_valid(texts[i], bytes) || !fl_manuscript_words(texts[i])) {note(error, error_capacity, "Could not read complete narration text."); goto finish;}
+        for (size_t offset = 0; offset < bytes; ++parts) offset += chunk_bytes(texts[i] + offset, bytes - offset, 320);
     }
-    return FL_VOICE_OK;
+    if (progress) fl_atomic_store_u32(&progress->total, parts);
+    for (size_t i = 0; i < count; ++i) {
+        result = speak_item(runner, &weights, &items[i], texts[i], cancel, progress, error, error_capacity);
+        if (result != FL_VOICE_OK) goto finish;
+        if (done) fl_atomic_store_u32(done, (uint32_t)(i + 1));
+    }
+finish:
+    for (size_t i = 0; i < count; ++i) free(texts[i]);
+    free(texts);
+    if (result == FL_VOICE_OK && error && error_capacity) error[0] = 0;
+    return result;
 }

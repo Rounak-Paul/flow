@@ -5,7 +5,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* Background Qwen3-TTS for a scene manuscript. The worker runs the bundled llama-tts binary; the owner thread imports the audio. */
+/* Background Qwen3-TTS. Previews remain temporary until accepted; batch manuscript jobs import on completion. */
 #define FL_EVENT_SPEECH "speech.changed"
 
 typedef struct Fl_Speech Fl_Speech;
@@ -25,3 +25,13 @@ const char *fl_speech_state(const Fl_Speech *speech);
 const char *fl_speech_message(const Fl_Speech *speech);
 uint32_t fl_speech_done(const Fl_Speech *speech);
 uint32_t fl_speech_total(const Fl_Speech *speech);
+
+/* Generate a temporary preview using text and explicit voice settings; no phase or asset is added. */
+bool fl_speech_preview(Fl_Speech *speech, Fl_Id scene, const char *text, const char *speaker,
+                       const char *language, Fl_Id reference, const char *transcript);
+/* Borrow the completed WAV path until discard, acceptance or the next generation. NULL when unavailable. */
+const char *fl_speech_preview_path(const Fl_Speech *speech);
+/* Import the preview and atomically create/update phase, beat and clip. phase zero creates a phase. */
+bool fl_speech_accept(Fl_Speech *speech, Fl_Id scene, Fl_Id phase, const char *title);
+/* Discard temporary preview audio, or request cancellation if its worker is running. */
+void fl_speech_discard(Fl_Speech *speech);
