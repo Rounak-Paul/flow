@@ -415,8 +415,8 @@
     ".fl-scene-glass { left: 0px; top: 0px; width: 100%; height: 100%; z-index: 1; pointer-events: none; border-radius: " FL_RADIUS_CARD "; background: linear-gradient(to right, " FL_COLOR_CARD_GLASS_TOP ", " FL_COLOR_CARD_GLASS_BOTTOM "); border: 1px solid " FL_COLOR_TAB_PILL_RIM "; border-top-color: " FL_COLOR_TAB_PILL_SPECULAR "; border-bottom-color: " FL_COLOR_TAB_PILL_UNDER "; }" \
     ".fl-scene-glass.selected { border-color: " FL_COLOR_CARD_SELECTED_RIM "; border-top-color: " FL_COLOR_CARD_SELECTED_SPECULAR "; }" \
     ".fl-scene-label { left: 0px; top: 32px; width: 100%; height: 34px; padding: 0px 10px; gap: 0px; justify-content: center; z-index: 1; background: transparent; pointer-events: none; }" \
-    ".fl-scene-name { z-index: 1; color: " FL_COLOR_TEXT_BRIGHT "; font-size: " FL_FONT_SM "; }" \
-    ".fl-scene-time { z-index: 1; color: " FL_COLOR_TEXT_MEDIUM "; font-size: " FL_FONT_XS "; }"
+    ".fl-scene-name { z-index: 1; pointer-events: none; color: " FL_COLOR_TEXT_BRIGHT "; font-size: " FL_FONT_SM "; }" \
+    ".fl-scene-time { z-index: 1; pointer-events: none; color: " FL_COLOR_TEXT_MEDIUM "; font-size: " FL_FONT_XS "; }"
 
 #define FL_STYLE_CSS_SCENE_PANES \
     ".fl-toolbar-spacer { flex-grow: 1; min-width: 0px; }" \
