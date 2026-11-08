@@ -12,7 +12,7 @@
 typedef struct Recent { struct Fl_Launcher *launcher; char *path; } Recent;
 struct Fl_Launcher {
     Ca_Window *window;
-    Ca_Div *root;
+    Ca_Div *root, *recent_list;
     Ca_TextInput *name, *path;
     Fl_EventBus *bus;
     Fl_Project *selected;
@@ -24,13 +24,17 @@ struct Fl_Launcher {
     char error[256];
 };
 
-/* Persist only launcher metadata; document serialization remains owned by the engine. */
-static void save_recent(Fl_Launcher *l)
+/* Save the recent paths, optionally excluding the entry being removed. */
+static bool save_recent(Fl_Launcher *l, const Recent *excluded)
 {
-    if (!l->recent_path[0]) return;
-    Fl_Binary b = {0}; fl_binary_u64(&b, l->count);
-    for (size_t i = 0; i < l->count; ++i) fl_binary_string(&b, l->recent[i].path);
-    fl_binary_save(&b, l->recent_path, "FLRECENT", 1); free(b.data);
+    if (!l->recent_path[0]) return true;
+    Fl_Binary b = {0};
+    fl_binary_u64(&b, l->count - (excluded != NULL));
+    for (size_t i = 0; i < l->count; ++i)
+        if (&l->recent[i] != excluded) fl_binary_string(&b, l->recent[i].path);
+    bool saved = fl_binary_save(&b, l->recent_path, "FLRECENT", 1);
+    free(b.data);
+    return saved;
 }
 
 /* Remember a selected path without duplicates, preserving prior entries on allocation failure. */
@@ -43,7 +47,7 @@ static void remember(Fl_Launcher *l, const char *path)
     strcpy(copy, path);
     Recent *recent = realloc(l->recent, (l->count + 1) * sizeof(*recent));
     if (!recent) { free(copy); return; }
-    l->recent = recent; recent[l->count++] = (Recent){l, copy}; save_recent(l);
+    l->recent = recent; recent[l->count++] = (Recent){l, copy}; save_recent(l, NULL);
 }
 
 /* Open a project through its engine validator; show failures without closing the manager. */
@@ -74,6 +78,25 @@ static void recent_clicked(Ca_Button *button, void *data)
     (void)button; Recent *r = data; open_directory(r->launcher, r->path, NULL);
 }
 
+/* Forget the clicked recent entry and refresh only the list. */
+static void remove_recent_clicked(Ca_Button *button, void *data)
+{
+    (void)button;
+    Recent *entry = data;
+    Fl_Launcher *l = entry->launcher;
+    if (!save_recent(l, entry)) {
+        ca_popup_show(ca_window_instance(l->window), &(Ca_PopupDesc){
+            .title = "Could not remove recent project",
+            .message = "Flow could not save the updated recent projects list."});
+        return;
+    }
+    size_t index = (size_t)(entry - l->recent);
+    free(entry->path);
+    memmove(entry, entry + 1, (l->count - index - 1) * sizeof(*entry));
+    --l->count;
+    ca_div_invalidate(l->recent_list);
+}
+
 /* Put the chosen folder into the directory field; rebuilds keep it as the field's text. */
 static void folder_chosen(const char *const *paths, size_t count, void *data)
 {
@@ -102,6 +125,22 @@ static void closed(Ca_Window *window, void *data)
     fl_file_browser_close(l->browser);
 }
 
+/* Render the current recent entries and their independent open and remove actions. */
+static void build_recents(Ca_Div *root, void *data)
+{
+    (void)root;
+    Fl_Launcher *l = data;
+    for (size_t i = 0; i < l->count; ++i) {
+        ca_div_begin(&(Ca_DivDesc){.direction = CA_HORIZONTAL, .style = FL_CLASS_RECENT_ROW});
+        ca_btn_begin(&(Ca_BtnDesc){.text = l->recent[i].path, .on_click = recent_clicked,
+            .click_data = &l->recent[i], .style = FL_CLASS_RECENT}); ca_btn_end();
+        fl_button(&(Fl_ButtonDesc){.text = "Remove", .on_click = remove_recent_clicked,
+            .click_data = &l->recent[i]});
+        ca_div_end();
+    }
+    if (!l->count) ca_text(&(Ca_TextDesc){.text = "Your projects will appear here.", .style = FL_CLASS_MUTED});
+}
+
 /* Render the project manager form and existing recent project entries. */
 static void build(Ca_Div *root, void *data)
 {
@@ -122,11 +161,9 @@ static void build(Ca_Div *root, void *data)
     fl_button(&(Fl_ButtonDesc){.text = "Open project", .on_click = open_clicked, .click_data = l});
     ca_div_end();
     ca_text(&(Ca_TextDesc){.text = "Recent projects", .style = FL_CLASS_HEADING});
-    for (size_t i = 0; i < l->count; ++i) {
-        ca_btn_begin(&(Ca_BtnDesc){.text = l->recent[i].path, .on_click = recent_clicked,
-            .click_data = &l->recent[i], .style = FL_CLASS_RECENT}); ca_btn_end();
-    }
-    if (!l->count) ca_text(&(Ca_TextDesc){.text = "Your projects will appear here.", .style = FL_CLASS_MUTED});
+    l->recent_list = ca_div_begin(&(Ca_DivDesc){.direction = CA_VERTICAL, .style = FL_CLASS_RECENT_LIST});
+    if (l->recent_list) ca_div_set_builder(l->recent_list, build_recents, l);
+    ca_div_end();
     ca_div_end();
 }
 

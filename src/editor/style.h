@@ -393,6 +393,8 @@
 #define FL_CLASS_LAUNCHER "fl-launcher"
 #define FL_CLASS_LAUNCHER_TITLE "fl-launcher-title"
 #define FL_CLASS_RECENT "fl-recent"
+#define FL_CLASS_RECENT_ROW "fl-recent-row"
+#define FL_CLASS_RECENT_LIST "fl-recent-list"
 #define FL_STYLE_CSS_SCENE \
     ".fl-scene { gap: " FL_SPACE_SM "; overflow: hidden; }" \
     ".fl-toolbar { width: 100%; min-height: 32px; height: auto; padding: 4px 8px; gap: 8px; align-items: center; flex-shrink: 0; }" \
@@ -433,7 +435,9 @@
     ".fl-input { width: 100%; height: 32px; padding: 6px 10px; flex-shrink: 0; background: " FL_COLOR_FIELD "; color: " FL_COLOR_TEXT_BRIGHT "; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: " FL_RADIUS_MD "; }" \
     ".fl-launcher { width: 100%; height: 100%; padding: 28px; gap: 12px; overflow-y: auto; " FL_STYLE_BACKDROP " }" \
     ".fl-launcher-title { font-size: 32px; color: " FL_COLOR_TEXT_BRIGHT "; }" \
-    ".fl-recent { width: 100%; height: 36px; padding: 8px 14px; flex-shrink: 0; justify-content: flex-start; color: " FL_COLOR_TEXT_MEDIUM "; background: " FL_COLOR_CONTROL "; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: " FL_RADIUS_MD "; }"
+    ".fl-recent-list { width: 100%; flex-shrink: 0; gap: 8px; }" \
+    ".fl-recent-row { width: 100%; height: 36px; flex-shrink: 0; gap: 8px; align-items: center; }" \
+    ".fl-recent { width: 0px; flex-grow: 1; min-width: 0px; overflow: hidden; height: 36px; padding: 8px 14px; flex-shrink: 0; justify-content: flex-start; color: " FL_COLOR_TEXT_MEDIUM "; background: " FL_COLOR_CONTROL "; border: 1px solid " FL_COLOR_GLASS_BORDER "; border-radius: " FL_RADIUS_MD "; }"
 
 #define FL_STYLE_CSS_TREE \
     ".fl-tree-row { width: 100%; height: " FL_TREE_ROW_H "; flex-shrink: 0; overflow: hidden; padding: 0px 4px 0px 2px; gap: 0px; align-items: center; background: transparent; border-radius: " FL_RADIUS_SM "; }" \
